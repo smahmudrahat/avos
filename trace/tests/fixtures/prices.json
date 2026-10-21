@@ -1,0 +1,4 @@
+{
+ "Qwen/Qwen3-30B-A3B-Instruct-2507": {"prompt_per_mtok": 0.10, "completion_per_mtok": 0.30, "currency": "USD"},
+ "deepseek-ai/DeepSeek-V4-Flash-0731": {"prompt_per_mtok": 0.14, "completion_per_mtok": 0.28, "currency": "USD"}
+}

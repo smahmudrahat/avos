@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""validate FILE [--ledger FILE]: schema and cross-event rules of trace/CONTRACT.md §3-§5.
+
+Two streamed passes: the first reads only birth/death rows (any line order), the second checks every event.
+Errors are written as they are found, so memory does not grow with them.
+"""
+import argparse
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import lib_trace as T  # noqa: E402
+
+KINDS = {k: k for k in T.schema_table()}  # canonical kind strings, shared by every stored reference
+EXEMPT = {"vm.boot", "vm.exit", "agent.exit", "session.close", "label"}  # post-hoc records: no liveness rule
+NEEDS_AUTHZ = {"llm.call": "llm.call", "net.connect": "net.connect", "tool.call": "tool.call"}
+RULE_FIELDS = {"authz_ref", "receipt"}  # missing -> E_AUTHZ_MISSING / E_RECEIPT rather than E_SCHEMA
+DENY = "deny"
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="validate", description=__doc__)
+    ap.add_argument("file")
+    ap.add_argument("--ledger", help="trace file with vm.boot/agent.spawn/exit rows kept elsewhere")
+    a = ap.parse_args()
+    table = T.schema_table()
+    L = T.principal_table([a.file] + ([a.ledger] if a.ledger else []))
+    seen = {}      # event_id -> kind, DENY, or (principal, action, ts) for an allow decision
+    last_ts = {}   # writer -> ts of its previous event in file order
+    last_seq = {}  # writer -> seq of its previous event in file order
+    n = bad = 0
+    w = sys.stdout.write
+    w('{"errors": [')
+
+    def err(line, eid, code, msg):
+        nonlocal bad
+        w((",\n " if bad else "\n ") + json.dumps({"line": line, "event_id": eid, "code": code, "message": msg}))
+        bad += 1
+
+    for line, ev in T.events(a.file):
+        n += 1
+        if ev is None:
+            err(line, None, "E_JSON", "line is not a JSON object")
+            continue
+        eid = ev.get("event_id") if isinstance(ev.get("event_id"), str) else None
+        k = ev.get("kind")
+        if k not in KINDS:
+            err(line, eid, "E_KIND", f"unknown kind {k!r}")
+            continue
+        k = KINDS[k]
+        bad_fields = set()
+        for f, types, enum, required in table[k]:
+            if f not in ev:
+                if required and f not in RULE_FIELDS:
+                    err(line, eid, "E_SCHEMA", f"{k}: missing {f}")
+                    bad_fields.add(f)
+                continue
+            v = ev[f]
+            if (types and not T.type_ok(v, types)) or (enum and v not in enum):
+                err(line, eid, "E_SCHEMA", f"{k}: {f} has wrong type or value {v!r:.60}")
+                bad_fields.add(f)
+        if bad_fields & T.ENVELOPE:
+            continue
+        if not T.ID_RE.match(eid):
+            err(line, eid, "E_SCHEMA", "event_id: charset [A-Za-z0-9_.:-], 1-64 chars")
+        if eid in seen:
+            err(line, eid, "E_DUP_ID", f"event_id {eid} seen before in the file")
+        ts = ev["ts"]
+        if not T.TS_RE.match(ts):
+            err(line, eid, "E_TS", f"ts {ts!r} is not YYYY-MM-DDTHH:MM:SS.mmmZ")
+            seen.setdefault(eid, k)
+            continue
+        wr, p = ev["writer"], ev["principal"]
+        if not wr.startswith(ev["host"] + "/"):
+            err(line, eid, "E_SCHEMA", f"writer {wr!r} does not start with host {ev['host']!r} + '/'")
+        if ts < last_ts.get(wr, ts):
+            err(line, eid, "E_TS_ORDER", f"ts {ts} precedes {last_ts[wr]} earlier in writer {wr}")
+        last_ts[wr] = ts
+        if wr in last_seq and ev["seq"] <= last_seq[wr]:
+            err(line, eid, "E_SEQ_ORDER", f"seq {ev['seq']} is not greater than {last_seq[wr]} earlier in writer {wr}")
+        last_seq[wr] = ev["seq"]
+        if bad_fields:  # the rules below read this kind's fields
+            seen.setdefault(eid, k)
+            continue
+
+        # identity and liveness
+        if k == "agent.spawn":
+            if ev["spiffe_id"] != p:
+                err(line, eid, "E_SCHEMA", "agent.spawn: spiffe_id must equal principal")
+            if ev["parent"] not in L:
+                err(line, eid, "E_REF", f"parent {ev['parent']} is not a known principal")
+        else:
+            life = L.get(p)
+            if not life or life[0] is None:
+                err(line, eid, "E_PRINCIPAL_UNKNOWN", f"principal {p} has no vm.boot/agent.spawn")
+            elif k not in EXEMPT and not (k == "authz.decision" and ev["decision"] == DENY
+                                          and any(isinstance(x, str) and x.startswith("hr_") for x in ev["policy_ids"])):
+                start = ts
+                if k == "llm.call" and type(ev["ms"]) is int:
+                    start = T.ms_ts(T.ts_ms(ts) - ev["ms"])
+                if start < life[0] or (life[1] is not None and start > life[1]):
+                    err(line, eid, "E_PRINCIPAL_DEAD", f"principal {p} not alive at {start}")
+
+        # per-kind rules
+        if k == "halt" or k == "resume":
+            if not T.RECEIPT_RE.match(str(ev.get("receipt", ""))):
+                err(line, eid, "E_RECEIPT", f"{k} without an hr_xxxx receipt")
+            if ev["target"] != p or p not in ev["nodes"]:
+                err(line, eid, "E_SCHEMA", f"{k}: target must equal principal and be in nodes")
+        elif k == "llm.call":
+            if ev["status"] == 200 and not (type(ev["prompt_tokens"]) is int and type(ev["completion_tokens"]) is int):
+                err(line, eid, "E_TOKENS", "llm.call with status 200 needs integer prompt_tokens and completion_tokens")
+            if ev["dropped"] and not T.RECEIPT_RE.match(str(ev.get("receipt", ""))):
+                err(line, eid, "E_RECEIPT", "dropped llm.call without the receipt of the halt/cut that dropped it")
+        elif k == "authz.decision" and ev["decision"] == DENY and not ev["policy_ids"]:
+            err(line, eid, "E_SCHEMA", "authz.decision: deny without policy_ids")
+        elif k == "tool.result":
+            if seen.get(ev["call_ref"]) != "tool.call":
+                err(line, eid, "E_REF", f"call_ref {ev['call_ref']} is not an earlier tool.call")
+        if k in NEEDS_AUTHZ and not (k == "tool.call" and ev["via"] == "harness"):
+            ref = ev.get("authz_ref")
+            d = seen.get(ref) if isinstance(ref, str) else None
+            if not ref:
+                err(line, eid, "E_AUTHZ_MISSING", f"{k} without authz_ref")
+            elif d != DENY and not isinstance(d, tuple):
+                err(line, eid, "E_REF", f"authz_ref {ref} is not an earlier authz.decision")
+            elif d == DENY or d[0] != p or d[1] != NEEDS_AUTHZ[k] or d[2] > ts:
+                err(line, eid, "E_AUTHZ_DENIED", f"authz_ref {ref} did not allow this {k} for this principal before it")
+
+        if eid not in seen:
+            if k == "authz.decision":
+                seen[eid] = (sys.intern(p), ev["action"], ts) if ev["decision"] == "allow" else DENY
+            else:
+                seen[eid] = k
+    w(f'{"" if not bad else chr(10)}], "ok": {"true" if not bad else "false"}, "events": {n}}}\n')
+    return 0 if not bad else 1
+
+
+if __name__ == "__main__":
+    T.cli(main)

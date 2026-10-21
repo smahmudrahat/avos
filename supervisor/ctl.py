@@ -92,8 +92,9 @@ def firecracker(t, state):
 
 
 def nodes_under(t):
-    return [p["spiffe_id"] for p in registrar.principals().values()
-            if not p["exited_at"] and (p["spiffe_id"] == t["spiffe_id"] or p["spiffe_id"].startswith(t["spiffe_id"] + "/"))]
+    # The target itself first (a VM is not a ledger principal, so it would otherwise be missing), then its branch.
+    return [t["spiffe_id"]] + [p["spiffe_id"] for p in registrar.principals().values()
+                               if not p["exited_at"] and p["spiffe_id"].startswith(t["spiffe_id"] + "/")]
 
 
 def receipt(kind, t, action, ms, nodes, **extra):
@@ -190,21 +191,25 @@ def stats(ticks_path, tick_s):
     named = [r["target"] for r in rows]
     controls = [(datetime.fromisoformat(r["ts"].replace("Z", "+00:00")).timestamp(), r["action"]) for r in rows]
     siblings = {sid: ts for sid, ts in ticks.items() if not any(sid == n or sid.startswith(n + "/") for n in named)}
-    lost = failed = 0
-    late = []  # (gap s, ts, principal, nearest control)
+    lost = 0
+    late, failed = [], []  # (gap s or 0, ts, principal, nearest control); the same 1 s window applies to both
+
+    def nearest(at):
+        return min(controls, key=lambda c: abs(c[0] - at), default=(float("inf"), "-"))
+
     for sid, ts in siblings.items():
         ts.sort(key=lambda t: t["tick"])
         lost += ts[-1]["tick"] - len(ts)  # a gap in seq = a tick that was never written
-        failed += sum(1 for t in ts if isinstance(t.get("gw"), str))
-        for a, b in zip(ts, ts[1:]):
-            if b["ts"] - a["ts"] > tick_s + 0.1:
-                near = min(controls, key=lambda c: abs(c[0] - b["ts"]), default=(float("inf"), "-"))
-                late.append((b["ts"] - a["ts"], b["ts"], sid, near))
-    during = [x for x in late if abs(x[3][0] - x[1]) <= 1]
-    print(f"M7 sibling_disruption: {lost + len(during) + failed} (lost {lost}, delayed during a control {len(during)}, "
-          f"failed calls {failed}) over {len(siblings)} never-named principals, {sum(map(len, siblings.values()))} ticks")
-    for gap, at, sid, near in sorted(late, reverse=True)[:5]:
-        print(f"  {'DURING' if abs(near[0] - at) <= 1 else 'jitter'}: +{gap * 1000:.0f} ms on {sid.split('/vm/')[1]}"
+        failed += [(0, t["ts"], sid, nearest(t["ts"])) for t in ts if isinstance(t.get("gw"), str)]
+        late += [(b["ts"] - a["ts"], b["ts"], sid, nearest(b["ts"])) for a, b in zip(ts, ts[1:])
+                 if b["ts"] - a["ts"] > tick_s + 0.1]
+    during = [x for x in late + failed if abs(x[3][0] - x[1]) <= 1]
+    print(f"M7 sibling_disruption: {lost + len(during)} (lost {lost}, delayed or failed during a control {len(during)}; "
+          f"outside any control: {len(late) + len(failed) - len(during)}) over {len(siblings)} never-named principals, "
+          f"{sum(map(len, siblings.values()))} ticks")
+    for gap, at, sid, near in sorted(late + failed, key=lambda x: -x[0])[:5]:
+        what = f"+{gap * 1000:.0f} ms" if gap else "failed gateway call"
+        print(f"  {'DURING' if abs(near[0] - at) <= 1 else 'jitter'}: {what} on {sid.split('/vm/')[1]}"
               f" ({near[1]} {near[0] - at:+.2f} s away)")
 
 

@@ -1,0 +1,246 @@
+#!/usr/bin/env python3
+"""ingest: today's ledger rows (and a τ² run) -> contract events (trace/CONTRACT.md §11).
+
+  ingest --ledger EVENTS.jsonl -o OUT.jsonl [--host NAME] [--prices PRICES.json]
+  ingest --run-dir DIR         -o OUT.jsonl [--host NAME] [--prices PRICES.json]
+
+Host rows are the evidence: one event per row, writer = the emitter that wrote it, links derived from the ledger
+(FIFO allow -> call). With --run-dir the harness transcript (result.json) is a witness merged in: each message
+with usage becomes the content of the next gateway llm.call of the run's agent with the same token counts, and
+its tool calls/results become events of the writer <host>/harness/<run>, anchored to that call's host time.
+AVOS_TRACE_CONTENT=1 keeps message, argument and result text; 0 (default) keeps only their SHA-256.
+"""
+import argparse
+import json
+import os
+import sys
+from collections import deque
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import lib_trace as T  # noqa: E402
+
+# legacy kind -> the emitter that writes it today (infra/vm, infra/job, identity/registrar.py, supervisor/ctl.py,
+# gateway/gateway.py); ctl writes through registrar.emit but is its own process and stream
+WRITER = {"vm.boot": "vm", "session.open": "job", "session.close": "job", "agent.spawn": "registrar",
+          "agent.exit": "registrar", "vm.exit": "registrar", "halt": "ctl", "resume": "ctl"}
+RUN_KINDS = {"authz.decision", "llm.call", "tool.call", "tool.result", "net.connect", "fs.write"}
+
+
+class Out:
+    """Writes contract events: per-writer seq, locally minted id, per-writer hash chain."""
+
+    def __init__(self, f, host):
+        self.f, self.host, self.seq, self.head = f, host, {}, {}
+
+    def emit(self, kind, ts, name, principal, vm_id, fields):
+        w = f"{self.host}/{name}"
+        s = self.seq[w] = self.seq.get(w, 0) + 1
+        ev = {"event_id": T.mint_id(ts, w, s), "kind": kind, "ts": ts, "writer": w, "seq": s, "host": self.host,
+              "principal": principal, "vm_id": vm_id, **fields, "prev": self.head.get(w, T.GENESIS)}
+        ev["hash"] = self.head[w] = T.ev_hash(ev)
+        self.f.write(T.dumps(ev))
+        return ev
+
+
+class Harness:
+    """The τ² transcript, cut into model turns: (message with usage, free messages before it, tool messages after)."""
+
+    def __init__(self, run_dir, job):
+        sim = json.load(open(os.path.join(run_dir, "result.json")))["simulations"][0]
+        self.run, self.job, self.sim = job["run"], job, sim
+        self.agent = job.get("agent_spiffe_id")
+        self.turns, free = deque(), []
+        for m in sim["messages"]:
+            if m.get("usage"):
+                self.turns.append((m, free, []))
+                free = []
+            elif m["role"] == "tool" and self.turns:
+                self.turns[-1][2].append(m)
+            else:
+                free.append(m)
+        self.unmatched = len(free)  # messages after the last model call: no event carries them
+        self.call_ids, self.labelled = {}, False
+
+    def matches(self, principal, ev):
+        if not self.turns or principal != self.agent or ev["status"] != 200 or ev["dropped"]:
+            return False
+        u = self.turns[0][0]["usage"]
+        return (u["prompt_tokens"], u["completion_tokens"]) == (ev["prompt_tokens"], ev["completion_tokens"])
+
+
+def chat(m):
+    """A harness message in OpenAI Chat Completions form (tool calls excluded: they are tool.call events)."""
+    return {"role": m["role"], "content": m.get("content")}
+
+
+def content(fields, name, value, keep):
+    if keep:
+        fields[name] = value
+    else:
+        fields[name + "_sha256"] = T.sha(value)
+
+
+def first_host(path):
+    for _, line in T.lines(path):
+        if '"vm.boot"' in line:
+            h = json.loads(line).get("host")
+            if h:
+                return h
+    return None
+
+
+def convert(src, out, keep, prices, harness=None):
+    allows = {}      # (principal, resource[, args]) -> deque of allow event ids, FIFO
+    receipts = {}    # principal -> receipt of its latest delivery-time deny of a model answer
+    run_of = {}      # vm_id -> run of its open session
+    for line, r in T.events(src):
+        if r is None:
+            raise ValueError(f"{src}:{line}: not a JSON object")
+        k, ts = r.pop("kind"), r.pop("ts")
+        p = r.get("spiffe_id") if k in ("vm.boot", "vm.exit", "agent.spawn", "agent.exit") \
+            else r.pop("vm_spiffe_id", None) if k.startswith("session.") else r.get("target") if k in ("halt", "resume") \
+            else r.pop("principal", None)
+        vm_id = r.pop("vm_id", None) or T.vm_of(p)
+        name = WRITER.get(k, "gateway")
+        if "id" in r:
+            r["agent_id"] = r.pop("id")
+        if k == "vm.boot":
+            r.pop("host", None)  # the envelope's host (or --host) replaces it
+        if k in RUN_KINDS and vm_id in run_of:
+            r["run"] = run_of[vm_id]
+
+        allow = None
+        if k == "session.open":
+            run_of[vm_id] = r["run"]
+        elif k == "session.close":
+            run_of.pop(vm_id, None)
+            if harness and r["run"] == harness.run:
+                label(out, harness, ts, vm_id)
+        elif k in ("halt", "resume") and p not in r["nodes"]:
+            r["nodes"] = [p] + r["nodes"]  # a VM pause lists the agents under the VM but not the VM itself
+        elif k == "authz.decision":
+            if r["decision"] == "allow":
+                allow = (p, r["resource"], json.dumps(r["args"], sort_keys=True)) if r["action"] == "tool.call" else (p, r["resource"])
+            elif r["action"] == "llm.call":
+                hr = next((x for x in r["policy_ids"] if isinstance(x, str) and x.startswith("hr_")), None)
+                if hr:
+                    receipts[p] = hr
+        elif k == "agent.spawn" and harness and not harness.agent and r["name"] == harness.job.get("harness") \
+                and r["parent"] == f"spiffe://avoslab.com/vm/{vm_id}":
+            harness.agent = p  # job.json without agent_spiffe_id: the harness's own birth row
+        elif k == "net.connect":
+            r["dest"] = r.pop("host", None)
+            r["authz_ref"] = take(allows, (p, f"Host::{json.dumps(r['dest'])}"))
+        elif k == "tool.call":
+            result = r.pop("result", None)
+            r["via"] = "gateway"
+            r["authz_ref"] = take(allows, (p, f"Tool::{json.dumps(r['tool'])}", json.dumps(r.get("args"), sort_keys=True)))
+        elif k == "llm.call":
+            r["dropped"] = bool(r.get("dropped"))
+            r["authz_ref"] = take(allows, (p, f"Model::{json.dumps(r['model'])}"))
+            if r["dropped"] and p in receipts:
+                r["receipt"] = receipts[p]
+            pr = prices.get(r["model"])
+            if pr:
+                r["price"] = pr
+                if type(r.get("prompt_tokens")) is int and type(r.get("completion_tokens")) is int:
+                    r["cost_usd"] = round((r["prompt_tokens"] * pr["prompt_per_mtok"] + r["completion_tokens"] * pr["completion_per_mtok"]) / 1e6, 9)
+        if r.get("authz_ref") is None:
+            r.pop("authz_ref", None)  # left out rather than null: validate reports E_AUTHZ_MISSING
+
+        turn = harness.turns.popleft() if k == "llm.call" and harness and harness.matches(p, r) else None
+        if turn:
+            m, free, _ = turn
+            r.update(role=m["role"], guest_ts=T.guest_ts(m["timestamp"]))
+            if free:
+                content(r, "input", [chat(x) for x in free], keep)
+            content(r, "output", chat(m), keep)
+        ev = out.emit(k, ts, name, p, vm_id, r)
+        if allow:
+            allows.setdefault(allow, deque()).append(ev["event_id"])
+        elif k == "tool.call":
+            res = {"call_ref": ev["event_id"], **({"run": r["run"]} if "run" in r else {})}
+            content(res, "result", result, keep)
+            out.emit("tool.result", ts, name, p, vm_id, res)
+        if turn:
+            harness_tools(out, harness, turn, ev, keep)
+    if harness and not harness.labelled:  # no session.close for the run (partial ledger): label at the last row
+        label(out, harness, ev["ts"], ev["vm_id"])
+
+
+def take(allows, key):
+    """The earliest unconsumed allow for this key."""
+    q = allows.get(key)
+    return q.popleft() if q else None
+
+
+def structured(text):
+    """A tool result that is JSON text is kept as JSON (queryable, like gateway results) when that is lossless."""
+    try:
+        v = json.loads(text)
+    except (TypeError, ValueError):
+        return text
+    return v if isinstance(v, (dict, list)) and json.dumps(v) == text else text
+
+
+def harness_tools(out, h, turn, call, keep):
+    """The turn's tool calls and results, one ms after the model call that issued them (host clock)."""
+    m, _, results = turn
+    ts = T.ms_ts(T.ts_ms(call["ts"]) + 1)
+    name = f"harness/{h.run}"
+    for t in m.get("tool_calls") or []:
+        f = {"run": h.run, "via": "harness", "tool": t["name"], "call_id": t["id"], "guest_ts": T.guest_ts(m["timestamp"])}
+        content(f, "args", t["arguments"], keep)
+        h.call_ids[t["id"]] = out.emit("tool.call", ts, name, call["principal"], call["vm_id"], f)["event_id"]
+    for x in results:
+        f = {"run": h.run, "call_id": x["id"], "error": bool(x.get("error")), "guest_ts": T.guest_ts(x["timestamp"])}
+        if x["id"] in h.call_ids:
+            f["call_ref"] = h.call_ids[x["id"]]
+        content(f, "result", structured(x.get("content")), keep)
+        out.emit("tool.result", ts, name, call["principal"], call["vm_id"], f)
+
+
+def label(out, h, ts, vm_id):
+    """The harness's verdict on the run, by the run's agent (written when the host closes the session)."""
+    sim = h.sim
+    labels = {"reward": (sim.get("reward_info") or {}).get("reward"), "termination_reason": sim.get("termination_reason")}
+    out.emit("label", ts, f"harness/{h.run}", h.agent, vm_id, {"run": h.run, "labels": labels, "source": h.job.get("harness", "tau2")})
+    h.labelled = True
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="ingest", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--ledger")
+    src.add_argument("--run-dir")
+    ap.add_argument("-o", dest="out", required=True)
+    ap.add_argument("--host")
+    ap.add_argument("--prices")
+    a = ap.parse_args()
+    keep = os.environ.get("AVOS_TRACE_CONTENT", "0") == "1"
+    prices = json.load(open(a.prices)) if a.prices else {}
+    path, harness = a.ledger, None
+    if a.run_dir:
+        path = os.path.join(a.run_dir, "events.jsonl")
+        job = json.load(open(os.path.join(a.run_dir, "job.json")))
+        if os.path.exists(os.path.join(a.run_dir, "result.json")):
+            harness = Harness(a.run_dir, job)
+        else:
+            print(f"ingest: {a.run_dir} has no result.json (failed run): host rows only", file=sys.stderr)
+    host = a.host or first_host(path)
+    if not host:
+        print("ingest: no vm.boot row names the host; pass --host", file=sys.stderr)
+        return 2
+    tmp = a.out + ".part"
+    with open(tmp, "w", encoding="utf-8") as f:
+        convert(path, Out(f, host), keep, prices, harness)
+    os.replace(tmp, a.out)
+    missed = harness and (len(harness.turns) + harness.unmatched)
+    if missed:
+        print(f"ingest: {missed} harness messages matched no gateway llm.call; their content is not in the trace", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    T.cli(main)

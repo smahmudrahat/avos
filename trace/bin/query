@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""query: projections of a trace file (trace/CONTRACT.md §8).
+
+  query audit   --principal P FILE   P's events + halts/resumes covering P, in (ts, writer, seq) order, each with
+                                     the authority it acted under
+  query lineage --principal P FILE   P up through agent.spawn parents to its VM
+  query cost    --run R FILE         tokens x price, wall time and host of one run, from the file alone
+
+audit reads a side index partitioned by principal (under $TMPDIR, keyed by the file's path, size and mtime;
+built on first use in one pass), so a repeat query reads only P's partition and P's lines.
+"""
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import sys
+import tempfile
+import zlib
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import lib_trace as T  # noqa: E402
+
+BUCKETS = 256
+GATED = {"llm.call", "tool.call", "net.connect"}
+
+
+def bucket(p):
+    return f"{zlib.crc32(p.encode()) % BUCKETS:02x}.json"
+
+
+def index(path):
+    """Directory of BUCKETS files {principal: [byte offsets of its lines]}; built once per file version."""
+    st = os.stat(path)
+    key = hashlib.sha256(f"{os.path.realpath(path)}\0{st.st_size}\0{st.st_mtime_ns}".encode()).hexdigest()[:24]
+    root = os.path.join(tempfile.gettempdir(), "avos-trace-index")
+    final = os.path.join(root, key)
+    if os.path.isdir(final):
+        return final
+    os.makedirs(root, exist_ok=True)
+    parts, off = {}, 0
+    with open(path, "rb") as f:
+        for line in f:
+            try:
+                ev = json.loads(line)
+                p = ev["principal"]
+                parts.setdefault(p, []).append(off)
+                if ev["kind"] in ("halt", "resume"):
+                    for n in ev["nodes"]:
+                        if n != p:
+                            parts.setdefault(n, []).append(off)
+            except (ValueError, KeyError, TypeError):
+                pass  # not an event: validate reports it
+            off += len(line)
+    groups = {}
+    for p, offs in parts.items():
+        groups.setdefault(bucket(p), {})[p] = offs
+    tmp = tempfile.mkdtemp(dir=root)
+    for name, g in groups.items():
+        with open(os.path.join(tmp, name), "w") as f:
+            json.dump(g, f)
+    try:
+        os.rename(tmp, final)
+    except OSError:  # another query built it first
+        shutil.rmtree(tmp, ignore_errors=True)
+    return final
+
+
+def authority(ev, by_id):
+    k = ev["kind"]
+    if k in GATED:
+        if k == "tool.call" and ev.get("via") == "harness":
+            return {"via": "harness"}
+        d = by_id.get(ev.get("authz_ref"), {})
+        a = {"authz_ref": ev.get("authz_ref"), "decision": d.get("decision"), "policy_ids": d.get("policy_ids")}
+        if ev.get("receipt"):
+            a["receipt"] = ev["receipt"]
+        return a
+    if k == "authz.decision":
+        return {"decision": ev["decision"], "policy_ids": ev["policy_ids"]}
+    if k in ("halt", "resume"):
+        return {"receipt": ev["receipt"], "by": ev["by"]}
+    return {}
+
+
+def audit(a):
+    try:
+        offs = json.load(open(os.path.join(index(a.file), bucket(a.principal)))).get(a.principal, [])
+    except FileNotFoundError:
+        offs = []
+    evs = []
+    with open(a.file, "rb") as f:
+        for o in offs:
+            f.seek(o)
+            evs.append(json.loads(f.readline()))
+    # a valid call's decision is by the same principal, so it is in this partition
+    by_id = {e["event_id"]: e for e in evs if e["kind"] == "authz.decision"}
+    evs.sort(key=lambda e: (e["ts"], e["writer"], e["seq"]))
+    for e in evs:
+        e["authority"] = authority(e, by_id)
+        sys.stdout.write(json.dumps(e, ensure_ascii=False) + "\n")
+    return 0
+
+
+def lineage(a):
+    parent = {}
+    for _, line in T.lines(a.file):
+        if '"agent.spawn"' in line or '"vm.boot"' in line:
+            ev = json.loads(line)
+            if ev.get("kind") == "agent.spawn":
+                parent[ev["principal"]] = ev.get("parent")
+            elif ev.get("kind") == "vm.boot":
+                parent.setdefault(ev["principal"], None)
+    chain = [a.principal]
+    while parent.get(chain[-1]) and parent[chain[-1]] not in chain:
+        chain.append(parent[chain[-1]])
+    T.out(chain)
+    return 0 if a.principal in parent else 1
+
+
+def cost(a):
+    calls = priced = pt = ct = 0
+    usd, close, first_vm, hosts = 0.0, None, None, {}
+    for _, ev in T.events(a.file):
+        if ev is None:
+            continue
+        k = ev.get("kind")
+        if k == "vm.boot":
+            hosts[ev["vm_id"]] = ev["host"]
+        elif ev.get("run") != a.run:
+            continue
+        elif k == "llm.call":
+            calls += 1
+            first_vm = first_vm or ev["vm_id"]
+            p, c, price = ev.get("prompt_tokens"), ev.get("completion_tokens"), ev.get("price")
+            pt += p if type(p) is int else 0
+            ct += c if type(c) is int else 0
+            if price and type(p) is int and type(c) is int:
+                priced += 1
+                usd += (p * price["prompt_per_mtok"] + c * price["completion_per_mtok"]) / 1e6
+        elif k == "session.close":
+            close = ev
+    vm_id = close["vm_id"] if close else first_vm
+    T.out({"run": a.run, "vm_id": vm_id, "host": hosts.get(vm_id), "llm_calls": calls, "priced_calls": priced,
+           "prompt_tokens": pt, "completion_tokens": ct, "cost_usd": round(usd, 9),
+           "wall_ms": close["wall_ms"] if close else None})
+    return 0 if calls or close else 1
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="query", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    for name, opt in (("audit", "--principal"), ("lineage", "--principal"), ("cost", "--run")):
+        s = sub.add_parser(name)
+        s.add_argument(opt, required=True)
+        s.add_argument("file")
+    a = ap.parse_args()
+    return {"audit": audit, "lineage": lineage, "cost": cost}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    T.cli(main)

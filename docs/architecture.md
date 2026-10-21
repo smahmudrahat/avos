@@ -160,7 +160,14 @@ the freezer only stops scheduling.
 7. Pause a VM by name; the other VM is unaffected; resume.
 8. An agent cannot halt anything: `POST /halt` from inside is refused, writing a cgroup file is `Permission denied`.
 
-## 6. Planned
-- **Trace:** one schema for audit ("what did principal X do") and for training ("which inputs led to which result").
+## 6. Trace (`trace/`)
+One event stream serves the auditor and the trainer. Every event carries a locally minted id, host time, the
+principal it is about, the writer stream and its sequence number, and a hash chained to the writer's previous event;
+every gated action names the `authz.decision` that allowed it (or the receipt that stopped it). Host-side rows are
+the evidence; the harness transcript is a declared witness merged in for in-process tool calls and the outcome. Two
+projections: a per-principal audit timeline with authority, and a chat-format training run with reward. Design,
+lifecycle and limits: `docs/trace.md`; interface and acceptance suite: `trace/CONTRACT.md`, `trace/tests/`.
+
+## 7. Planned
 - **Labeling and training:** automated checks, open-weight judges, human review; LoRA retraining on passed runs.
 - **Evaluation:** full held-out runs with pass^k, cost and latency, compared with frontier-model baselines.

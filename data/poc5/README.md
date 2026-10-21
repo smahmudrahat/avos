@@ -18,6 +18,10 @@ vm-01: `A → B → B1`, `support`, `D`, `G`, `H`, later `F`; vm-02: `E`, `J`. `
 | 7. Pause `vm-02` by name | E advanced 11 ticks in 2.2 s (≈ 44 expected): paused. A on vm-01 unaffected. Resume brought E back. 43 ms. |
 | 8. An agent cannot use the controls | `POST /halt` from an agent: `top-level spawns and controls come from the host`. Writing another branch's `cgroup.freeze`: `Permission denied`. |
 
+- **M7 definition note (2026-10-21, later the same day):** `ctl.py stats` now applies the same ±1 s control window
+  to failed sibling gateway calls that it applies to late ticks, and reports both kinds outside a window as jitter.
+  A re-run after that change: M6 median 28 ms, worst 49 ms; M7 0 over 2,571 ticks, 2 stalls outside any window.
+  `nodes_under` now lists a VM target in its own receipt (the earlier VM-pause receipts omitted it).
 - **Receipts:** every command left one `halt` or `resume` row with `receipt`, `by`, `target`, `nodes`, `ms`; the
   gateway's refusals name the same receipt, so M5 stays **891/891 = 100%**.
 - **Cost:** no new process in the VM; the shim is the supervisor. One cgroup per principal (5 in vm-01 at the end,

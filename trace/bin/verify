@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""verify FILE: the per-writer SHA-256 chain of trace/CONTRACT.md §6, recomputed without the writer.
+
+After a break the stored hash becomes the head, so one edit is reported once (at the edited event, or at the
+next link when the edited event was re-hashed). A seq jump is reported (E_CHAIN_GAP) with the broken link it
+explains (a deletion); file order = seq order is validate's rule (E_SEQ_ORDER), and gaps alone are completeness's. `head` per writer can be
+anchored elsewhere.
+"""
+import argparse
+import hashlib
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import lib_trace as T  # noqa: E402
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="verify", description=__doc__)
+    ap.add_argument("file")
+    a = ap.parse_args()
+    writers, errors, n = {}, [], 0
+    dumps, sha = json.dumps, hashlib.sha256
+    for line, ev in T.events(a.file):
+        n += 1
+        if ev is None:
+            errors.append({"line": line, "event_id": None, "writer": None, "seq": None, "code": "E_JSON", "message": "not a JSON object"})
+            continue
+        w, seq, h = ev.get("writer"), ev.get("seq"), ev.pop("hash", None)
+        s = writers.setdefault(w, {"count": 0, "head": T.GENESIS, "last_seq": None})
+        e = lambda code, msg: errors.append({"line": line, "event_id": ev.get("event_id"), "writer": w, "seq": seq,  # noqa: E731
+                                             "code": code, "message": msg})
+        if h != sha(dumps(ev, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest():
+            e("E_CHAIN_HASH", "event does not hash to its hash")
+        if ev.get("prev") != s["head"]:
+            e("E_CHAIN_PREV", f"prev is not the hash of the previous event of {w}")
+            if s["last_seq"] is not None and seq != s["last_seq"] + 1:
+                e("E_CHAIN_GAP", f"seq {seq} follows {s['last_seq']}: {seq - s['last_seq'] - 1} events missing here")
+        s["count"] += 1
+        s["head"], s["last_seq"] = h, seq
+    T.out({"ok": not errors, "events": n, "writers": writers, "errors": errors})
+    return 1 if errors else 0
+
+
+if __name__ == "__main__":
+    T.cli(main)

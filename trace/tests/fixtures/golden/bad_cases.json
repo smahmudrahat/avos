@@ -1,0 +1,66 @@
+{
+ "authz_denied": {
+  "code": "E_AUTHZ_DENIED",
+  "event_id": "h1.gateway.0000000004"
+ },
+ "chain": {
+  "code": "E_CHAIN_HASH",
+  "event_id": "h1.gateway.0000000004"
+ },
+ "dangling_ref": {
+  "code": "E_REF",
+  "event_id": "h1.gateway.0000000005"
+ },
+ "dead_principal": {
+  "code": "E_PRINCIPAL_DEAD",
+  "event_id": "h1.gateway.0000000004"
+ },
+ "dropped_no_receipt": {
+  "code": "E_RECEIPT",
+  "event_id": "h1.gateway.0000000009"
+ },
+ "dup_id": {
+  "code": "E_DUP_ID",
+  "event_id": "h1.gateway.0000000004"
+ },
+ "halt_no_receipt": {
+  "code": "E_RECEIPT",
+  "event_id": "h1.ctl.0000000001"
+ },
+ "llm_no_tokens": {
+  "code": "E_TOKENS",
+  "event_id": "h1.gateway.0000000002"
+ },
+ "missing_principal": {
+  "code": "E_SCHEMA",
+  "event_id": "h1.gateway.0000000002"
+ },
+ "seq_order": {
+  "code": "E_SEQ_ORDER",
+  "event_id": "h1.gateway.0000000005"
+ },
+ "timestamp": {
+  "code": "E_TS",
+  "event_id": "h1.gateway.0000000002"
+ },
+ "toolcall_no_authz": {
+  "code": "E_AUTHZ_MISSING",
+  "event_id": "h1.gateway.0000000004"
+ },
+ "ts_order": {
+  "code": "E_TS_ORDER",
+  "event_id": "h1.gateway.0000000005"
+ },
+ "unknown_kind": {
+  "code": "E_KIND",
+  "event_id": "h1.gateway.0000000002"
+ },
+ "unknown_parent": {
+  "code": "E_REF",
+  "event_id": "h1.registrar.0000000002"
+ },
+ "unknown_principal": {
+  "code": "E_PRINCIPAL_UNKNOWN",
+  "event_id": "h1.gateway.0000000002"
+ }
+}

@@ -220,3 +220,46 @@ poc5 n="10":
             print(r["receipt"], r["kind"].ljust(6), r["action"].ljust(10), r["target"].split("/vm/")[1].ljust(50), len(r["nodes"]), "nodes", r["ms"], "ms")' "$vm1" "$vm2"
     sudo gateway/gateway.py stats "$vm1" "$vm2"
     echo "cgroups in vm-01: $(vm 1 'ls -d /sys/fs/cgroup/system.slice/avos-agent.service/*/ 2>/dev/null | wc -l') (one per live top-level agent: A, support, G, H, F)"
+
+# Anywhere (no VM): the POC 6 acceptance suite without the 1M-event scale checks
+trace-check:
+    python3 trace/tests/run.py --quick
+
+# Anywhere: POC 6 done tests on the real ledger window and the real run, then the full suite (≈ 3 min)
+poc6:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    t=/tmp/poc6 f=trace/tests/fixtures run=run_retail-0_9 bin=trace/bin
+    mkdir -p $t
+    summary() { python3 -c 'import json, sys; j = json.load(sys.stdin); print({k: j[k] for k in sys.argv[1:]})' "$@"; }
+    echo "== ingest: real ledger window (content off) and the real run (content on, priced)"
+    python3 $bin/ingest --ledger $f/real_events.jsonl -o $t/ledger.jsonl
+    AVOS_TRACE_CONTENT=1 python3 $bin/ingest --run-dir data/poc6/$run --prices $f/prices.json -o $t/run.jsonl
+    AVOS_TRACE_CONTENT=0 python3 $bin/ingest --run-dir data/poc6/$run -o $t/run-nocontent.jsonl
+    wc -l $t/ledger.jsonl $t/run.jsonl $t/run-nocontent.jsonl
+    for x in ledger run run-nocontent; do
+      echo "== $x: validate, verify, completeness"
+      python3 $bin/validate $t/$x.jsonl | summary ok events errors
+      python3 $bin/verify $t/$x.jsonl | summary ok events errors
+      python3 $bin/completeness $t/$x.jsonl | summary avos_trace_events_stored_total avos_trace_events_expected_total avos_trace_completeness_ratio gaps
+    done
+    echo "== broken files fail (expected code@event_id from bad_cases.json)"
+    for b in $f/golden/bad_*.jsonl; do
+      printf '%-24s ' "$(basename $b .jsonl)"
+      if [[ $b == *bad_chain* ]]; then python3 $bin/verify $b | python3 -c 'import json, sys; print(*sorted({e["code"] + "@" + e["event_id"] for e in json.load(sys.stdin)["errors"]}))' || true
+      else python3 $bin/validate $b | python3 -c 'import json, sys; print(*sorted({e["code"] + "@" + str(e["event_id"]) for e in json.load(sys.stdin)["errors"]}))' || true; fi
+    done
+    echo "== audit: the first agent halted in the ledger window, with the authority of each event"
+    p=$(python3 -c 'import json, sys; print(next(r["principal"] for r in map(json.loads, open(sys.argv[1])) if r["kind"] == "halt" and "/agent/" in r["principal"]))' $t/ledger.jsonl)
+    python3 $bin/query audit --principal "$p" $t/ledger.jsonl | python3 -c 'import json, sys
+    for e in map(json.loads, sys.stdin): print(e["ts"], e["kind"].ljust(14), json.dumps(e["authority"]))' | head -20
+    echo "== lineage of a sub-agent"
+    sub=$(python3 -c 'import json, sys; print(next(r["principal"] for r in map(json.loads, open(sys.argv[1])) if r["kind"] == "agent.spawn" and "/sub/" in r["principal"]))' $t/ledger.jsonl)
+    python3 $bin/query lineage --principal "$sub" $t/ledger.jsonl
+    echo "== cost of $run (gateway tokens x price)"
+    python3 $bin/query cost --run $run $t/run.jsonl
+    echo "== chat projection of $run"
+    python3 $bin/project chat --run $run $t/run.jsonl | python3 -c 'import json, sys; j = json.load(sys.stdin)
+    print("messages", len(j["messages"]), "tool calls", sum(len(m.get("tool_calls", [])) for m in j["messages"]), "reward", j["reward"], j["termination_reason"], "usage", j["usage"])'
+    echo "== acceptance suite (full)"
+    python3 trace/tests/run.py

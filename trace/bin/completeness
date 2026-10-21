@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""completeness FILE: M8 counters (trace/CONTRACT.md §7). Per writer, the seq values present are kept as sorted
+runs, so memory grows with the number of gaps, not of events; any line order works.
+"""
+import argparse
+import bisect
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import lib_trace as T  # noqa: E402
+
+MAX_GAPS = 10_000  # listed individually; beyond that only counted (a corrupt seq must not list a billion gaps)
+
+
+def add(runs, s):
+    """Insert seq s into sorted, disjoint [start, end] runs; returns False if it was already there."""
+    if runs and runs[-1][1] + 1 == s:  # the common case: next in order
+        runs[-1][1] = s
+        return True
+    i = bisect.bisect_right(runs, [s, float("inf")])
+    if i and runs[i - 1][1] >= s:
+        return False
+    if i and runs[i - 1][1] + 1 == s:
+        runs[i - 1][1] = s
+    else:
+        runs.insert(i, [s, s])
+        i += 1
+    if i < len(runs) and runs[i - 1][1] + 1 == runs[i][0]:
+        runs[i - 1][1] = runs.pop(i)[1]
+    return True
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="completeness", description=__doc__)
+    ap.add_argument("file")
+    a = ap.parse_args()
+    stored, runs, dups, bad = {}, {}, {}, 0
+    for _, ev in T.events(a.file):
+        w, s = (ev or {}).get("writer"), (ev or {}).get("seq")
+        if not isinstance(w, str) or type(s) is not int:
+            bad += 1
+            continue
+        stored[w] = stored.get(w, 0) + 1
+        if not add(runs.setdefault(w, []), s):
+            dups[w] = dups.get(w, 0) + 1
+    gaps, n_gaps, writers = [], 0, {}
+    for w in sorted(runs):
+        r = runs[w]
+        writers[w] = {"stored": stored[w], "first_seq": r[0][0], "last_seq": r[-1][1]}
+        for (_, end), (start, _) in zip(r, r[1:]):
+            n_gaps += start - end - 1
+            gaps.extend({"writer": w, "seq": q} for q in range(end + 1, min(start, end + 1 + MAX_GAPS - len(gaps))))
+    n = sum(stored.values())
+    m = sum(v["last_seq"] - v["first_seq"] + 1 for v in writers.values())
+    T.out({"avos_trace_events_stored_total": n, "avos_trace_events_expected_total": m,
+           "avos_trace_completeness_ratio": n / m if m else 1.0, "gaps": gaps, "gaps_total": n_gaps,
+           "duplicates_total": sum(dups.values()), "unreadable_total": bad, "writers": writers})
+    return 1 if n_gaps or dups or bad else 0
+
+
+if __name__ == "__main__":
+    T.cli(main)

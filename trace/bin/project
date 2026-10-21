@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+"""project chat --run R FILE: one run as an OpenAI Chat Completions conversation for retraining
+(trace/CONTRACT.md §9). Needs a trace ingested with AVOS_TRACE_CONTENT=1.
+
+Order is the host's (ts, writer, seq): each merged llm.call gives its new input messages, then its output; the
+harness tool.call events that follow it become that message's tool_calls; each tool.result a tool message.
+"""
+import argparse
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import lib_trace as T  # noqa: E402
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="project", description=__doc__)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("chat")
+    s.add_argument("--run", required=True)
+    s.add_argument("file")
+    a = ap.parse_args()
+    evs = [ev for _, ev in T.events(a.file) if ev and ev.get("run") == a.run
+           and ev.get("kind") in ("llm.call", "tool.call", "tool.result", "label")]
+    evs.sort(key=lambda e: (e["ts"], e["writer"], e["seq"]))
+    msgs, usage, harness_calls, label, principal = [], {"prompt_tokens": 0, "completion_tokens": 0}, set(), {}, None
+    for e in evs:
+        k = e["kind"]
+        if k == "llm.call" and "role" in e:  # a model call the harness transcript was merged into
+            if "output" not in e:
+                print("project: the trace has no content; ingest it with AVOS_TRACE_CONTENT=1", file=sys.stderr)
+                return 1
+            u = {"prompt_tokens": e["prompt_tokens"], "completion_tokens": e["completion_tokens"]}
+            msgs.extend(dict(m) for m in e.get("input", []))
+            msgs.append({**e["output"], "usage": u})
+            usage = {k: usage[k] + u[k] for k in usage}
+            principal = principal or e["principal"]
+        elif k == "tool.call" and e.get("via") == "harness":
+            harness_calls.add(e["event_id"])
+            msgs[-1].setdefault("tool_calls", []).append(
+                {"id": e["call_id"], "type": "function", "function": {"name": e["tool"], "arguments": json.dumps(e["args"])}})
+        elif k == "tool.result" and e.get("call_ref") in harness_calls:
+            r = e["result"]
+            m = {"role": "tool", "tool_call_id": e["call_id"], "content": r if isinstance(r, str) or r is None else json.dumps(r)}
+            if e.get("error"):
+                m["error"] = True
+            msgs.append(m)
+        elif k == "label":
+            label, principal = e["labels"], e["principal"]
+    if not msgs:
+        print(f"project: no model calls of run {a.run} in {a.file}", file=sys.stderr)
+        return 1
+    T.out({"run": a.run, "principal": principal, "reward": label.get("reward"),
+           "termination_reason": label.get("termination_reason"), "usage": usage, "messages": msgs})
+    return 0
+
+
+if __name__ == "__main__":
+    T.cli(main)
