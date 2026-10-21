@@ -1,0 +1,13 @@
+{
+ "run": "run_coding-slugify_0",
+ "vm": "vm-01",
+ "harness": "mini-swe-agent",
+ "task": "coding/slugify",
+ "status": "done",
+ "http": "200",
+ "wall_ms": 345020,
+ "harness_version": "2.4.6",
+ "tests_passed": true,
+ "exit_status": "Submitted",
+ "api_calls": 27
+}

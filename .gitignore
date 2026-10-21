@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+data/raw/
+*.safetensors
+*.gguf
+
+# Local working files, never published
+/notes/
+.serena/
+.claude/

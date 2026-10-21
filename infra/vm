@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# vm create vm-NN [KEY=VALUE...] | vm destroy vm-NN | vm bench [N]   (run on the host as root)
+# KEY=VALUE pairs go into the VM's MMDS config next to agent.env (e.g. HARNESS=tau2 TASK=retail/0).
+# One Firecracker microVM per name: tap-vm-NN, host 172.16.NN.1/30, guest 172.16.NN.2.
+# M1 vm_boot_ms = `vm create` start -> agent answers GET /health (upper bound on "agent process running").
+# Identity (POC 3): each boot mints a unique VM name vm-NN-xxxxxx and a SPIRE join token (identity/registrar.py).
+set -euo pipefail
+ROOT=/var/lib/avos
+ID=$(dirname "$0")/../identity/registrar.py
+IMG=$ROOT/images
+MEM_MIB=${MEM_MIB:-2048}
+VCPUS=${VCPUS:-1}
+
+net() { # sets N, IP, GW, TAP from a vm-NN name
+  [[ $1 =~ ^vm-([0-9]{2,3})$ ]] || { echo "name must be vm-NN" >&2; exit 2; }
+  N=$((10#${BASH_REMATCH[1]})); ((N >= 1 && N <= 254)) || { echo "NN must be 1..254" >&2; exit 2; }
+  GW=172.16.$N.1 IP=172.16.$N.2 TAP=tap-$1
+}
+
+host_net() { # shared, idempotent: forwarding, NAT out the default interface, no IMDS for guests
+  local out; out=$(ip route show default | awk '{print $5; exit}')
+  sysctl -qw net.ipv4.ip_forward=1
+  iptables -t nat -C POSTROUTING -s 172.16.0.0/16 -o "$out" -j MASQUERADE 2>/dev/null ||
+    iptables -t nat -A POSTROUTING -s 172.16.0.0/16 -o "$out" -j MASQUERADE
+  iptables -C FORWARD -s 172.16.0.0/16 -d 169.254.169.254 -j DROP 2>/dev/null ||
+    iptables -I FORWARD -s 172.16.0.0/16 -d 169.254.169.254 -j DROP
+}
+
+ms() { echo $(($(date +%s%N) / 1000000)); }
+
+create() {
+  local name=$1 t0; t0=$(ms); shift
+  net "$name"
+  # The jailer chroots Firecracker into $dir and drops to uid/gid 10000+N, one per VM.
+  local jail=$ROOT/jail/firecracker/$name dir=$ROOT/jail/firecracker/$name/root uid=$((10000 + N))
+  [ -e "$jail" ] && { echo "$name exists; run: vm destroy $name" >&2; exit 1; }
+  [ -f $ROOT/agent.env ] || { echo "missing $ROOT/agent.env (OPENAI_API_KEY=...)" >&2; exit 1; }
+  mkdir -p "$dir"
+  local vm_id; vm_id=$("$ID" vm-up "$name" "$GW" "$jail/identity.json")
+
+  cp --sparse=always $IMG/rootfs.ext4 "$dir/rootfs.ext4"
+  ln $IMG/vmlinux "$dir/vmlinux"
+  ln $IMG/harness.ext4 "$dir/harness.ext4"
+  # Secrets reach the guest through MMDS, never its disk; this host file is deleted once the agent is up.
+  python3 -c 'import json, sys
+env = dict(l.split("=", 1) for l in open(sys.argv[1]).read().splitlines() + sys.argv[4:] if "=" in l)
+print(json.dumps({"avos": {**env, **json.load(open(sys.argv[3])), "VM_NAME": sys.argv[2]}}))' \
+    $ROOT/agent.env "$name" "$jail/identity.json" "$@" > "$dir/metadata.json"
+  chmod 600 "$dir/metadata.json"
+  chown "$uid:$uid" "$dir/rootfs.ext4" "$dir/metadata.json"
+  local t_disk; t_disk=$(ms)
+
+  host_net
+  ip tuntap add "$TAP" mode tap user "$uid"
+  ip addr add "$GW/30" dev "$TAP"
+  ip link set "$TAP" up
+  # The registrar names the calling VM by source IP, so a guest may only send from its own address.
+  iptables -I INPUT -i "$TAP" ! -s "$IP" -j DROP
+
+  cat > "$dir/config.json" <<EOF
+{
+  "boot-source": {"kernel_image_path": "vmlinux",
+    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off ip=$IP::$GW:255.255.255.252::eth0:off"},
+  "drives": [{"drive_id": "rootfs", "path_on_host": "rootfs.ext4", "is_root_device": true, "is_read_only": false},
+             {"drive_id": "harness", "path_on_host": "harness.ext4", "is_root_device": false, "is_read_only": true}],
+  "network-interfaces": [{"iface_id": "eth0", "guest_mac": "06:00:AC:10:$(printf %02X "$N"):02", "host_dev_name": "$TAP"}],
+  "machine-config": {"vcpu_count": $VCPUS, "mem_size_mib": $MEM_MIB},
+  "mmds-config": {"version": "V2", "network_interfaces": ["eth0"]}
+}
+EOF
+  setsid jailer --id "$name" --exec-file /usr/local/bin/firecracker --uid "$uid" --gid "$uid" \
+    --chroot-base-dir $ROOT/jail --cgroup-version 2 \
+    -- --api-sock fc.sock --config-file config.json --metadata metadata.json \
+    > "$jail/console.log" 2>&1 < /dev/null &
+  echo $! > "$jail/pid"
+
+  until curl -sf -m 1 "http://$IP/health" > /dev/null; do
+    if (($(ms) - t0 > 60000)) || ! kill -0 "$(cat "$jail/pid")" 2>/dev/null; then
+      echo "$name failed to come up; console tail:" >&2; tail -20 "$jail/console.log" >&2; exit 1
+    fi
+    sleep 0.01
+  done
+  local m1=$(($(ms) - t0))
+  rm -f "$dir/metadata.json"
+  printf '{"kind":"vm.boot","ts":"%s","vm":"%s","vm_id":"%s","spiffe_id":"spiffe://avoslab.com/vm/%s","ip":"%s","boot_ms":%d,"disk_ms":%d,"runtime":"firecracker","host":"%s","mem_mib":%d}\n' \
+    "$(date -u +%FT%T.%3NZ)" "$name" "$vm_id" "$vm_id" "$IP" "$m1" $((t_disk - t0)) "$(hostname)" "$MEM_MIB" >> $ROOT/events.jsonl
+  echo "$name ip=$IP m1_ms=$m1 (disk prep $((t_disk - t0)) ms) vm_id=$vm_id"
+}
+
+destroy() {
+  local name=$1 jail=$ROOT/jail/firecracker/$1
+  net "$name"
+  if [ -f "$jail/pid" ]; then
+    local pid; pid=$(cat "$jail/pid")
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+  ip link del "$TAP" 2>/dev/null || true
+  iptables -D INPUT -i "$TAP" ! -s "$IP" -j DROP 2>/dev/null || true
+  [ -f "$jail/identity.json" ] && { "$ID" vm-down "$name" || echo "$name: identity cleanup failed" >&2; }
+  rm -rf "$jail"
+  echo "$name destroyed"
+}
+
+bench() { # M1 over N boots of vm-01, create -> destroy each time
+  local n=${1:-20} out=() i
+  for i in $(seq "$n"); do
+    out+=("$(create vm-01 | grep -oP 'm1_ms=\K[0-9]+')")
+    destroy vm-01 > /dev/null
+    echo "boot $i: ${out[-1]} ms"
+  done
+  printf '%s\n' "${out[@]}" | sort -n | awk '{a[NR]=$1} END {m = NR%2 ? a[(NR+1)/2] : (a[NR/2]+a[NR/2+1])/2;
+    printf "M1 over %d boots: median %s ms, worst %s ms, best %s ms\n", NR, m, a[NR], a[1]}'
+}
+
+case ${1:-} in
+  create) [ -n "${2:-}" ] || { echo "usage: vm create vm-NN [KEY=VALUE...]" >&2; exit 2; }; shift; create "$@" ;;
+  destroy) [ -n "${2:-}" ] || { echo "usage: vm destroy vm-NN" >&2; exit 2; }; destroy "$2" ;;
+  bench) bench "${2:-20}" ;;
+  *) echo "usage: vm create|destroy vm-NN | vm bench [N]" >&2; exit 2 ;;
+esac

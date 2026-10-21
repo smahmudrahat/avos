@@ -1,0 +1,12 @@
+{
+ "run": "run_retail-2_3",
+ "vm": "vm-01",
+ "harness": "tau2",
+ "task": "retail/2",
+ "status": "done",
+ "http": "200",
+ "wall_ms": 69065,
+ "harness_commit": "96a3ef92329baf908ffe9dfe188cea34e8701d2a",
+ "reward": 0.0,
+ "termination_reason": "user_stop"
+}

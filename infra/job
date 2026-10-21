@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# job run <harness> <domain/task>   (run on the host as root)
+# One ephemeral job: fresh microVM -> harness runs one trial -> result copied to the host -> VM destroyed.
+# Teardown waits for the copy-out; the VM is destroyed on every exit path.
+# Output: /var/lib/avos/results/run_<domain>-<task>_<trial>/{result.json | error.log, job.json}.
+# Records name the VM by its per-boot identity (vm_id, vm_spiffe_id) and the harness by its own SPIFFE ID (agent_spiffe_id);
+# `vm` is only the reused network/jail slot.
+set -euo pipefail
+ROOT=/var/lib/avos
+VM=$(dirname "$0")/vm
+TIMEOUT_S=${TIMEOUT_S:-1200}
+
+ms() { echo $(($(date +%s%N) / 1000000)); }
+event() { printf '{"kind":"%s","ts":"%s",%s}\n' "$1" "$(date -u +%FT%T.%3NZ)" "$2" >> $ROOT/events.jsonl; }
+
+run() {
+  local harness=$1 task=$2 t0 n trial run out created ip vm_id ids code status agent # $name stays global for the EXIT trap
+  t0=$(ms)
+  for n in $(seq 1 254); do name=vm-$(printf %02d "$n"); [ -e $ROOT/jail/firecracker/$name ] || break; done
+  for trial in $(seq 0 9999); do run=run_${task/\//-}_$trial; [ -e $ROOT/results/$run ] || break; done
+  out=$ROOT/results/$run && mkdir -p "$out"
+  trap '"$VM" destroy "$name" > /dev/null' EXIT
+
+  created=$("$VM" create "$name" "HARNESS=$harness" "TASK=$task")
+  ip=$(grep -oP 'ip=\K\S+' <<< "$created") vm_id=$(grep -oP 'vm_id=\K\S+' <<< "$created")
+  ids="\"vm\":\"$name\",\"vm_id\":\"$vm_id\",\"vm_spiffe_id\":\"spiffe://avoslab.com/vm/$vm_id\""
+  event session.open "\"run\":\"$run\",$ids,\"harness\":\"$harness\",\"task\":\"$task\""
+
+  while code=$(curl -s -m 10 -o "$out/body" -w '%{http_code}' "http://$ip/result"); [ "$code" = 202 ]; do
+    (($(ms) - t0 < TIMEOUT_S * 1000)) || { code=timeout; break; }
+    sleep 2
+  done
+  if [ "$code" = 200 ]; then mv "$out/body" "$out/result.json"; status=done
+  else mv "$out/body" "$out/error.log" 2>/dev/null || true; status=failed; fi
+  "$VM" destroy "$name" > /dev/null && trap - EXIT
+
+  local wall=$(($(ms) - t0))
+  python3 - "$out" "$run" "$name" "$vm_id" "$harness" "$task" "$status" "$code" "$wall" $ROOT/images/harness.versions.json <<'EOF'
+import json, os, sys
+out, run, vm, vm_id, harness, task, status, http, wall, versions = sys.argv[1:]
+vm_spiffe_id = f"spiffe://avoslab.com/vm/{vm_id}"
+agent = [r["spiffe_id"] for r in map(json.loads, open("/var/lib/avos/events.jsonl"))  # the harness's birth row
+         if r["kind"] == "agent.spawn" and r.get("parent") == vm_spiffe_id and r.get("name") == harness]
+job = {"run": run, "vm": vm, "vm_id": vm_id, "vm_spiffe_id": vm_spiffe_id, "agent_spiffe_id": agent[0] if agent else None,
+       "harness": harness, "task": task, "status": status, "http": http,
+       "wall_ms": int(wall), "harness_version": json.load(open(versions))[harness]}
+if status == "done" and harness == "mini-swe-agent":
+    r = json.load(open(f"{out}/result.json"))
+    job |= {"tests_passed": r["tests_passed"], "exit_status": r["exit_status"],
+            "api_calls": (r["model_stats"] or {}).get("api_calls")}
+elif status == "done":
+    sim = json.load(open(f"{out}/result.json"))["simulations"][0]
+    job |= {"reward": (sim["reward_info"] or {}).get("reward"), "termination_reason": sim["termination_reason"]}
+    if job["reward"] is None:  # the harness ran but reports an infrastructure error (e.g. a model call failed)
+        job |= {"status": "failed", "error": (sim.get("info") or {}).get("error", "")[:300]}
+json.dump(job, open(f"{out}/job.json", "w"), indent=1)
+print(json.dumps(job))
+EOF
+  read -r status agent < <(python3 -c 'import json, sys; j = json.load(open(sys.argv[1])); print(j["status"], j["agent_spiffe_id"])' "$out/job.json")
+  # The harness's own birth/death rows come from the registrar (agent.spawn / agent.exit); this closes the run.
+  event session.close "\"run\":\"$run\",$ids,\"agent_spiffe_id\":\"$agent\",\"status\":\"$status\",\"wall_ms\":$wall"
+  [ "$status" = done ]
+}
+
+case ${1:-} in
+  run) [ $# -eq 3 ] || { echo "usage: job run <harness> <domain/task>" >&2; exit 2; }; run "$2" "$3" ;;
+  *) echo "usage: job run <harness> <domain/task>" >&2; exit 2 ;;
+esac
