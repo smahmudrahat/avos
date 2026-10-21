@@ -1,11 +1,13 @@
 [Unit]
-Description=Avos POC 1 test agent
+Description=Avos guest agent (shim, forwarder, supervisor)
 After=network.target
 
 [Service]
 ExecStart=/usr/bin/python3 /opt/avos/agent.py
 Restart=always
 RestartSec=1
+# The shim nests one cgroup per principal under this service's; systemd must leave that subtree to it.
+Delegate=yes
 
 [Install]
 WantedBy=multi-user.target

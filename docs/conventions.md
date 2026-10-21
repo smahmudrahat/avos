@@ -36,8 +36,8 @@ The fixed choices every component is checked against. A change to anything here 
   `agent.spawn` / `agent.exit` rows carrying `spiffe_id` form the identity ledger.
 
 ## 4. Repository
-- One directory per component: `infra/` (microVMs), `identity/`, `gateway/`, `eval/`, `data/`, `docs/`; later
-  `supervisor/`, `trace/`, `train/` as they are built.
+- One directory per component: `infra/` (microVMs), `identity/`, `gateway/`, `supervisor/`, `eval/`, `data/`,
+  `docs/`; later `trace/`, `train/` as they are built.
 - The `Justfile` has one target per milestone acceptance test (`just poc1`, `just poc2`, ...).
 - Dataset splits live in `data/splits/`; each `data/pocN/` holds that milestone's recorded results.
 

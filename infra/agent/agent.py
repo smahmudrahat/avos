@@ -20,6 +20,10 @@ are just OPENAI_BASE_URL; anything else can use it as an HTTPS proxy). The forwa
 owns the connection, and relays it to the host gateway (gateway/gateway.py) over mTLS with that principal's own SVID;
 root's connections carry the VM's SVID. No model key is in this VM: the gateway attaches it to allowed calls.
 The shim's calls to the registrar also carry the VM's SVID, which only root can read, so agents cannot register.
+
+Supervisor (POC 5): every principal runs in its own cgroup, nested like the identity tree (a sub-agent's cgroup is
+inside its parent's), so freezing or killing one cgroup stops that whole branch and nothing else. The host's
+control table (supervisor/ctl.py) drives it through POST /halt, /resume and /kill on :80, host-only like /spawn.
 """
 import http.client
 import itertools
@@ -84,7 +88,8 @@ VM_UID = 20000  # holds the VM's own SVID
 GATEWAY_ID = "spiffe://avoslab.com/gateway"
 REGISTRAR_ID = "spiffe://avoslab.com/registrar"
 SVID_REFRESH_S = 25  # principals' SVIDs live 60 s; the SPIRE agent rotates them at half-life
-principals = {}  # uid -> registrar's agent.spawn row
+principals = {}  # uid -> registrar's agent.spawn row (+ cgroup: its branch's cgroup directory)
+CG_BASE = "/sys/fs/cgroup" + open("/proc/self/cgroup").read().split("::", 1)[1].strip()  # this service's cgroup
 uids = itertools.count(VM_UID + 1)
 lock = threading.Lock()
 
@@ -132,8 +137,46 @@ def register(name, parent):
     with lock:
         uid = next(uids)
         p = registrar("/spawn", {"name": name, "parent": parent, "uid": uid})
+        above = find(parent)  # a sub-agent's cgroup sits inside its parent's: one freeze covers the branch
+        p["cgroup"] = f"{above['cgroup'] if above else CG_BASE}/{p['id']}"
         principals[uid] = p
     return uid, p
+
+
+def find(spiffe_id):
+    return next((p for p in principals.values() if p["spiffe_id"] == spiffe_id), None)
+
+
+def branch(spiffe_id):
+    return [p["spiffe_id"] for p in principals.values() if p["spiffe_id"] == spiffe_id or p["spiffe_id"].startswith(spiffe_id + "/")]
+
+
+def cgroup(spiffe_id, file):
+    p = find(spiffe_id)
+    if not p:
+        raise LookupError(f"{spiffe_id} is not live here")
+    return f"{p['cgroup']}/{file}"
+
+
+def halt(spiffe_id):
+    t0 = time.time()
+    open(cgroup(spiffe_id, "cgroup.freeze"), "w").write("1")
+    while "frozen 1" not in open(cgroup(spiffe_id, "cgroup.events")).read():  # M6 is measured on this edge
+        if time.time() - t0 > 5:
+            raise TimeoutError("not frozen after 5 s")
+        time.sleep(0.001)
+    return {"freeze_ms": round((time.time() - t0) * 1000, 1), "nodes": branch(spiffe_id)}
+
+
+def resume(spiffe_id):
+    open(cgroup(spiffe_id, "cgroup.freeze"), "w").write("0")
+    return {"nodes": branch(spiffe_id)}
+
+
+def kill(spiffe_id):
+    nodes = branch(spiffe_id)
+    open(cgroup(spiffe_id, "cgroup.kill"), "w").write("1")  # SIGKILL to the whole branch; each exit is ledgered
+    return {"nodes": nodes}
 
 
 def spawn(name, parent, argv):
@@ -150,14 +193,24 @@ def run_principal(uid, p, argv, env=None, cwd=None, out=None):
     fetch = threading.Thread(target=lambda: svid.update(ms=fetch_svid(uid, home, t0)), daemon=True)
     fetch.start()  # in parallel: harnesses never ask for their SVID, and they need not wait for it
     base = {"PATH": "/usr/bin:/bin", "HOME": home, "AVOS_DIR": home, "AVOS_SPAWN": SPAWN_SOCK, "AVOS_T0": str(t0)}
-    rc = subprocess.Popen(argv, user=uid, group=uid, extra_groups=[], env={**base, **(env or {})}, cwd=cwd or home,
-                          stdin=subprocess.DEVNULL, stdout=out, stderr=out and subprocess.STDOUT).wait()
+    # Into its cgroup as root first (Popen's user= would switch before preexec_fn could), then drop to its uid.
+    os.makedirs(p["cgroup"])
+    enter = 'echo $$ > "$0/cgroup.procs" && u=$1 && shift && exec setpriv --reuid="$u" --regid="$u" --clear-groups -- "$@"'
+    rc = subprocess.Popen(["/bin/sh", "-c", enter, p["cgroup"], str(uid), *argv], env={**base, **(env or {})},
+                          cwd=cwd or home, stdin=subprocess.DEVNULL, stdout=out, stderr=out and subprocess.STDOUT).wait()
     fetch.join()  # before /exit deletes the entry
     reason = f"signal {-rc}" if rc < 0 else f"exit {rc}"
     registrar("/exit", {"spiffe_id": p["spiffe_id"], "reason": reason, "svid_ms": svid.get("ms")})
     shutil.rmtree(home, ignore_errors=True)
     with lock:
         del principals[uid]
+    cg = p["cgroup"]
+    while cg != CG_BASE:  # a parent's cgroup goes when its last child has
+        try:
+            os.rmdir(cg)
+        except OSError:
+            break
+        cg = os.path.dirname(cg)
     return rc
 
 
@@ -361,14 +414,20 @@ def serve_forwarder():
 
 
 class Health(BaseHTTPRequestHandler):
+    CONTROL = {"/halt": halt, "/resume": resume, "/kill": kill}
+
     def do_POST(self):
-        if self.path != "/spawn":
+        if self.path != "/spawn" and self.path not in self.CONTROL:
             return self.send_error(404)
-        if self.client_address[0] != ENV["SPIRE_SERVER"]:  # top-level agents come from the host, not from agents
-            return self.reply(403, b'{"error": "top-level spawns come from the host"}')
+        if self.client_address[0] != ENV["SPIRE_SERVER"]:  # spawns and controls come from the host, not from agents
+            return self.reply(403, b'{"error": "top-level spawns and controls come from the host"}')
         try:
             req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            self.reply(200, json.dumps(spawn(req["name"], None, req["argv"])).encode())
+            if self.path == "/spawn":
+                out = spawn(req["name"], None, req["argv"])
+            else:
+                out = self.CONTROL[self.path](req["spiffe_id"])
+            self.reply(200, json.dumps(out).encode())
         except Exception as e:
             self.reply(400, json.dumps({"error": repr(e)}).encode())
 

@@ -18,7 +18,7 @@ Every step is reproducible from this repository: scripts, configuration, pinned 
 | 2. Harnesses | Ephemeral VM per job running τ²-bench and mini-swe-agent end to end | Done |
 | 3. Identity | SPIFFE/SPIRE identity per VM, agent and sub-agent, with a birth/death ledger | Done |
 | 4. Authorization | Per-principal policy at a host gateway; credentials never enter a VM | Done |
-| 5. Supervisor | Stop or cut off any principal by name without disturbing siblings | Planned |
+| 5. Supervisor | Stop, resume, kill or cut off any principal by name without disturbing siblings | Done |
 | 6–9. Trace and labels | Trace schema, audit store, training store, labeling pipeline | Planned |
 | 10–13. Evaluation | Benchmark runs, retraining, comparison with frontier models | Planned |
 
@@ -33,6 +33,8 @@ See [`docs/architecture.md`](docs/architecture.md). In short:
   `spiffe://avoslab.com/vm/vm-01-82ec92/agent/tau2/sub/search`.
 - **Authorization:** a host gateway decides every model call, tool call and network connection with Cedar policies,
   identified by the caller's SVID over mTLS, and attaches upstream credentials only after a call is allowed.
+- **Supervisor:** every principal runs in its own cgroup, nested like its identity; one control table on the host
+  halts, resumes, kills or cuts off any branch by name, with a receipt, in milliseconds.
 
 ## Requirements
 
@@ -52,6 +54,7 @@ just poc1            # acceptance test: create, reach, destroy a microVM
 just job tau2 retail/0
 just poc3            # identity acceptance test; `just who` shows the principal tree
 just poc4            # authorization acceptance test
+just poc5            # supervisor acceptance test; `just ctl ls`, `just ctl halt <name>`
 ```
 
 ## Repository layout
@@ -61,6 +64,7 @@ just poc4            # authorization acceptance test
 | `infra/` | microVM lifecycle (`vm`), jobs (`job`), guest image, guest agent and spawner shim |
 | `identity/` | SPIRE Server configuration, installer, registrar |
 | `gateway/` | authorization gateway and policies (milestone 4) |
+| `supervisor/` | control table: halt, resume, kill, cut by name (milestone 5) |
 | `eval/` | benchmark split tooling and coding tasks |
 | `data/` | dataset splits and per-milestone results |
 | `docs/` | architecture, conventions, metrics, pinned versions |

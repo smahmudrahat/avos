@@ -151,3 +151,72 @@ poc4:
     echo "guest agent (shim + forwarder) RSS: $(vm 1 'ps -o rss=,args= -C python3 | grep /agent.py' | awk '{print int($1/1024)}') MB"
     echo "== 2: M5"
     sudo gateway/gateway.py stats "$vm_id" "$vm2_id"
+
+# Host: the control table (`just ctl ls`, `just ctl halt ag_1234`, ...)
+ctl *args:
+    sudo supervisor/ctl.py {{args}}
+
+# Host: POC 5 done tests 1-8 on vm-01 (vm-02 holds a sibling in another VM), then M6 over N halts and M7
+poc5 n="10":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    vm() { local n=$1; shift; sudo ssh -q -i /var/lib/avos/images/vm_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@172.16.$n.2 "$@"; }
+    spawn() { curl -sf -X POST http://172.16.$1.2/spawn -d "{\"name\":\"$2\",\"argv\":[\"/usr/bin/python3\",\"/opt/avos/demo_agent.py\",$3]}" | python3 -c 'import json, sys; print(json.load(sys.stdin)["spiffe_id"])'; }
+    last() { vm $1 "journalctl -o cat -u avos-agent | grep '\"tick\"' | grep '$2' | tail -1" | python3 -c 'import json, sys; t = json.loads(sys.stdin.readline()); print(t["tick"], t.get("gw", ""), t.get("policy", ""))'; }
+    frozen() { vm 1 "cat /sys/fs/cgroup/system.slice/avos-agent.service/$1/cgroup.events" | tr '\n' ' '; echo; }
+    ctl() { sudo supervisor/ctl.py "$@"; }
+    sudo gateway/gateway.py check
+    sudo rm -f /var/lib/avos/cut.json
+    vm1=$(sudo infra/vm create vm-01 | tee /dev/stderr | grep -oP 'vm_id=\K\S+')
+    vm2=$(sudo infra/vm create vm-02 | grep -oP 'vm_id=\K\S+')
+    trap 'sudo infra/vm destroy vm-01; sudo infra/vm destroy vm-02' EXIT
+    tick='"--tick","0.05","--sleep","400"'
+    echo "== tree: vm-01: A -> B -> B1, support, D, G, H; vm-02: E, J (all ticking every 50 ms; G, H, J are never named)"
+    A=$(spawn 1 A "$tick,\"--child\",\"B=--tick 0.05 --sleep 400 --child 'B1=--tick 0.05 --sleep 400'\"")
+    C=$(spawn 1 support "$tick"); D=$(spawn 1 D "$tick"); E=$(spawn 2 E "$tick")
+    spawn 1 G "$tick" > /dev/null; spawn 1 H "$tick" > /dev/null; spawn 2 J "$tick" > /dev/null
+    B="$A/sub/B"
+    timeout 20 bash -c "until sudo identity/registrar.py who | grep -q sub/B1; do sleep 0.2; done"; sleep 3
+    ctl ls
+    b_dir=$(vm 1 "cd /sys/fs/cgroup/system.slice/avos-agent.service && ls -d */*/ | head -1 | sed 's:/$::'")   # A's id/B's id
+    b1_dir=$(vm 1 "cd /sys/fs/cgroup/system.slice/avos-agent.service && ls -d */*/*/ | head -1 | sed 's:/$::'")
+    echo "== 1: halt B by name; B and B1 freeze, the rest keep ticking"
+    ctl halt "$B"
+    echo "B: $(frozen $b_dir) B1: $(frozen $b1_dir)"
+    b_seq=$(last 1 'sub/B"'); sleep 2; echo "B tick while halted: $b_seq -> $(last 1 'sub/B"') (same = frozen)"
+    for who in 'agent/A"' agent/support agent/D; do echo "vm-01 $who: $(last 1 "$who")"; done; echo "vm-02 E: $(last 2 agent/E)"
+    echo "== 2: resume B; no seq gap"
+    ctl resume "$B"; sleep 1; echo "B: $(frozen $b_dir) now at tick $(last 1 'sub/B"')"
+    echo "== 3: $(( {{n}} )) halt/resume repetitions on B (M6)"
+    for i in $(seq {{n}}); do ctl halt "$B" | head -1; sleep 0.5; ctl resume "$B" > /dev/null; sleep 0.5; done
+    echo "== 6: in-flight: F starts a long model call; halted mid-call, its answer is dropped"
+    model=$(sudo grep -oP '^MODEL=\K.*' /var/lib/avos/agent.env)
+    F=$(spawn 1 F "\"--slow-llm\",\"$model\",\"--tick\",\"0.05\",\"--sleep\",\"30\""); sleep 1.5
+    ctl halt "$F"
+    echo "waiting for the upstream answer to reach the gateway while F is frozen..."
+    timeout 150 bash -c "until sudo grep '\"kind\": \"llm.call\"' /var/lib/avos/events.jsonl | grep -q '$F\"'; do sleep 0.5; done"
+    sudo grep '"kind": "llm.call"' /var/lib/avos/events.jsonl | grep "$F\"" | tail -1 | grep -oE '"status": [0-9]+|"ms": [0-9]+|"completion_tokens": [0-9]+|"dropped": \w+' | tr '\n' ' '; echo
+    ctl resume "$F"; sleep 1.5
+    vm 1 "journalctl -o cat -u avos-agent | grep agent/F | grep llm:" | cut -c1-200
+    echo "== 6: network cut of support: its refunds flip to 403 naming the receipt; it keeps ticking; others unchanged"
+    ctl cut "$C"; sleep 1.5; echo "support: $(last 1 agent/support)"; echo "D: $(last 1 agent/D)"
+    ctl uncut "$C"; sleep 1.5; echo "support after uncut: $(last 1 agent/support)"
+    echo "== 5: kill D; it exits with signal 9, entry gone, A still ticking"
+    ctl kill "$D"; sleep 1; just who | grep -E 'agent/D|agent/A'; echo "A: $(last 1 'agent/A"')"
+    echo "== 7: pause vm-02 by name; E stops, vm-01 unaffected; resume"
+    e_seq=$(last 2 agent/E); ctl halt "$vm2"; sleep 2; echo "A during vm-02 pause: $(last 1 'agent/A"')"
+    ctl resume "$vm2"; sleep 0.2; echo "E: $e_seq before the pause, $(last 2 agent/E) 2 s later (about 4 ticks = it was paused)"
+    echo "== 8: an agent cannot use the controls"
+    a_uid=$(sudo grep '"agent.spawn"' /var/lib/avos/events.jsonl | grep "\"$A\"" | tail -1 | python3 -c 'import json, sys; print(json.loads(sys.stdin.read())["uid"])')
+    echo "agent -> POST /halt: $(vm 1 "setpriv --reuid=$a_uid --regid=$a_uid --clear-groups curl -s -m 5 http://172.16.1.2/halt -d '{\"spiffe_id\":\"$B\"}'")"
+    echo "agent -> own cgroup.freeze: $(vm 1 "setpriv --reuid=$a_uid --regid=$a_uid --clear-groups sh -c 'echo 1 > /sys/fs/cgroup/system.slice/avos-agent.service/$b_dir/cgroup.freeze'" 2>&1 | tail -1)"
+    echo "== M6 / M7"
+    { vm 1 "journalctl -o cat -u avos-agent | grep '\"tick\"'"; vm 2 "journalctl -o cat -u avos-agent | grep '\"tick\"'"; } > /tmp/poc5-ticks.jsonl
+    ctl stats /tmp/poc5-ticks.jsonl --tick 0.05
+    echo "== receipts"
+    sudo python3 -c 'import json, sys
+    for r in map(json.loads, open("/var/lib/avos/events.jsonl")):
+        if r["kind"] in ("halt", "resume") and r.get("vm_id") in sys.argv[1:]:
+            print(r["receipt"], r["kind"].ljust(6), r["action"].ljust(10), r["target"].split("/vm/")[1].ljust(50), len(r["nodes"]), "nodes", r["ms"], "ms")' "$vm1" "$vm2"
+    sudo gateway/gateway.py stats "$vm1" "$vm2"
+    echo "cgroups in vm-01: $(vm 1 'ls -d /sys/fs/cgroup/system.slice/avos-agent.service/*/ 2>/dev/null | wc -l') (one per live top-level agent: A, support, G, H, F)"

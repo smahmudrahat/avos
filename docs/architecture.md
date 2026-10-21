@@ -7,15 +7,15 @@ that can later train an open-weight model.
 ```
                          host
  ┌───────────────────────────────────────────────────────────────────────┐
- │  SPIRE Server ── registrar ── events.jsonl ── policy (Cedar)          │
- │        ▲            ▲              ▲              │                   │
- │        │            │              │       ┌──────▼──────┐            │
+ │  SPIRE Server ── registrar ── events.jsonl ── policy (Cedar)  ctl     │
+ │        ▲            ▲              ▲              │        (control  │
+ │        │            │              │       ┌──────▼──────┐  table)   │
  │        │            │              └───────┤   gateway   ├──► model APIs, tools,
  │        │            │                      └──────▲──────┘     allowed hosts
- │  ┌─────┼────────────┼── microVM ──────────────────┼─────────────────┐ │
- │  │ SPIRE Agent   spawner shim        egress forwarder (root)        │ │
- │  │      ▲             │                     ▲                       │ │
- │  │      └── SVIDs ──  agent ── sub-agent ───┘ (only route out)      │ │
+ │  ┌─────┼────────────┼── microVM ──────────────────┼────────┼────────┐ │
+ │  │ SPIRE Agent   spawner shim = supervisor   egress forwarder (root) │ │
+ │  │      ▲             │  (one cgroup per principal)  ▲               │ │
+ │  │      └── SVIDs ──  agent ── sub-agent ────────────┘ (only route out)│ │
  │  └──────────────────────────────────────────────────────────────────┘ │
  └───────────────────────────────────────────────────────────────────────┘
 ```
@@ -119,8 +119,48 @@ $200, a refund-manager agent up to $1,000; everything not permitted is denied.
 tools inside the harness process, so its tool calls cannot be gated by any network component; they are covered by
 the harness's own policy, and gateway-hosted tools are used for the acceptance test.
 
-## 5. Planned
-- **Supervisor:** stop, resume or cut off the network of any principal by name, without disturbing its siblings.
+## 5. Supervisor (`supervisor/`)
+
+### 5.1 Model
+Every principal is also a node in a **supervision tree**: the shim starts it in its own cgroup (v2), nested inside
+its parent's cgroup exactly as its SPIFFE ID is nested inside its parent's. Stopping a node therefore stops its whole
+branch, including anything it forked itself, and nothing else. The control table on the host (`supervisor/ctl.py`)
+resolves a name to the VM, the cgroup and the SPIFFE prefix, and acts through three enforcement points:
+
+| Verb | Agent or sub-agent | VM | Network |
+|---|---|---|---|
+| `halt` / `resume` | `cgroup.freeze` 1/0 on its cgroup, in the guest; the supervisor waits for `cgroup.events: frozen 1` | Firecracker `PATCH /vm Paused/Resumed` | the gateway refuses the branch while it is halted |
+| `kill` | `cgroup.kill`; each death is ledgered as `agent.exit (signal 9)` and its SPIRE entry deleted | `infra/vm destroy` | |
+| `cut` / `uncut` | | | the gateway refuses every request from the branch (`cut.json`, by SPIFFE prefix) |
+
+Every command writes one `halt` or `resume` row to `events.jsonl` with a receipt (`hr_xxxx`), who issued it, the
+target, the nodes under it and the time it took; `ctl.py ls` shows each live principal's state and receipt.
+
+Three properties are deliberate:
+- **Out of band.** The agent is never asked to stop. The freezer acts on the kernel's scheduler, the kill switch on
+  the gateway; a process cannot ignore, delay or undo either. Controls come only from the host (`POST /halt` on the
+  guest refuses any other caller; cgroup files are root-owned).
+- **In-flight answers are dropped.** The gateway checks the kill switch before it forwards a request *and* before it
+  returns a response. A model answer that arrives for a branch halted or cut mid-call is not delivered; the
+  `llm.call` row records `dropped: true` and the receipt.
+- **No central hot path.** Names are hierarchical and resolved on the host that runs the VM; a stop costs one write
+  per branch, whatever the size of the fleet.
+
+Known limits (tech debt, details in `data/poc5/README.md`): an open `CONNECT` tunnel is not torn down by a halt or
+cut, because only model calls and tool results are re-checked before delivery; and a halt does not free memory, since
+the freezer only stops scheduling.
+
+### 5.2 Acceptance test (`just poc5`)
+1. Halt a sub-agent by name: it and its children freeze; the parent, siblings and the other VM keep ticking.
+2. Resume: it continues with no gap in its sequence.
+3. Ten halt/resume repetitions: M6 (command → `frozen 1`) median and worst ≤ 500 ms.
+4. M7 = 0: no tick of a never-named principal lost, delayed or failed during any control.
+5. Kill by name: `agent.exit (signal 9)`, entry gone, the rest unaffected.
+6. Cut by name: its calls get 403 naming the receipt, it keeps running; an answer in flight at a halt is dropped.
+7. Pause a VM by name; the other VM is unaffected; resume.
+8. An agent cannot halt anything: `POST /halt` from inside is refused, writing a cgroup file is `Permission denied`.
+
+## 6. Planned
 - **Trace:** one schema for audit ("what did principal X do") and for training ("which inputs led to which result").
 - **Labeling and training:** automated checks, open-weight judges, human review; LoRA retraining on passed runs.
 - **Evaluation:** full held-out runs with pass^k, cost and latency, compared with frontier-model baselines.

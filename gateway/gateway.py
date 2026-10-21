@@ -10,6 +10,10 @@ and writes one authz.decision row per decision to /var/lib/avos/events.jsonl.
   POST /tools/<name>      tool.call    Tool::<name>        demo tools served here (issue_refund)
   CONNECT host:port       net.connect  Host::<host:port>   tunnelled if allowed (no host is, by default)
 
+Kill switch (POC 5): supervisor/ctl.py writes the halted, killed or cut branches to /var/lib/avos/cut.json
+({spiffe prefix: {receipt, state}}). A request from such a branch is denied before Cedar, and a response for a
+branch that was halted or cut while its call was in flight is dropped instead of delivered.
+
   gateway.py serve        mTLS on :8443
   gateway.py check        assert the policy's expected decisions (no host needed)
   gateway.py stats [VM]...   M5 authz_attributable_denials, llm.call totals
@@ -53,6 +57,19 @@ def load_policies():
 
 
 POLICIES, POLICY_IDS = load_policies()
+CUT = f"{ROOT}/cut.json"
+cut = {"mtime": None, "table": {}}
+
+
+def cut_for(spiffe_id):
+    """The kill-switch entry covering this principal (itself or an ancestor), or None. Re-read when the file changes."""
+    try:
+        mtime = os.stat(CUT).st_mtime_ns
+        if mtime != cut["mtime"]:
+            cut.update(mtime=mtime, table=json.load(open(CUT)))
+    except FileNotFoundError:
+        cut.update(mtime=None, table={})
+    return next((v for k, v in cut["table"].items() if spiffe_id == k or spiffe_id.startswith(k + "/")), None)
 
 
 def now():
@@ -158,10 +175,23 @@ class Handler(BaseHTTPRequestHandler):
                 emit("authz.decision", principal=self.spiffe_id, vm_id=self.vm_id, action=action, resource=resource,
                      args=args, decision="deny", policy_ids=["vm-binding"], errors=[])
                 return self.deny(f"{self.spiffe_id} does not belong to the calling VM ({self.vm_id})", ["vm-binding"], args)
+            if c := cut_for(self.spiffe_id):
+                return self.cut_off(action, resource, args, c)
             ok, ids = decide(self.spiffe_id, action, resource, args, vm_id)
             return ok or self.deny(f"{action} on {resource} not permitted", ids, args)
         except PermissionError as e:
             return self.deny(str(e), [], args)
+
+    def cut_off(self, action, resource, args, c):
+        ids = [c["state"], c["receipt"]]
+        emit("authz.decision", principal=self.spiffe_id, vm_id=self.vm_id, action=action, resource=resource,
+             args=args, decision="deny", policy_ids=ids, errors=[])
+        return self.deny(f"{c['state']} by {c['receipt']}", ids, args)
+
+    def still_allowed(self, action, resource, args):
+        # A halt or cut that landed while the call was upstream: the answer is not delivered (nor is it kept).
+        c = cut_for(self.spiffe_id)
+        return not c or self.cut_off(action, resource, args, c)
 
     def deny(self, why, ids, args):
         self.reply(403, {"error": why, "principal": self.spiffe_id, "policy_ids": ids, "args": args})
@@ -183,17 +213,20 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError(f"arguments must be {', '.join(f'{k}: {t.__name__}' for k, t in types.items())}")
         except ValueError as e:
             return self.reply(400, {"error": str(e)})
-        if self.allowed("tool.call", f"Tool::{json.dumps(m[1])}", args):
+        resource = f"Tool::{json.dumps(m[1])}"
+        if self.allowed("tool.call", resource, args):
             result = fn(args)
             emit("tool.call", principal=self.spiffe_id, vm_id=self.vm_id, tool=m[1], args=args, result=result)
-            self.reply(200, result)
+            if self.still_allowed("tool.call", resource, args):
+                self.reply(200, result)
 
     def llm(self, body):
         try:
             model = json.loads(body)["model"]
         except (ValueError, KeyError, TypeError):
             return self.reply(400, {"error": "body must be JSON with a model"})
-        if not self.allowed("llm.call", f"Model::{json.dumps(model)}", {}):
+        resource = f"Model::{json.dumps(model)}"
+        if not self.allowed("llm.call", resource, {}):
             return
         t0 = time.time()
         # Limit: the upstream answer is read whole, so a streamed reply reaches the agent in one piece.
@@ -211,10 +244,12 @@ class Handler(BaseHTTPRequestHandler):
             usage = json.loads(out).get("usage") or {}
         except (ValueError, AttributeError):
             usage = {}
+        delivered = self.still_allowed("llm.call", resource, {})
         emit("llm.call", principal=self.spiffe_id, vm_id=self.vm_id, model=model, status=code,
              ms=round((time.time() - t0) * 1000), prompt_tokens=usage.get("prompt_tokens"),
-             completion_tokens=usage.get("completion_tokens"))
-        self.reply(code, out, ctype)
+             completion_tokens=usage.get("completion_tokens"), dropped=not delivered)
+        if delivered:
+            self.reply(code, out, ctype)
 
     def do_CONNECT(self):
         if not HOSTPORT.fullmatch(self.path):
@@ -231,6 +266,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.flush()
         up.settimeout(None)
+        # Limit: a halt or cut after this point does not close the tunnel (data/poc5/README.md, tech debt).
         pipe(self.connection, up)
         self.close_connection = True
 
@@ -296,7 +332,12 @@ def check():
             raise AssertionError(bad)
         except PermissionError:
             pass
-    print(f"policy check: {len(cases)} decisions as expected")
+    global CUT
+    CUT = f"/tmp/avos-cut-check-{os.getpid()}.json"
+    json.dump({f"{vm}/agent/support": {"receipt": "hr_test", "state": "cut"}}, open(CUT, "w"))
+    assert cut_for(f"{vm}/agent/support/sub/x")["receipt"] == "hr_test" and cut_for(f"{vm}/agent/supporter") is None
+    os.remove(CUT)
+    print(f"policy check: {len(cases)} decisions as expected; kill switch matches by path prefix")
 
 
 if __name__ == "__main__":
