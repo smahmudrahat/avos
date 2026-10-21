@@ -5,7 +5,7 @@
   (202 while running, 200 + result file when done, 500 + log tail when failed).
 
 Config comes from Firecracker MMDS under /avos (set by `vm create`, never written to disk):
-VM_NAME, OPENAI_API_KEY, OPENAI_BASE_URL, MODEL, INTERVAL_S; job mode adds HARNESS
+VM_NAME, MODEL, INTERVAL_S; job mode adds HARNESS
 (tau2 | mini-swe-agent), TASK (retail/0 | coding/slugify), JUDGE_MODEL, and optional USER_MODEL, SEED.
 Identity (POC 3, from identity/registrar.py vm-up): VM_ID, JOIN_TOKEN, SPIRE_BUNDLE, SPIRE_SERVER, REGISTRAR.
 
@@ -14,13 +14,21 @@ reused in this VM) and a registration entry selecting that uid; the shim fetches
 uid (M4) and waits on it to record its death. Top-level agents: POST /spawn on :80 (from the host) or the job;
 sub-agents: one JSON line on /run/avos/spawn.sock, where the caller is known by its uid.
 The VM itself holds an SVID for its own ID in /run/avos/vm, fetched as uid 20000 (no other process runs as it).
+
+Egress forwarder (POC 4): the only way out of the VM. Every principal talks plain HTTP to 127.0.0.1:8090 (model calls
+are just OPENAI_BASE_URL; anything else can use it as an HTTPS proxy). The forwarder names the caller by the uid that
+owns the connection, and relays it to the host gateway (gateway/gateway.py) over mTLS with that principal's own SVID;
+root's connections carry the VM's SVID. No model key is in this VM: the gateway attaches it to allowed calls.
+The shim's calls to the registrar also carry the VM's SVID, which only root can read, so agents cannot register.
 """
+import http.client
 import itertools
 import json
 import os
 import shutil
 import socket
 import socketserver
+import ssl
 import struct
 import subprocess
 import threading
@@ -47,7 +55,8 @@ def mmds_config():
 
 ENV = mmds_config()
 VM = ENV.get("VM_NAME", "unknown")
-BASE = ENV.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+FWD_PORT = 8090
+BASE = f"http://127.0.0.1:{FWD_PORT}/v1"  # the gateway forwards model calls upstream with the key
 MODEL = ENV.get("MODEL", "gpt-5.4-nano")
 INTERVAL = float(ENV.get("INTERVAL_S", "10"))
 START = time.time()
@@ -72,6 +81,9 @@ plugins {
 """
 SPAWN_SOCK = "/run/avos/spawn.sock"
 VM_UID = 20000  # holds the VM's own SVID
+GATEWAY_ID = "spiffe://avoslab.com/gateway"
+REGISTRAR_ID = "spiffe://avoslab.com/registrar"
+SVID_REFRESH_S = 25  # principals' SVIDs live 60 s; the SPIRE agent rotates them at half-life
 principals = {}  # uid -> registrar's agent.spawn row
 uids = itertools.count(VM_UID + 1)
 lock = threading.Lock()
@@ -85,15 +97,22 @@ def start_spire_agent():
 
 
 def registrar(path, body):
-    req = urllib.request.Request(ENV["REGISTRAR"] + path, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+    c = http.client.HTTPSConnection(ENV["SPIRE_SERVER"], 8082, context=client_ctx(0), timeout=10)
     try:
-        return json.load(urllib.request.urlopen(req, timeout=10))
-    except urllib.error.HTTPError as e:
-        raise ValueError(json.load(e)["error"]) from None
+        c.request("POST", path, json.dumps(body), {"Content-Type": "application/json"})
+        if dict(c.sock.getpeercert().get("subjectAltName", ())).get("URI") != REGISTRAR_ID:
+            raise ValueError("registrar presented the wrong SPIFFE ID")
+        r = c.getresponse()
+        out = json.load(r)
+    finally:
+        c.close()
+    if r.status != 200:
+        raise ValueError(out["error"])
+    return out
 
 
 def private_dir(path, uid):
-    os.makedirs(path, 0o700)
+    os.makedirs(path, 0o700, exist_ok=True)  # exists already only for /run/avos/vm after a service restart
     os.chown(path, uid, uid)
     return path
 
@@ -145,7 +164,7 @@ def run_principal(uid, p, argv, env=None, cwd=None, out=None):
 def vm_svid():
     # Limit: fetched once (TTL 1 h, longer than any job); re-fetch before expiry if VMs start living longer.
     t0 = time.time()
-    ms = fetch_svid(VM_UID, private_dir("/run/avos/vm", VM_UID), t0)
+    ms = fetch_svid(VM_UID, "/run/avos/vm", t0)
     state["vm_svid"] = {"spiffe_id": ENV["VM_SPIFFE_ID"], "ms": ms} if ms is not None else "none within 30 s"
 
 
@@ -176,7 +195,7 @@ def call_model():
     req = urllib.request.Request(
         f"{BASE}/chat/completions",
         data=json.dumps({"model": MODEL, "messages": [{"role": "user", "content": "Reply with one word: alive"}]}).encode(),
-        headers={"Authorization": f"Bearer {ENV['OPENAI_API_KEY']}", "Content-Type": "application/json"},
+        headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.load(r)["choices"][0]["message"]["content"]
@@ -210,8 +229,7 @@ def tau2_job():
     # The base URL env vars are LiteLLM's default endpoint: the NL-assertion judge (TAU2_NL_JUDGE, patched in at
     # image build) takes no llm_args, and anything else that skips them fails at our provider instead of
     # sending the key to OpenAI.
-    env = {"PATH": "/usr/bin:/bin", "HOME": WORK, "TAU2_DATA_DIR": data, "OPENAI_API_KEY": ENV["OPENAI_API_KEY"],
-           "OPENAI_BASE_URL": BASE, "OPENAI_API_BASE": BASE, "TAU2_NL_JUDGE": f"openai/{ENV['JUDGE_MODEL']}"}
+    env = {**HARNESS_ENV, "HOME": WORK, "TAU2_DATA_DIR": data, "TAU2_NL_JUDGE": f"openai/{ENV['JUDGE_MODEL']}"}
     return cmd, env, lambda: f"{data}/simulations/job/results.json"
 
 
@@ -225,8 +243,7 @@ def mini_swe_agent_job():
            "-m", f"openai/{MODEL}", "-t", open(f"{src}/TASK.md").read(), "-o", f"{WORK}/trajectory.json",
            "-c", "mini.yaml", "-c", f"environment.cwd={work}", "-c", "model.model_kwargs.temperature=0",
            "-c", "agent.step_limit=30"]
-    env = {"PATH": "/usr/bin:/bin", "HOME": WORK, "OPENAI_API_KEY": ENV["OPENAI_API_KEY"],
-           "OPENAI_BASE_URL": BASE, "OPENAI_API_BASE": BASE, "MSWEA_COST_TRACKING": "ignore_errors",
+    env = {**HARNESS_ENV, "HOME": WORK, "MSWEA_COST_TRACKING": "ignore_errors",
            "MSWEA_SILENT_STARTUP": "1", "MSWEA_CONFIGURED": "true", "MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT": "3"}
 
     def finish():
@@ -247,6 +264,10 @@ def mini_swe_agent_job():
 
 
 HARNESSES = {"tau2": tau2_job, "mini-swe-agent": mini_swe_agent_job}
+# LiteLLM wants some key; the real one is attached by the gateway. Its model price map would be fetched from the
+# internet at import, which no VM can reach.
+HARNESS_ENV = {"PATH": "/usr/bin:/bin", "OPENAI_API_KEY": "via-gateway", "OPENAI_BASE_URL": BASE,
+               "OPENAI_API_BASE": BASE, "LITELLM_LOCAL_MODEL_COST_MAP": "True"}
 
 
 def run_job():
@@ -266,10 +287,85 @@ def run_job():
     state["job"] = "done" if ok else "failed"
 
 
+svids = {}  # uid -> (client TLS context with its SVID, fetched at)
+
+
+def peer_uid(port):
+    # The client end of a loopback connection to the forwarder, as listed in /proc/net/tcp, carries its owner's uid.
+    local, remote = f"0100007F:{port:04X}", f"0100007F:{FWD_PORT:04X}"
+    for line in open("/proc/net/tcp").readlines()[1:]:
+        f = line.split()
+        if f[1] == local and f[2] == remote:
+            return int(f[7])
+
+
+def client_ctx(uid):
+    if uid == 0:
+        path, as_uid = "/run/avos/vm", VM_UID  # root is the VM's own control plane: it acts as the VM
+    elif uid in principals:
+        path, as_uid = f"/run/avos/{principals[uid]['id']}", uid
+    else:
+        return None
+    ctx, at = svids.get(uid, (None, 0))
+    if time.time() - at > SVID_REFRESH_S:
+        if fetch_svid(as_uid, path, time.time()) is None:
+            return None
+        ctx = ssl.create_default_context(cafile=f"{path}/bundle.0.pem")
+        ctx.check_hostname = False  # the gateway is checked by SPIFFE ID below, not by DNS name
+        ctx.load_cert_chain(f"{path}/svid.0.pem", f"{path}/svid.0.key")
+        svids[uid] = (ctx, time.time())
+    return ctx
+
+
+def pipe(a, b):
+    """Copy bytes both ways until either side closes."""
+    def copy(src, dst):
+        try:
+            while data := src.recv(65536):
+                dst.sendall(data)
+        except OSError:
+            pass
+        finally:
+            for s in (src, dst):
+                try:
+                    s.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+    t = threading.Thread(target=copy, args=(b, a), daemon=True)
+    t.start()
+    copy(a, b)
+    t.join()
+
+
+class Forward(socketserver.BaseRequestHandler):
+    def handle(self):
+        uid = peer_uid(self.client_address[1])
+        ctx = client_ctx(uid) if uid is not None else None
+        if not ctx:
+            body = json.dumps({"error": f"uid {uid} is not a principal"}).encode()
+            self.request.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: %d\r\n"
+                                 b"Connection: close\r\n\r\n%s" % (len(body), body))
+            return
+        with ctx.wrap_socket(socket.create_connection((ENV["SPIRE_SERVER"], 8443), timeout=10)) as up:
+            san = dict(up.getpeercert().get("subjectAltName", ()))
+            if san.get("URI") != GATEWAY_ID:
+                return
+            up.settimeout(None)
+            pipe(self.request, up)
+
+
+def serve_forwarder():
+    socketserver.ThreadingTCPServer.allow_reuse_address = True
+    socketserver.ThreadingTCPServer.daemon_threads = True
+    socketserver.ThreadingTCPServer(("127.0.0.1", FWD_PORT), Forward).serve_forever()
+
+
 class Health(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path != "/spawn":
             return self.send_error(404)
+        if self.client_address[0] != ENV["SPIRE_SERVER"]:  # top-level agents come from the host, not from agents
+            return self.reply(403, b'{"error": "top-level spawns come from the host"}')
         try:
             req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             self.reply(200, json.dumps(spawn(req["name"], None, req["argv"])).encode())
@@ -301,8 +397,10 @@ class Health(BaseHTTPRequestHandler):
 
 
 os.makedirs("/run/avos", exist_ok=True)
+private_dir("/run/avos/vm", VM_UID)
 start_spire_agent()
 threading.Thread(target=vm_svid, daemon=True).start()
 threading.Thread(target=serve_shim, daemon=True).start()
+threading.Thread(target=serve_forwarder, daemon=True).start()
 threading.Thread(target=run_job if "job" in state else loop, daemon=True).start()
 ThreadingHTTPServer(("0.0.0.0", 80), Health).serve_forever()

@@ -17,13 +17,17 @@ net() { # sets N, IP, GW, TAP from a vm-NN name
   GW=172.16.$N.1 IP=172.16.$N.2 TAP=tap-$1
 }
 
-host_net() { # shared, idempotent: forwarding, NAT out the default interface, no IMDS for guests
-  local out; out=$(ip route show default | awk '{print $5; exit}')
-  sysctl -qw net.ipv4.ip_forward=1
-  iptables -t nat -C POSTROUTING -s 172.16.0.0/16 -o "$out" -j MASQUERADE 2>/dev/null ||
-    iptables -t nat -A POSTROUTING -s 172.16.0.0/16 -o "$out" -j MASQUERADE
-  iptables -C FORWARD -s 172.16.0.0/16 -d 169.254.169.254 -j DROP 2>/dev/null ||
-    iptables -I FORWARD -s 172.16.0.0/16 -d 169.254.169.254 -j DROP
+host_net() { # shared, idempotent. Guests have no route out (POC 4): the gateway on :8443 is their only exit.
+  # On the host they reach only SPIRE (8081), the registrar (8082) and the gateway (8443), plus replies to the host.
+  # The host never routes guest traffic (ip_forward stays off); this rule holds even if something turns it on.
+  iptables -C FORWARD -s 172.16.0.0/16 -j REJECT 2>/dev/null || iptables -I FORWARD -s 172.16.0.0/16 -j REJECT
+  if ! iptables -n -L AVOS-IN > /dev/null 2>&1; then
+    iptables -N AVOS-IN
+    iptables -A AVOS-IN -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    iptables -A AVOS-IN -p tcp -m multiport --dports 8081,8082,8443 -j ACCEPT
+    iptables -A AVOS-IN -j DROP
+  fi
+  iptables -C INPUT -i tap-+ -j AVOS-IN 2>/dev/null || iptables -I INPUT -i tap-+ -j AVOS-IN
 }
 
 ms() { echo $(($(date +%s%N) / 1000000)); }
@@ -34,7 +38,8 @@ create() {
   # The jailer chroots Firecracker into $dir and drops to uid/gid 10000+N, one per VM.
   local jail=$ROOT/jail/firecracker/$name dir=$ROOT/jail/firecracker/$name/root uid=$((10000 + N))
   [ -e "$jail" ] && { echo "$name exists; run: vm destroy $name" >&2; exit 1; }
-  [ -f $ROOT/agent.env ] || { echo "missing $ROOT/agent.env (OPENAI_API_KEY=...)" >&2; exit 1; }
+  [ -f $ROOT/agent.env ] || { echo "missing $ROOT/agent.env (MODEL=...); run just push" >&2; exit 1; }
+  ! grep -q _KEY= $ROOT/agent.env || { echo "$ROOT/agent.env holds a key; keys belong in gateway.env" >&2; exit 1; }
   mkdir -p "$dir"
   local vm_id; vm_id=$("$ID" vm-up "$name" "$GW" "$jail/identity.json")
 
@@ -54,7 +59,7 @@ print(json.dumps({"avos": {**env, **json.load(open(sys.argv[3])), "VM_NAME": sys
   ip tuntap add "$TAP" mode tap user "$uid"
   ip addr add "$GW/30" dev "$TAP"
   ip link set "$TAP" up
-  # The registrar names the calling VM by source IP, so a guest may only send from its own address.
+  # The registrar and the gateway name the calling VM by source IP, so a guest may only send from its own address.
   iptables -I INPUT -i "$TAP" ! -s "$IP" -j DROP
 
   cat > "$dir/config.json" <<EOF

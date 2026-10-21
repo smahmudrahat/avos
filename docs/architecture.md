@@ -38,12 +38,15 @@ that can later train an open-weight model.
   only create children under its own identity.
 - The registrar keeps the birth and death ledger (`agent.spawn`, `agent.exit`, `vm.exit`) and deletes entries when a
   principal dies. `just who` shows the live tree.
+- The shim calls the registrar over mTLS with the VM's own SVID, which only root in the VM can read, and the
+  registrar checks it against the VM the connection comes from. An agent cannot register identities for itself.
+  Top-level agents are started only from the host (`POST /spawn` on the guest's port 80 refuses any other caller).
 
 ## 3. Evaluation (`eval/`, `data/`)
 User-disjoint τ²-bench retail split, its generator and checker, and coding tasks for the mini-swe-agent harness.
 See `conventions.md` §1.
 
-## 4. Authorization (`gateway/`), in progress
+## 4. Authorization (`gateway/`)
 
 ### 4.1 Model
 Authorization follows a **workload credential broker** pattern: identity is attested at the edge, policy is decided
@@ -67,23 +70,29 @@ Two properties are deliberate:
 ### 4.2 Request path
 1. An agent process (uid U) sends an ordinary HTTP request to the forwarder at `127.0.0.1:8090`. For model calls this
    is just `OPENAI_BASE_URL`, so harnesses need no changes.
-2. The forwarder maps the TCP connection to uid U (`/proc/net/tcp`), and U to the principal's SPIFFE ID through the
-   shim's table.
-3. It opens mTLS to the gateway on the host with **that principal's own SVID**. The gateway learns the caller from
-   the certificate, not from anything the agent sends.
+2. The forwarder maps the TCP connection to uid U (`/proc/net/tcp`), and U to the principal through the shim's
+   table. Root's connections act as the VM itself.
+3. It opens mTLS to the gateway on the host with **that principal's own SVID** (re-fetched every 25 s), and checks the
+   gateway's SVID. The gateway learns the caller from the certificate, not from anything the agent sends, and refuses
+   a certificate from a different VM than the connection's source (`vm-binding`).
 4. The gateway evaluates `principal, action, resource, context` with Cedar. Actions are `llm.call`, `tool.call`, and
    `net.connect`; the context carries the arguments (for example a refund amount).
-5. Allow: attach the upstream credential, forward, stream the answer back, write `llm.call` (with token counts) or
-   `tool.result`. Deny: return HTTP 403 with the principal, policy ID and arguments.
+5. Allow: attach the upstream credential, forward, return the answer, write `llm.call` (status, latency, token
+   counts) or `tool.call` (arguments and result). Deny: return HTTP 403 with the principal, policy IDs and arguments.
 6. Both outcomes write one `authz.decision` row: `principal`, `action`, `resource`, `args`, `decision`, `policy_ids`.
 
 ### 4.3 Containment
-- Inside the VM, agent uids may connect only to the forwarder; all other outbound traffic from them is dropped, and
-  MMDS is reachable only by root. A copied SVID is therefore useless to another process: it cannot reach the gateway
-  directly, and it expires within 60 s.
-- On the host, each tap may reach only the gateway, the SPIRE Server and the registrar. Default deny: a VM has no
-  route to the internet except through the gateway's allowlist.
-- The model API key is removed from VM metadata.
+- **No route out.** The host never forwards guest traffic. On the host, a tap may reach only the SPIRE Server
+  (8081), the registrar (8082) and the gateway (8443). Guests have no DNS. The only way to the internet is a
+  `CONNECT` through the gateway, which the default policy refuses for every host.
+- **No secrets in the VM.** The model API key lives only in the host's `gateway.env`; `vm create` refuses an
+  `agent.env` that contains a key. MMDS still holds the VM's join token, which is single-use and already spent.
+- **Each SVID stays with its principal.** A principal's SVID and key sit in its own `/run/avos/<id>` (mode 700), so
+  other principals cannot read them. A copy taken by root works only from the same VM, and only until it expires
+  (60 s). Root inside a VM is trusted: it is the VM's own control plane.
+- **Why not a per-uid firewall in the guest:** the guest kernel ships without the iptables `owner` match. Agents
+  may therefore open connections to the gateway themselves, but only with their own identity, which is what the
+  forwarder would present for them anyway.
 
 ### 4.4 Policy
 Policies are Cedar files in `gateway/policies/`, keyed by agent name (`.../agent/<name>`, `.../sub/<name>`), with
@@ -95,17 +104,18 @@ $200, a refund-manager agent up to $1,000; everything not permitted is denied.
 2. Every denial is attributable: principal + policy ID + arguments (metric M5, target 100%).
 3. A principal keeps the same identity and permissions for its whole life, and a sub-agent does not inherit
    permissions its policy does not grant.
-4. A process using another principal's copied SVID is refused.
+4. Another principal cannot read a principal's SVID; a copy used from another VM is refused; an expired copy is
+   refused at the TLS handshake. An agent cannot register an identity or start a top-level agent.
 5. The test passes again on a fresh host after 30 minutes (rotation does not change outcomes).
 
 ### 4.6 Measured budget
 | Item | Value | Effect |
 |---|---|---|
 | Cedar decision | 0.10 ms median, 0.15 ms p99 | negligible |
-| Gateway hop | ~1–2 ms per call (to be confirmed) | 15–27 model calls per job → < 0.1% of job time (M13) |
-| Forwarder memory | ~20–30 MB per VM (to be confirmed) | ~1–1.5% of a 2 GB VM (M17) |
+| Tool call through forwarder and gateway (new connection, mTLS handshake, Cedar, log) | 15 ms median, 30 ms worst | model calls take 0.4–2 s; see `data/poc4/README.md` for the job-level effect (M13) |
+| Guest agent (shim and forwarder in one process) | 25 MB RSS | ~1.2% of a 2 GB VM (M17) |
 
-Limits: if the hop exceeds 5 ms or the forwarder exceeds 50 MB, the design is revisited. τ²-bench executes its
+τ²-bench executes its
 tools inside the harness process, so its tool calls cannot be gated by any network component; they are covered by
 the harness's own policy, and gateway-hosted tools are used for the acceptance test.
 

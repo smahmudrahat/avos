@@ -12,6 +12,7 @@ Every tool, image and model the POCs depend on, recorded when first used (`conve
 | Jailer | v1.17.0, sha256 `65ef226e96f0ceda55ba643f445801ef2cc0ea667ef67cad8ac4f406c9c8434f` | POC 2 prereq, 2026-10-19 | Per-VM chroot, uid/gid 10000+N, cgroup v2. |
 | uv | 0.13.1 | POC 2, 2026-10-19 | Installs τ²-bench on the host. |
 | SPIRE | v1.15.4 (`spire-1.15.4-linux-amd64-musl.tar.gz`, sha256 `d8e3ee9a9d48636249484d91af37566dfc0a9d7e71edcbe7acd49cf18bc3c87c`) | POC 3, 2026-10-19 | Server on the host (`identity/install.sh`); the same tarball's `spire-agent` is baked into the guest rootfs. Server `cache_reload_interval` 500 ms, agent `sync_interval` 1 s. |
+| cedarpy (Cedar policy engine) | 4.12.2, in `/opt/avos/gateway` (uv venv, Python 3.12) | POC 4, 2026-10-21 | Gateway policy decisions (`gateway/install.sh`). |
 
 ## Guest image
 

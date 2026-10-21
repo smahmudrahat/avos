@@ -25,7 +25,7 @@ install -D -m 0600 vm_key.pub rootfs/root/.ssh/authorized_keys
 ln -sf /etc/systemd/system/avos-agent.service rootfs/etc/systemd/system/multi-user.target.wants/avos-agent.service
 # The kernel `ip=` boot arg configures eth0 (with a gateway); fcnet would only add a duplicate address.
 rm -f rootfs/etc/systemd/system/*/fcnet.service
-echo "nameserver 1.1.1.1" > rootfs/etc/resolv.conf
+echo "nameserver 1.1.1.1" > rootfs/etc/resolv.conf # for the chroot installs below; emptied before packing
 mkdir -p rootfs/opt/harness
 echo "/dev/vdb /opt/harness ext4 ro,nofail 0 0" >> rootfs/etc/fstab
 
@@ -56,6 +56,9 @@ uvc pip freeze --python /opt/harness/mini-swe-agent/.venv/bin/python > harness/m
 cp -r "$HERE/../eval/coding" harness/tasks
 umount rootfs/proc rootfs/dev rootfs/opt/harness && trap - EXIT
 rm -rf rootfs/tmp/uv
+# No DNS in guests: they have no route out (the gateway resolves names on the host). An empty resolv.conf makes
+# lookups fail at once instead of timing out against an unreachable server.
+: > rootfs/etc/resolv.conf
 rm -f harness.commit
 echo "{\"tau2\": \"$TAU2_COMMIT\", \"mini-swe-agent\": \"$(grep -oP '^mini-swe-agent==\K.*' harness/mini-swe-agent/freeze.txt)\"}" > harness.versions.json
 

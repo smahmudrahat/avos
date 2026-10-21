@@ -5,7 +5,8 @@ Nothing is registered in advance: the spawner shim inside a VM asks for an entry
 entry is deleted when the principal dies. SPIRE keeps no lineage, so this file also keeps the birth/death ledger
 (rows in /var/lib/avos/events.jsonl, next to vm.boot): agent.spawn, agent.exit, vm.exit.
 
-  registrar.py serve                       HTTP on :8082 for the shims; the caller's VM is its source IP
+  registrar.py serve                       HTTPS on :8082 for the shims; the caller is its VM's own SVID (mTLS),
+                                           which only the guest's root can read, and must match its source IP
   registrar.py vm-up vm-NN GW OUT.json     mint a unique VM name + join token; write the guest's identity config
   registrar.py vm-down vm-NN               record deaths, delete the VM's entries, evict its SPIRE agent
   registrar.py who [--all]                 principals as a tree; --all includes destroyed VMs
@@ -15,12 +16,15 @@ import json
 import os
 import re
 import secrets
+import ssl
 import statistics
 import subprocess
 import sys
+import threading
+import time
 from collections import defaultdict
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = "/var/lib/avos"
 EVENTS = f"{ROOT}/events.jsonl"
@@ -31,6 +35,8 @@ SOCK = "/run/spire-server/api.sock"
 SVID_TTL_S = 60  # a copied SVID is useless after this; the SPIRE agent rotates live ones at half-life
 VM_UID = 20000  # the guest's holder of the VM's own SVID (infra/agent/agent.py)
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}")
+CERT_DIR = "/run/avos-registrar"
+lock = threading.Lock()  # spawns and exits are serialized (IDs must stay unique); TLS handshakes are not
 
 
 def now():
@@ -82,7 +88,7 @@ def vm_up(slot, gw, out):
     entry = spire("entry", "create", "-spiffeID", vm_spiffe, "-parentID", vm_spiffe, "-selector", f"unix:uid:{VM_UID}",
                   "-output", "json")
     ident = {"VM_ID": vm_id, "VM_SPIFFE_ID": vm_spiffe, "VM_ENTRY_ID": json.loads(entry)["results"][0]["entry"]["id"],
-             "JOIN_TOKEN": token, "SPIRE_BUNDLE": spire("bundle", "show"), "SPIRE_SERVER": gw, "REGISTRAR": f"http://{gw}:8082"}
+             "JOIN_TOKEN": token, "SPIRE_BUNDLE": spire("bundle", "show"), "SPIRE_SERVER": gw, "REGISTRAR": f"https://{gw}:8082"}
     with os.fdopen(os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
         json.dump(ident, f)
     print(vm_id)
@@ -99,7 +105,12 @@ def vm_down(slot):
         if p["vm_id"] == ident["VM_ID"] and not p["exited_at"]:
             end(p, "vm destroyed")
     spire("entry", "delete", "-entryID", ident["VM_ENTRY_ID"], check=False)
-    spire("agent", "evict", "-spiffeID", f"{TD}/spire/agent/join_token/{ident['JOIN_TOKEN']}", check=False)
+    agent = f"{TD}/spire/agent/join_token/{ident['JOIN_TOKEN']}"
+    # The join token's -spiffeID alias is an entry of its own (parent: the SPIRE agent); it outlives the eviction.
+    alias = json.loads(spire("entry", "show", "-parentID", agent, "-output", "json", check=False) or "{}")
+    for e in alias.get("entries") or []:
+        spire("entry", "delete", "-entryID", e["id"], check=False)
+    spire("agent", "evict", "-spiffeID", agent, check=False)
     emit("vm.exit", vm=slot, vm_id=ident["VM_ID"], spiffe_id=ident["VM_SPIFFE_ID"])
 
 
@@ -135,15 +146,25 @@ def exit_(vm, body):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def setup(self):
+        super().setup()
+        self.connection.do_handshake()  # deferred out of accept(), so a stalled client blocks no one
+
     def do_POST(self):
         try:
-            # vm create pins each tap to its guest IP (iptables), so the source IP names the VM.
+            # vm create pins each tap to its guest IP (iptables), so the source IP names the VM; the client SVID
+            # proves the caller is that VM's root (agents in the VM can reach this port, but hold no VM SVID).
             m = re.fullmatch(r"172\.16\.(\d+)\.2", self.client_address[0])
             if not m:
                 raise PermissionError("not a guest")
             vm = identity(f"vm-{int(m[1]):02d}")
+            san = dict(self.connection.getpeercert().get("subjectAltName", ()))
+            if san.get("URI") != vm["VM_SPIFFE_ID"]:
+                raise PermissionError(f"caller is {san.get('URI')}, not {vm['VM_SPIFFE_ID']}")
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            self.reply(200, {"/spawn": spawn, "/exit": exit_}[self.path](vm, body))
+            with lock:
+                out = {"/spawn": spawn, "/exit": exit_}[self.path](vm, body)
+            self.reply(200, out)
         except (KeyError, ValueError, PermissionError, OSError, subprocess.CalledProcessError) as e:
             self.reply(400, {"error": f"{type(e).__name__}: {e}"})
 
@@ -156,6 +177,37 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, *_):
         pass
+
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def get_request(self):
+        s, addr = self.socket.accept()
+        return CTX.wrap_socket(s, server_side=True, do_handshake_on_connect=False), addr
+
+    def handle_error(self, request, addr):
+        print(f"{addr[0]}: {sys.exc_info()[1]!r}", flush=True)
+
+
+def mint():
+    # The registrar's own server SVID; guests verify it with the trust bundle. Re-minted hourly (TTL 2 h).
+    os.makedirs(CERT_DIR, mode=0o700, exist_ok=True)
+    spire("x509", "mint", "-spiffeID", "spiffe://avoslab.com/registrar", "-ttl", "2h", "-write", CERT_DIR)
+    CTX.load_cert_chain(f"{CERT_DIR}/svid.pem", f"{CERT_DIR}/key.pem")
+    CTX.load_verify_locations(cadata=spire("bundle", "show"))
+
+
+def remint():
+    while True:
+        time.sleep(3600)
+        mint()
+
+
+def serve():
+    mint()
+    threading.Thread(target=remint, daemon=True).start()
+    Server(("0.0.0.0", 8082), Handler).serve_forever()
 
 
 def who(show_all):
@@ -197,7 +249,9 @@ def stats(vm_id=None):
 if __name__ == "__main__":
     cmd, args = (sys.argv[1], sys.argv[2:]) if len(sys.argv) > 1 else ("", [])
     if cmd == "serve":
-        HTTPServer(("0.0.0.0", 8082), Handler).serve_forever()  # single-threaded: spawns are serialized
+        CTX = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        CTX.verify_mode = ssl.CERT_REQUIRED
+        serve()
     elif cmd == "vm-up" and len(args) == 3:
         vm_up(*args)
     elif cmd == "vm-down" and len(args) == 1:

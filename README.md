@@ -17,7 +17,7 @@ Every step is reproducible from this repository: scripts, configuration, pinned 
 | 1. Compute | Firecracker microVMs with a guest agent, created and destroyed on demand | Done |
 | 2. Harnesses | Ephemeral VM per job running τ²-bench and mini-swe-agent end to end | Done |
 | 3. Identity | SPIFFE/SPIRE identity per VM, agent and sub-agent, with a birth/death ledger | Done |
-| 4. Authorization | Per-principal policy at a host gateway; credentials never enter a VM | In progress |
+| 4. Authorization | Per-principal policy at a host gateway; credentials never enter a VM | Done |
 | 5. Supervisor | Stop or cut off any principal by name without disturbing siblings | Planned |
 | 6–9. Trace and labels | Trace schema, audit store, training store, labeling pipeline | Planned |
 | 10–13. Evaluation | Benchmark runs, retraining, comparison with frontier models | Planned |
@@ -46,10 +46,12 @@ See [`docs/architecture.md`](docs/architecture.md). In short:
 ```sh
 just push            # from your workstation: copy the repo and model config to the host
 just spire           # on the host, once: SPIRE Server and identity registrar
+just gateway         # on the host, once: authorization gateway (holds the model API key)
 just image           # build the guest kernel and root filesystem
 just poc1            # acceptance test: create, reach, destroy a microVM
 just job tau2 retail/0
 just poc3            # identity acceptance test; `just who` shows the principal tree
+just poc4            # authorization acceptance test
 ```
 
 ## Repository layout
