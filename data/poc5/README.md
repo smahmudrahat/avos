@@ -18,14 +18,45 @@ vm-01: `A → B → B1`, `support`, `D`, `G`, `H`, later `F`; vm-02: `E`, `J`. `
 | 7. Pause `vm-02` by name | E advanced 11 ticks in 2.2 s (≈ 44 expected): paused. A on vm-01 unaffected. Resume brought E back. 43 ms. |
 | 8. An agent cannot use the controls | `POST /halt` from an agent: `top-level spawns and controls come from the host`. Writing another branch's `cgroup.freeze`: `Permission denied`. |
 
-- **M7 definition note (2026-10-21, later the same day):** `ctl.py stats` now applies the same ±1 s control window
-  to failed sibling gateway calls that it applies to late ticks, and reports both kinds outside a window as jitter.
-  A re-run after that change: M6 median 28 ms, worst 49 ms; M7 0 over 2,571 ticks, 2 stalls outside any window.
-  `nodes_under` now lists a VM target in its own receipt (the earlier VM-pause receipts omitted it).
+- **Superseded the same day:** the M6 and M7 numbers above were measured before the two fixes below. See
+  "Baseline and two fixes".
 - **Receipts:** every command left one `halt` or `resume` row with `receipt`, `by`, `target`, `nodes`, `ms`; the
   gateway's refusals name the same receipt, so M5 stays **891/891 = 100%**.
 - **Cost:** no new process in the VM; the shim is the supervisor. One cgroup per principal (5 in vm-01 at the end,
   one per live top-level agent). M1 unchanged (2.7–3.6 s).
+
+## Baseline and two fixes (2026-10-21, later the same day)
+
+`just poc5-baseline 10 120` runs the same tree with the same 50 ms ticks for 120 s and **no control at all**, ten
+times, to measure what happens anyway. It found two real problems that the M7 window had been treating as jitter.
+
+| | Before | After |
+|---|---|---|
+| Baseline, no controls: failed sibling gateway calls | **8 / 20,881** (each a 10 s hang, then a timeout) | **0 / 21,005** |
+| Baseline: worst stall of any tick | 10,076 ms | 726 ms |
+| `just poc5` × 5: M6 (command → `frozen 1`) | median 140–163 ms, worst 317 ms (38,000-row ledger) | **median 2–3 ms, worst 6 ms** (88,000-row ledger) |
+| `just poc5` × 5: M7 | 2 in one run (a failed call and a 10.5 s stall, 0.6 s after a thaw) | **0** in all five |
+
+1. **A request lost between the forwarder and the gateway.** A packet capture showed the TLS handshake completing
+   and then no request: the agent's bytes never left. `pipe()` read and wrote the same TLS socket from two threads,
+   and OpenSSL objects are not thread-safe; a TLS 1.3 session ticket arriving while the request was written lost
+   it, about once in 2,600 calls, more often with more agents per VM. Every model call in every job took this path.
+   **Fix:** `pipe()` in the forwarder and the gateway now copies both directions from one thread with a selector
+   (checked locally on 3,020 TLS 1.3 connections with 300 B and 2 MiB bodies, 0 wrong replies).
+2. **M6 grew with the host's history.** Every control, spawn, exit and VM boot re-read the whole ledger to find one
+   principal: 147 ms at 38,000 rows, linear in rows. **Fix:** the registrar keeps a per-host index (one file per
+   principal, a directory of markers per live VM; `registrar.py reindex` rebuilds it from the ledger). The ledger
+   stays the record; only reports read it. M6 no longer depends on how much the host has done.
+
+**M7 definition, made precise:** a failed sibling call is a lost event whenever it happens. A late sibling tick
+(gap > tick + 100 ms) counts when it falls within 1 s of a halt or resume. The window for late ticks is justified
+by the baseline: late ticks occur at about 0.04 % of ticks with no control at all (host scheduling on a 2-vCPU
+nested-virtualization host, worst 726 ms), and 0 of 8,773 in-window ticks were late across the five runs. An earlier
+version of `ctl.py stats` also windowed failed calls; that was reverted, and under the precise definition the
+pre-fix run scores M7 = 2.
+
+Not yet done: the double-fork escape test, a measured network-cut latency, ten repetitions of the cut, and the run
+with 32 VMs that claim 1 requires (POC 10).
 
 ## Regression with the supervisor in place
 - `just poc1`: passes twice.

@@ -210,6 +210,9 @@ poc5 n="10":
     a_uid=$(sudo grep '"agent.spawn"' /var/lib/avos/events.jsonl | grep "\"$A\"" | tail -1 | python3 -c 'import json, sys; print(json.loads(sys.stdin.read())["uid"])')
     echo "agent -> POST /halt: $(vm 1 "setpriv --reuid=$a_uid --regid=$a_uid --clear-groups curl -s -m 5 http://172.16.1.2/halt -d '{\"spiffe_id\":\"$B\"}'")"
     echo "agent -> own cgroup.freeze: $(vm 1 "setpriv --reuid=$a_uid --regid=$a_uid --clear-groups sh -c 'echo 1 > /sys/fs/cgroup/system.slice/avos-agent.service/$b_dir/cgroup.freeze'" 2>&1 | tail -1)"
+    echo "== errors in the forwarder (guest) and the gateway (host) during the run"
+    for n in 1 2; do vm $n "journalctl -o cat -u avos-agent | grep -B2 -A12 Traceback | tail -40"; done
+    sudo journalctl -u avos-gateway --since "-15 min" -o cat | grep -v -E '^(Started|Stopping|Stopped)' | tail -20 || true  # no output is the good case
     echo "== M6 / M7"
     { vm 1 "journalctl -o cat -u avos-agent | grep '\"tick\"'"; vm 2 "journalctl -o cat -u avos-agent | grep '\"tick\"'"; } > /tmp/poc5-ticks.jsonl
     ctl stats /tmp/poc5-ticks.jsonl --tick 0.05
@@ -263,3 +266,24 @@ poc6:
     print("messages", len(j["messages"]), "tool calls", sum(len(m.get("tool_calls", [])) for m in j["messages"]), "reward", j["reward"], j["termination_reason"], "usage", j["usage"])'
     echo "== acceptance suite (full)"
     python3 trace/tests/run.py
+
+# Host: M7 baseline: the poc5 tree ticking SECS with no control at all, RUNS times (what happens anyway)
+poc5-baseline runs="10" secs="120":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    vm() { local n=$1; shift; sudo ssh -q -i /var/lib/avos/images/vm_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@172.16.$n.2 "$@"; }
+    spawn() { curl -sf -X POST http://172.16.$1.2/spawn -d "{\"name\":\"$2\",\"argv\":[\"/usr/bin/python3\",\"/opt/avos/demo_agent.py\",$3]}" > /dev/null; }
+    out=/tmp/poc5-baseline; rm -rf $out; mkdir -p $out
+    tick="\"--tick\",\"0.05\",\"--sleep\",\"$(( {{secs}} + 60 ))\""
+    for r in $(seq {{runs}}); do
+      trap 'sudo infra/vm destroy vm-01 >/dev/null; sudo infra/vm destroy vm-02 >/dev/null' EXIT
+      sudo infra/vm create vm-01 > /dev/null; sudo infra/vm create vm-02 > /dev/null
+      spawn 1 A "$tick,\"--child\",\"B=--tick 0.05 --sleep $(( {{secs}} + 60 )) --child 'B1=--tick 0.05 --sleep $(( {{secs}} + 60 ))'\""
+      for a in support D G H; do spawn 1 $a "$tick"; done
+      for a in E J; do spawn 2 $a "$tick"; done
+      sleep {{secs}}
+      { vm 1 "journalctl -o cat -u avos-agent | grep '\"tick\"'"; vm 2 "journalctl -o cat -u avos-agent | grep '\"tick\"'"; } > $out/ticks-$r.jsonl
+      for n in 1 2; do vm $n "journalctl -o cat -u avos-agent | grep -B2 -A12 Traceback"; done > $out/errors-$r.txt || true
+      sudo infra/vm destroy vm-01 > /dev/null; sudo infra/vm destroy vm-02 > /dev/null; trap - EXIT
+      echo "run $r: $(sudo supervisor/ctl.py stats $out/ticks-$r.jsonl --tick 0.05 | grep '^M7 counts' | cut -c11-)"
+    done

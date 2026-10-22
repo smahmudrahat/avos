@@ -11,11 +11,19 @@ entry is deleted when the principal dies. SPIRE keeps no lineage, so this file a
   registrar.py vm-down vm-NN               record deaths, delete the VM's entries, evict its SPIRE agent
   registrar.py who [--all]                 principals as a tree; --all includes destroyed VMs
   registrar.py stats [VM_ID]              M3 identity_coverage, M4 identity_issue_ms over exited principals
+  registrar.py reindex                     rebuild the index below from the ledger (once, or after a restore)
+
+The ledger is the record; the hot paths (VM boot, spawn, exit, and every control in supervisor/ctl.py) never read it.
+They use a per-host index under /var/lib/avos/index: one file per principal (by SPIFFE ID, O(1)), one per display
+ID, one marker per issued VM ID, and per VM a directory of markers for its live principals (O(live)). Its cost does
+not grow with the host's history; reading the ledger did (147 ms per lookup at 38,000 rows, on every control).
 """
+import hashlib
 import json
 import os
 import re
 import secrets
+import shutil
 import ssl
 import statistics
 import subprocess
@@ -36,6 +44,7 @@ SVID_TTL_S = 60  # a copied SVID is useless after this; the SPIRE agent rotates 
 VM_UID = 20000  # the guest's holder of the VM's own SVID (infra/agent/agent.py)
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}")
 CERT_DIR = "/run/avos-registrar"
+INDEX = f"{ROOT}/index"
 lock = threading.Lock()  # spawns and exits are serialized (IDs must stay unique); TLS handshakes are not
 
 
@@ -62,7 +71,7 @@ def ledger():
 
 
 def principals():
-    # Limit: rescans the whole ledger per call; an index (or POC 7's store) when it gets slow.
+    # Reporting only (who, stats, reindex): reads the whole ledger. Hot paths use get() and live() instead.
     # Only rows with a spiffe_id are principals (infra/job writes job-level agent.exit rows without one).
     ps = {}
     for r in ledger():
@@ -73,14 +82,74 @@ def principals():
     return ps
 
 
+def key(spiffe_id):
+    return hashlib.sha256(spiffe_id.encode()).hexdigest()[:32]
+
+
+def put(path, obj):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(obj, f)
+    os.replace(tmp, path)  # readers see the old file or the new one, never half of one
+
+
+def get(spiffe_id):
+    """The principal's spawn row (+ exited_at, exit_reason), or None if it was never issued."""
+    try:
+        return json.load(open(f"{INDEX}/p/{key(spiffe_id)}.json"))
+    except FileNotFoundError:
+        return None
+
+
+def by_id(pid):
+    """The live principal with display ID ag_xxxx, or None. Display IDs are unique among live principals only."""
+    try:
+        p = get(json.load(open(f"{INDEX}/id/{pid}"))["spiffe_id"])
+    except FileNotFoundError:
+        return None
+    return p if p and not p["exited_at"] else None
+
+
+def live(vm_id=None):
+    """Live principals of one VM, or of the whole host."""
+    base = f"{INDEX}/live"
+    vms = [vm_id] if vm_id else (os.listdir(base) if os.path.isdir(base) else [])
+    out = []
+    for v in vms:
+        for k in (os.listdir(f"{base}/{v}") if os.path.isdir(f"{base}/{v}") else []):
+            try:
+                out.append(json.load(open(f"{INDEX}/p/{k}.json")))
+            except FileNotFoundError:
+                pass
+    return out
+
+
+def index_spawn(row):
+    k = key(row["spiffe_id"])
+    put(f"{INDEX}/p/{k}.json", {**row, "exited_at": None})
+    put(f"{INDEX}/id/{row['id']}", {"spiffe_id": row["spiffe_id"]})
+    os.makedirs(f"{INDEX}/live/{row['vm_id']}", exist_ok=True)
+    open(f"{INDEX}/live/{row['vm_id']}/{k}", "w").close()
+
+
+def index_exit(p, row):
+    k = key(p["spiffe_id"])
+    put(f"{INDEX}/p/{k}.json", {**p, "exited_at": row["ts"], "exit_reason": row["exit_reason"]})
+    try:
+        os.remove(f"{INDEX}/live/{p['vm_id']}/{k}")
+    except FileNotFoundError:
+        pass
+
+
 def identity(slot):
     return json.load(open(f"{JAIL}/{slot}/identity.json"))
 
 
 def vm_up(slot, gw, out):
-    used = {r.get("vm_id") for r in ledger() if r["kind"] == "vm.boot"}
-    while (vm_id := f"{slot}-{secrets.token_hex(3)}") in used:
+    while os.path.exists(f"{INDEX}/vm/{(vm_id := f'{slot}-{secrets.token_hex(3)}')}"):
         pass
+    put(f"{INDEX}/vm/{vm_id}", {})
     vm_spiffe = f"{TD}/vm/{vm_id}"
     # The token's -spiffeID makes the VM's SPIRE agent known by the VM's own name; workload entries hang off it.
     token = spire("token", "generate", "-spiffeID", vm_spiffe, "-ttl", "600").split()[-1]
@@ -96,14 +165,16 @@ def vm_up(slot, gw, out):
 
 def end(p, reason, svid_ms=None):
     spire("entry", "delete", "-entryID", p["entry_id"], check=False)
-    return emit("agent.exit", id=p["id"], spiffe_id=p["spiffe_id"], vm_id=p["vm_id"], exit_reason=reason, svid_ms=svid_ms)
+    row = emit("agent.exit", id=p["id"], spiffe_id=p["spiffe_id"], vm_id=p["vm_id"], exit_reason=reason, svid_ms=svid_ms)
+    index_exit(p, row)
+    return row
 
 
 def vm_down(slot):
     ident = identity(slot)
-    for p in principals().values():
-        if p["vm_id"] == ident["VM_ID"] and not p["exited_at"]:
-            end(p, "vm destroyed")
+    for p in live(ident["VM_ID"]):
+        end(p, "vm destroyed")
+    shutil.rmtree(f"{INDEX}/live/{ident['VM_ID']}", ignore_errors=True)
     spire("entry", "delete", "-entryID", ident["VM_ENTRY_ID"], check=False)
     agent = f"{TD}/spire/agent/join_token/{ident['JOIN_TOKEN']}"
     # The join token's -spiffeID alias is an entry of its own (parent: the SPIRE agent); it outlives the eviction.
@@ -118,28 +189,28 @@ def spawn(vm, body):
     name, parent, uid = body["name"], body.get("parent"), int(body["uid"])
     if not NAME.fullmatch(name):
         raise ValueError(f"bad name {name!r}")
-    ps = principals()
     if parent:
-        pp = ps.get(parent)
+        pp = get(parent)
         if not pp or pp["vm_id"] != vm["VM_ID"] or pp["exited_at"]:
             raise PermissionError(f"parent {parent} is not live in {vm['VM_ID']}")
         spiffe_id = f"{parent}/sub/{name}"
     else:
         spiffe_id = f"{vm['VM_SPIFFE_ID']}/agent/{name}"
-    if spiffe_id in ps:
+    if get(spiffe_id):
         raise ValueError(f"{spiffe_id} was already issued; IDs are never reused")
     out = spire("entry", "create", "-spiffeID", spiffe_id, "-parentID", vm["VM_SPIFFE_ID"],
                 "-selector", f"unix:uid:{uid}", "-x509SVIDTTL", str(SVID_TTL_S), "-output", "json")
     entry_id = json.loads(out)["results"][0]["entry"]["id"]
-    ids = {p["id"] for p in ps.values()}
-    while (pid := f"ag_{secrets.token_hex(2)}") in ids:  # short display ID for the agent tree
+    while by_id(pid := f"ag_{secrets.token_hex(2)}"):  # short display ID, unique among live principals
         pass
-    return emit("agent.spawn", id=pid, spiffe_id=spiffe_id, parent=parent or vm["VM_SPIFFE_ID"], name=name,
-                vm_id=vm["VM_ID"], uid=uid, entry_id=entry_id)
+    row = emit("agent.spawn", id=pid, spiffe_id=spiffe_id, parent=parent or vm["VM_SPIFFE_ID"], name=name,
+               vm_id=vm["VM_ID"], uid=uid, entry_id=entry_id)
+    index_spawn(row)
+    return row
 
 
 def exit_(vm, body):
-    p = principals().get(body["spiffe_id"])
+    p = get(body["spiffe_id"])
     if not p or p["vm_id"] != vm["VM_ID"] or p["exited_at"]:
         raise PermissionError(f"{body['spiffe_id']} is not live in {vm['VM_ID']}")
     return end(p, body["reason"], body.get("svid_ms"))
@@ -235,6 +306,27 @@ def who(show_all):
             walk(v["spiffe_id"], 1)
 
 
+def reindex():
+    shutil.rmtree(INDEX, ignore_errors=True)
+    live_vms = set()
+    for slot in (os.listdir(JAIL) if os.path.isdir(JAIL) else []):
+        try:
+            live_vms.add(identity(slot)["VM_ID"])
+        except (FileNotFoundError, KeyError):
+            pass
+    for r in ledger():
+        if r["kind"] == "vm.boot" and "vm_id" in r:
+            put(f"{INDEX}/vm/{r['vm_id']}", {})
+    n = 0
+    for p in principals().values():
+        n += 1
+        if p["exited_at"] or p["vm_id"] not in live_vms:
+            put(f"{INDEX}/p/{key(p['spiffe_id'])}.json", p)
+        else:
+            index_spawn({k: v for k, v in p.items() if k != "exited_at"})
+    print(f"indexed {n} principals, {len(live(None))} live")
+
+
 def stats(vm_id=None):
     done = [p for p in principals().values()
             if p["exited_at"] and p["exit_reason"] != "vm destroyed" and vm_id in (None, p["vm_id"])]
@@ -260,5 +352,7 @@ if __name__ == "__main__":
         who("--all" in args)
     elif cmd == "stats" and len(args) <= 1:
         stats(*args)
+    elif cmd == "reindex":
+        reindex()
     else:
         sys.exit(__doc__)

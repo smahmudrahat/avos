@@ -36,7 +36,8 @@ that can later train an open-weight model.
   process obtains its X.509 SVID (60 s TTL, rotated by the SPIRE Agent) from the Workload API.
 - Sub-agents are spawned through the shim's Unix socket; the caller is identified by `SO_PEERCRED`, so a process can
   only create children under its own identity.
-- The registrar keeps the birth and death ledger (`agent.spawn`, `agent.exit`, `vm.exit`) and deletes entries when a
+- The registrar keeps the birth and death ledger (`agent.spawn`, `agent.exit`, `vm.exit`) and a per-host index of
+  principals beside it, so spawns, exits and controls never scan the ledger. It deletes entries when a
   principal dies. `just who` shows the live tree.
 - The shim calls the registrar over mTLS with the VM's own SVID, which only root in the VM can read, and the
   registrar checks it against the VM the connection comes from. An agent cannot register identities for itself.

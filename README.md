@@ -58,6 +58,7 @@ just job tau2 retail/0
 just poc3            # identity acceptance test; `just who` shows the principal tree
 just poc4            # authorization acceptance test
 just poc5            # supervisor acceptance test; `just ctl ls`, `just ctl halt <name>`
+just poc5-baseline   # the same agents with no control at all: what M7 is measured against
 just poc6            # trace schema, validator, projections on a real run + acceptance suite
 ```
 

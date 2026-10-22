@@ -10,7 +10,7 @@ Frozen 2026-10-18. Every POC's done test names the metrics it touches.
 | M4 | identity_issue_ms | Process start → SVID in hand, ms. | POC 3 | POC 5 |
 | M5 | authz_attributable_denials | Share of denials carrying principal + policy ID + arguments, %. Target 100. | POC 4 | POC 7 |
 | M6 | stop_latency_ms | Stop command → branch frozen (`cgroup.events` frozen 1), ms. | POC 5 | — |
-| M7 | sibling_disruption | Sibling events lost or delayed during a stop, count. Must be 0. | POC 5 | — |
+| M7 | sibling_disruption | Sibling events lost or delayed during a stop, count. Must be 0. Precisely (2026-10-21, after `just poc5-baseline` showed what happens with no control): every failed sibling call, at any time, plus every sibling tick late by more than 100 ms within 1 s of a halt or resume. | POC 5 | — |
 | M8 | trace_completeness | Events stored ÷ events that happened (gateway and supervisor counters, harness messages), %. | Defined POC 6, measured POC 7 | POC 10, POC 11 |
 | M9 | query_by_principal_ms | Time to answer "what did principal X do" over one day of events, ms. | POC 7 | POC 11 |
 | M10 | label_quality | Cohen's kappa of judge vs human and reward vs human on the gold set. | POC 9 | POC 12 (second loop) |

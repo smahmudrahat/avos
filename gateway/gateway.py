@@ -23,6 +23,7 @@ import json
 import os
 import re
 import secrets
+import selectors
 import socket
 import ssl
 import subprocess
@@ -126,23 +127,48 @@ def remint():
 
 
 def pipe(a, b):
-    """Copy bytes both ways until either side closes."""
-    def copy(src, dst):
-        try:
-            while data := src.recv(65536):
-                dst.sendall(data)
-        except OSError:
-            pass
-        finally:
-            for s in (src, dst):
+    """Copy bytes both ways until either side closes, from this one thread. A TLS socket must never be read by one
+    thread while another writes it (OpenSSL objects are not thread-safe): with a thread per direction, a TLS 1.3
+    session ticket arriving during the write lost the request about once in 2,600 calls, and the caller hung."""
+    peer = {a: b, b: a}
+    sel = selectors.DefaultSelector()
+    try:
+        for s in peer:
+            s.setblocking(False)
+            sel.register(s, selectors.EVENT_READ)
+        while True:
+            # Bytes a TLS socket has already decrypted and buffered do not wake the selector.
+            ready = [s for s in peer if isinstance(s, ssl.SSLSocket) and s.pending()] or \
+                [k.fileobj for k, _ in sel.select()]
+            for src in ready:
                 try:
-                    s.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
-    t = threading.Thread(target=copy, args=(b, a), daemon=True)
-    t.start()
-    copy(a, b)
-    t.join()
+                    data = src.recv(65536)
+                except (ssl.SSLWantReadError, ssl.SSLWantWriteError, BlockingIOError):
+                    continue  # TLS records that carry no data, such as a session ticket
+                if not data:
+                    return
+                send_all(peer[src], data)
+    except OSError:
+        pass
+    finally:
+        sel.close()
+        for s in peer:
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+
+def send_all(s, data):
+    view = memoryview(data)
+    while view:
+        try:
+            view = view[s.send(view):]
+        except (ssl.SSLWantReadError, ssl.SSLWantWriteError, BlockingIOError):
+            with selectors.DefaultSelector() as w:
+                w.register(s, selectors.EVENT_READ | selectors.EVENT_WRITE)
+                if not w.select(30):
+                    raise TimeoutError("peer stopped reading for 30 s")
 
 
 def issue_refund(args):

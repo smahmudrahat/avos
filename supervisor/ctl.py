@@ -25,7 +25,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "identity"))
-import registrar  # noqa: E402  (the ledger, principals() and emit() live there)
+import registrar  # noqa: E402  (the ledger, emit() and the per-host index of principals live there)
 
 CUT = f"{registrar.ROOT}/cut.json"
 
@@ -58,13 +58,13 @@ def vms():
 
 def resolve(name):
     """-> (target dict with spiffe_id, vm, kind) for an ag_ id, SPIFFE ID, vm_id or slot."""
-    live = {k: v for k, v in registrar.principals().items() if not v["exited_at"]}
-    for vm_id, vm in vms().items():
+    live_vms = vms()
+    for vm_id, vm in live_vms.items():
         if name in (vm_id, vm["slot"], vm["spiffe_id"]):
             return {"spiffe_id": vm["spiffe_id"], "vm_id": vm_id, "vm": vm, "kind": "vm"}
-    for p in live.values():
-        if name in (p["id"], p["spiffe_id"]):
-            return {"spiffe_id": p["spiffe_id"], "vm_id": p["vm_id"], "vm": vms()[p["vm_id"]], "kind": "principal"}
+    p = registrar.by_id(name) if name.startswith("ag_") else registrar.get(name)  # the index, not the ledger
+    if p and not p["exited_at"] and p["vm_id"] in live_vms:
+        return {"spiffe_id": p["spiffe_id"], "vm_id": p["vm_id"], "vm": live_vms[p["vm_id"]], "kind": "principal"}
     sys.exit(f"{name}: not a live VM or principal (see `ctl.py ls`)")
 
 
@@ -93,8 +93,8 @@ def firecracker(t, state):
 
 def nodes_under(t):
     # The target itself first (a VM is not a ledger principal, so it would otherwise be missing), then its branch.
-    return [t["spiffe_id"]] + [p["spiffe_id"] for p in registrar.principals().values()
-                               if not p["exited_at"] and p["spiffe_id"].startswith(t["spiffe_id"] + "/")]
+    return [t["spiffe_id"]] + [p["spiffe_id"] for p in registrar.live(t["vm_id"])
+                               if p["spiffe_id"].startswith(t["spiffe_id"] + "/")]
 
 
 def receipt(kind, t, action, ms, nodes, **extra):
@@ -105,7 +105,7 @@ def receipt(kind, t, action, ms, nodes, **extra):
 
 
 def live_count(exclude):
-    return sum(1 for p in registrar.principals().values() if not p["exited_at"] and p["spiffe_id"] not in exclude)
+    return sum(1 for p in registrar.live() if p["spiffe_id"] not in exclude)
 
 
 def control(cmd, name):
@@ -162,7 +162,7 @@ def ls():
                 return f"{v['state']} {v['receipt']}" + ("" if spiffe_id == k else " (via parent)")
         return "live"
 
-    live = [p for p in registrar.principals().values() if not p["exited_at"]]
+    live = registrar.live()
     for vm_id, vm in sorted(vms().items()):
         print(f"{vm_id:<16} {vm['spiffe_id']:<72} {state(vm['spiffe_id'])}")
         for p in sorted(live, key=lambda p: p["ts"]):
@@ -172,8 +172,9 @@ def ls():
 
 def stats(ticks_path, tick_s):
     """M6 over this run's halts, M7 over the ticks of principals that were never named by a control.
-    A late tick counts as disruption only inside a control window (1 s around a halt or resume); stalls outside
-    any window are host jitter and are reported separately."""
+    A failed sibling call is a lost event whenever it happens. A late tick counts only inside a control window (1 s
+    around a halt or resume): `just poc5-baseline` shows late ticks at the same low rate with no control at all
+    (host scheduling on a small host), and none inside a window, so outside one they are reported, not counted."""
     from datetime import datetime
     ticks = {}
     for line in open(ticks_path):
@@ -193,9 +194,13 @@ def stats(ticks_path, tick_s):
     siblings = {sid: ts for sid, ts in ticks.items() if not any(sid == n or sid.startswith(n + "/") for n in named)}
     lost = 0
     late, failed = [], []  # (gap s or 0, ts, principal, nearest control); the same 1 s window applies to both
+    near_ticks = near_calls = 0  # denominators: how much of the run lay inside a control window
 
     def nearest(at):
         return min(controls, key=lambda c: abs(c[0] - at), default=(float("inf"), "-"))
+
+    def inside(at):
+        return abs(nearest(at)[0] - at) <= 1
 
     for sid, ts in siblings.items():
         ts.sort(key=lambda t: t["tick"])
@@ -203,15 +208,26 @@ def stats(ticks_path, tick_s):
         failed += [(0, t["ts"], sid, nearest(t["ts"])) for t in ts if isinstance(t.get("gw"), str)]
         late += [(b["ts"] - a["ts"], b["ts"], sid, nearest(b["ts"])) for a, b in zip(ts, ts[1:])
                  if b["ts"] - a["ts"] > tick_s + 0.1]
-    during = [x for x in late + failed if abs(x[3][0] - x[1]) <= 1]
-    print(f"M7 sibling_disruption: {lost + len(during)} (lost {lost}, delayed or failed during a control {len(during)}; "
-          f"outside any control: {len(late) + len(failed) - len(during)}) over {len(siblings)} never-named principals, "
-          f"{sum(map(len, siblings.values()))} ticks")
+        near_ticks += sum(inside(t["ts"]) for t in ts)
+        near_calls += sum(inside(t["ts"]) for t in ts if "gw" in t)
+    during = [x for x in late if abs(x[3][0] - x[1]) <= 1] + failed
+    n_ticks = sum(map(len, siblings.values()))
+    n_calls = sum("gw" in t for ts in siblings.values() for t in ts)
+    print(f"M7 sibling_disruption: {lost + len(during)} (lost {lost}, failed calls {len(failed)}, late during a control "
+          f"{len(during) - len(failed)}; late outside any control: {len(late) - len(during) + len(failed)}) over "
+          f"{len(siblings)} never-named principals, {n_ticks} ticks")
+    # The window is only fair if anomalies outside it are as common as anomalies inside it (and as in a run with no
+    # controls at all, `just poc5-baseline`); these counts let the rates be compared.
+    out = {"principals": len(siblings), "ticks": n_ticks, "ticks_in_window": near_ticks, "lost": lost,
+           "late_in": sum(1 for x in late if abs(x[3][0] - x[1]) <= 1), "late_out": sum(1 for x in late if abs(x[3][0] - x[1]) > 1),
+           "calls": n_calls, "calls_in_window": near_calls,
+           "failed_in": sum(1 for x in failed if abs(x[3][0] - x[1]) <= 1), "failed_out": sum(1 for x in failed if abs(x[3][0] - x[1]) > 1),
+           "worst_gap_ms": round(max((x[0] for x in late), default=0) * 1000), "controls": len(controls)}
+    print("M7 counts: " + json.dumps(out))
     for gap, at, sid, near in sorted(late + failed, key=lambda x: -x[0])[:5]:
         what = f"+{gap * 1000:.0f} ms" if gap else "failed gateway call"
-        print(f"  {'DURING' if abs(near[0] - at) <= 1 else 'jitter'}: {what} on {sid.split('/vm/')[1]}"
+        print(f"  {'COUNTED' if not gap or abs(near[0] - at) <= 1 else 'jitter'}: {what} on {sid.split('/vm/')[1]}"
               f" ({near[1]} {near[0] - at:+.2f} s away)")
-
 
 if __name__ == "__main__":
     cmd, args = (sys.argv[1], sys.argv[2:]) if len(sys.argv) > 1 else ("", [])
