@@ -267,6 +267,10 @@ poc6:
     echo "== acceptance suite (full)"
     python3 trace/tests/run.py
 
+# Host: claim 1 acceptance suite, written independently of the implementation (`just claim1 --quick` to iterate)
+claim1 *args:
+    sudo python3 supervisor/tests/claim1.py {{args}}
+
 # Host: M7 baseline: the poc5 tree ticking SECS with no control at all, RUNS times (what happens anyway)
 poc5-baseline runs="10" secs="120":
     #!/usr/bin/env bash

@@ -55,8 +55,26 @@ nested-virtualization host, worst 726 ms), and 0 of 8,773 in-window ticks were l
 version of `ctl.py stats` also windowed failed calls; that was reverted, and under the precise definition the
 pre-fix run scores M7 = 2.
 
-Not yet done: the double-fork escape test, a measured network-cut latency, ten repetitions of the cut, and the run
-with 32 VMs that claim 1 requires (POC 10).
+## Independent acceptance (`just claim1`)
+
+`supervisor/tests/` was written by a separate tester that read only the claim, `docs/` and the command-line
+interfaces, never the implementation or this file beyond its first table. It measures from the outside: M6 from just
+before `ctl.py` starts (Python start-up and name resolution included) to the `frozen 1` edge seen by a watcher inside
+the guest. That is why its M6 is ≈ 60 ms where `ctl.py` reports 2–3 ms (it times only its own work). Full run, 10
+repetitions, 513 s, after the two fixes:
+
+| Check | Result |
+|---|---|
+| 1. Halt a sub-agent with a child by name | M6 median 62 ms, worst 66 ms; whole branch frozen 10/10; parent and siblings kept ticking; resume contiguous |
+| 2. Escape attempts (double-forked daemon, rapid forker) | halt froze both 10/10; kill left 0 alive; sibling unaffected |
+| 3. Network cut by name | cut latency median 77 ms, worst 88 ms; uncut median 72 ms, worst 97 ms; target kept running 10/10; 0 sibling calls unanswered |
+| 4. In-flight answer | 0 delivered after a halt or cut (3 + 3), ledger shows `dropped: true` |
+| 5. M7 under load (8 never-named siblings, 2 VMs) | 0 failed, 0 delayed; same 60 s with no control first: 0 and 0 |
+| 6. M6 vs host history | 61 ms before and 61 ms after appending 200,000 ledger rows (growth 0.1 ms) |
+| 7. Gateway reliability, no control | 20,000 calls from 8 agents: 0 unanswered; p50 41 ms, p99 84 ms, max 1,073 ms |
+| 8. Agents cannot control | control endpoint, cgroup files, shim and another agent's key all refused |
+
+Still open for claim 1: the run with 32 VMs (POC 10); this host fits 2.
 
 ## Regression with the supervisor in place
 - `just poc1`: passes twice.
