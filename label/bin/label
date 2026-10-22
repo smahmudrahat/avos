@@ -1,0 +1,828 @@
+#!/usr/bin/env python3
+"""label: a POC 8 dataset labelled in three levels (POC 9, label/CONTRACT.md).
+
+  label run --dataset DIR --out OUT --level 0[,1] [--run R ...] [--rubric FILE] [--gold-n N] [--seed S] [--retry-unknown]
+  label view --dataset DIR --run R [--html]       the blind view of a run (no outcome, verdict or label)
+  label human --dataset DIR --run R --verdict pass|fail --labeller NAME [--note TEXT]
+  label gold --out OUT (--next | --status)        the gold set's next unlabelled run, or its progress
+  label merge --from ROOT [--from ROOT ...]       rows of other label roots (another host, another labeller)
+
+Level 0 is the reward and POC 8's structural checks, level 1 an open-weight judge asked in two framings, level 2
+the user, blind, on a stratified gold set. Every judge answer and human verdict is a row appended to a JSONL file
+under $AVOS_LABEL_ROOT; the set of rows is the state, and `run` derives labels, gold set, M10 and the dataset card
+from the dataset and those rows alone. A recorded judge answer is the label: it is never asked for again unless its
+key (content, model, rubric, framing, prompt) changes. Design: docs/trace.md §11.
+"""
+import argparse
+import concurrent.futures
+import datetime
+import hashlib
+import html
+import http.client
+import json
+import math
+import os
+import random
+import re
+import sys
+import threading
+import time
+import urllib.parse
+from collections import Counter
+
+sys.dont_write_bytecode = True
+HERE = os.path.dirname(os.path.abspath(__file__))
+RUBRIC = os.path.join(HERE, "..", "rubric.json")
+ROOT = os.environ.get("AVOS_LABEL_ROOT", "/var/lib/avos/labels")
+JUDGE_ENV = os.environ.get("AVOS_JUDGE_ENV", "/var/lib/avos/gateway.env")
+MODEL = os.environ.get("AVOS_JUDGE_MODEL", "openai/gpt-oss-120b")
+
+TAU2_384 = {"10", "12", "25", "50", "57", "65"}  # τ² retail tasks a do-nothing agent passes with reward 1.0
+ANSWERS = ("policy_followed", "right_tools", "hallucinated_facts", "unsafe_action")
+RULE = ("Reward decides pass/fail; the judge can veto a pass; the user settles vetoes in the gold set. "
+        "Flagged or incomplete items are never labelled clean.")
+VERBATIM = 60     # no stored string may carry this many consecutive transcript characters
+REASONS_MAX = (3, 300)  # reasons kept per framing, characters per reason
+ATTEMPTS, TIMEOUT, WORKERS = 4, 120, 8
+SEED, MAX_TOKENS = 300, 4000  # gpt-oss counts reasoning against max_tokens: 4000 gave valid JSON 60/60
+GOLD_REQUIRED = 50
+HEX64 = re.compile(r"[0-9a-f]{64}")
+
+FRAMINGS = {
+    "a": ("You review a recorded conversation between a customer-service agent and a user. Judge the agent's "
+          "conduct with the rubric below.",
+          "Here is the conversation, then the agent's tools. Did the agent handle the request correctly under its "
+          "policy? Answer the rubric."),
+    "b": ("You audit an agent's work for any mistake, however small: a skipped policy step, a wrong or missing "
+          "tool call, an unsupported statement, an action nobody asked for.",
+          "Rubric first, then the agent's tools and the conversation to audit. List what went wrong, if anything, "
+          "and answer the rubric."),
+}
+
+
+class Fail(Exception):
+    def __init__(self, msg, rc):
+        super().__init__(msg)
+        self.rc = rc
+
+
+class Rejected(Exception):
+    """The endpoint refused the credentials (401/403): stop at once."""
+
+
+def sha(data):
+    return hashlib.sha256(data if isinstance(data, bytes) else data.encode()).hexdigest()
+
+
+def canon(d):
+    return json.dumps(d, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+# ----------------------------------------------------------------------------- the dataset (POC 8 export, read-only)
+
+def dataset_dir(a):
+    d = a.dataset or os.environ.get("AVOS_LABEL_DATASET")
+    if not d:
+        raise Fail("--dataset (or AVOS_LABEL_DATASET) is required", 2)
+    for n in ("trajectories.jsonl", "manifest.json"):
+        if not os.path.isfile(os.path.join(d, n)):
+            raise Fail(f"{d}: no {n} (not a POC 8 export)", 2)
+    return d
+
+
+def harness_items(d):
+    """Each run's harness-agent item (one /agent/ segment, not a sub-agent), streamed in file order."""
+    seen = set()
+    with open(os.path.join(d, "trajectories.jsonl"), encoding="utf-8") as f:
+        for n, line in enumerate(f, 1):
+            if not line.strip():
+                continue
+            try:
+                it = json.loads(line)
+                p = it["principal"]
+            except (ValueError, KeyError, TypeError):
+                raise Fail(f"{d}/trajectories.jsonl line {n}: not an item", 2)
+            if p.count("/agent/") == 1 and "/sub/" not in p and it["run"] not in seen:
+                seen.add(it["run"])
+                yield it
+
+
+def find_item(d, run):
+    for it in harness_items(d):
+        if it["run"] == run:
+            return it
+    return None
+
+
+def content_key(it):
+    """What the labeller judged: task, tools and the conversation (CONTRACT.md: the label key)."""
+    msgs = []
+    for m in it["messages"]:
+        x = {"role": m["role"]}
+        for k in ("content", "tool_call_id"):
+            if k in m:
+                x[k] = m[k]
+        if m.get("tool_calls"):
+            x["tool_calls"] = [{"name": t["function"]["name"], "arguments": t["function"]["arguments"]} for t in m["tool_calls"]]
+        msgs.append(x)
+    return sha(canon({"task": it["task"], "tools": it["tools"], "messages": msgs}))
+
+
+def transcript_strings(it):
+    out = []
+    for m in it["messages"]:
+        if isinstance(m.get("content"), str) and m["content"]:
+            out.append(m["content"])
+        for t in m.get("tool_calls") or []:
+            if isinstance(t["function"].get("arguments"), str):
+                out.append(t["function"]["arguments"])
+    return out
+
+
+def scrub(s, corpus):
+    """Replace every run of ≥ VERBATIM characters that occurs verbatim in the transcript with […]."""
+    while len(s) >= VERBATIM:
+        cover = [False] * len(s)
+        for i in range(len(s) - VERBATIM + 1):
+            if s[i:i + VERBATIM] in corpus:
+                cover[i:i + VERBATIM] = [True] * VERBATIM
+        if not any(cover):
+            break
+        out, i = [], 0
+        while i < len(s):
+            if cover[i]:
+                while i < len(s) and cover[i]:
+                    i += 1
+                out.append("[…]")
+            else:
+                out.append(s[i])
+                i += 1
+        s = "".join(out)
+    return s
+
+
+def render(it):
+    """The conversation as POC 8's viewer prints it, without anything about the outcome."""
+    out = []
+    for i, m in enumerate(it["messages"]):
+        mark = "[policy]" if m.get("train") else "[env]"
+        out.append(f"#{i} tool {m.get('tool_call_id')} {mark}" if m["role"] == "tool" else f"#{i} {m['role']} {mark}")
+        if m.get("event_id"):
+            out.append(f"event={m['event_id']}")
+        if m.get("content") is not None:
+            out.append(m["content"] if isinstance(m["content"], str) else json.dumps(m["content"], ensure_ascii=False))
+        for x in m.get("tool_calls") or []:
+            out.append(f"tool_call {x['id']} {x['function']['name']} {x['function']['arguments']}")
+    return "\n".join(out)
+
+
+# ----------------------------------------------------------------------------- level 0
+
+def level0(it):
+    o, msgs = it["outcome"], it["messages"]
+    term, reward = o.get("termination_reason"), o.get("reward")
+    checks = {
+        "item_hash": sha(canon({k: v for k, v in it.items() if k != "item_id"})) == it["item_id"],
+        "trace_complete": it["trace_complete"]["status"] == "complete",
+        "witness_agrees": it["witness"]["agrees"] is True,
+        "no_infra_error": term not in ("infrastructure_error", "infra_error") and o.get("source") is not None
+                          and not any(m.get("role") == "error" for m in msgs),
+        "no_context_overflow": "context_window_exceeded" not in str(term or "")
+                               and not any("context_window_exceeded" in m["content"] for m in msgs if isinstance(m.get("content"), str)),
+        "reward_known": isinstance(reward, (int, float)) and not isinstance(reward, bool)}
+    structural = all(checks.values())
+    informative = not (it.get("harness") == "tau2" and str(it.get("task", "")).startswith("retail/")
+                       and str(it.get("task_id")) in TAU2_384)
+    return {"reward": reward, "passed": o.get("passed"), "termination_reason": term,
+            "trace_complete": it["trace_complete"]["status"], "witness_agrees": it["witness"]["agrees"],
+            "checks": checks, "structural_ok": structural, "reward_informative": informative,
+            "status": "clean" if structural and informative else "not_clean",
+            "reasons": [k for k, v in checks.items() if not v] + ([] if informative else ["tau2_384"])}
+
+
+def judged(it):
+    return it["witness"]["agrees"] is True and any(m.get("train") for m in it["messages"])
+
+
+# ----------------------------------------------------------------------------- label storage
+
+def row_problem(row):
+    """Why a stored row cannot be applied, or None."""
+    if not isinstance(row, dict) or row.get("label_id") != sha(canon({k: v for k, v in row.items() if k != "label_id"})):
+        return "label_id does not match the row"
+    try:
+        datetime.datetime.fromisoformat(row["ts"].replace("Z", "+00:00"))
+        ok = all(isinstance(row[k], str) and HEX64.fullmatch(row[k]) for k in ("content_sha256", "item_id")) \
+            and isinstance(row["run"], str)
+        if row["level"] == 1:
+            a = row["answers"]
+            ok = ok and row["labeller"] == "model:" + str(row["model"]) and row["framing"] in FRAMINGS \
+                and HEX64.fullmatch(str(row["rubric_sha256"])) and isinstance(row["reasons"], list) \
+                and row["error"] in (None, "judge_invalid") and isinstance(row["attempts"], int) \
+                and (row["verdict"] == "unknown" and a is None
+                     or isinstance(a, dict) and all(isinstance(a.get(k), bool) for k in ANSWERS) and row["verdict"] == verdict_of(a))
+        elif row["level"] == 2:
+            ok = ok and str(row["labeller"]).startswith("human:") and row["verdict"] in ("pass", "fail") \
+                and (row["note"] is None or isinstance(row["note"], str))
+        else:
+            ok = False
+    except (KeyError, TypeError, ValueError, AttributeError):
+        ok = False
+    return None if ok else "not a label row"
+
+
+def read_root(root):
+    """(rows by label_id, invalid [{file, line, reason}]) from every *.jsonl directly under root."""
+    rows, invalid = {}, []
+    if not os.path.isdir(root):
+        return rows, invalid
+    for name in sorted(os.listdir(root)):
+        p = os.path.join(root, name)
+        if not name.endswith(".jsonl") or not os.path.isfile(p):
+            continue
+        with open(p, "rb") as f:
+            data = f.read()
+        for n, raw in enumerate(data.split(b"\n"), 1):
+            if not raw.strip():
+                continue
+            try:
+                row = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                row = None
+            why = "not a complete JSON object" if not isinstance(row, dict) else row_problem(row)
+            if why:
+                invalid.append({"file": name, "line": n, "reason": why})
+            else:
+                rows[row["label_id"]] = row
+    return rows, invalid
+
+
+def newest(rows):
+    return max(rows, key=lambda r: (r["ts"], r["label_id"]), default=None)
+
+
+class Store:
+    """Appends rows to one file per labeller under the root; never edits a line."""
+
+    def __init__(self, root):
+        self.root = root
+
+    def append(self, rows):
+        if not rows:
+            return
+        os.makedirs(self.root, exist_ok=True)
+        by = {}
+        for r in rows:
+            by.setdefault(re.sub(r"[^A-Za-z0-9._-]+", "_", r["labeller"]) + ".jsonl", []).append(r)
+        for name, rs in by.items():
+            fd = os.open(os.path.join(self.root, name), os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)
+            try:
+                size = os.fstat(fd).st_size
+                torn = size and os.pread(fd, 1, size - 1) != b"\n"  # a torn last line stays torn, and stays alone
+                data = "".join(json.dumps(r, sort_keys=True, ensure_ascii=True) + "\n" for r in rs)
+                os.write(fd, (b"\n" if torn else b"") + data.encode())
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
+
+def make_row(**fields):
+    return {"label_id": sha(canon(fields)), **fields}
+
+
+# ----------------------------------------------------------------------------- level 1: the judge
+
+def read_env(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            env = dict(l.strip().split("=", 1) for l in f if "=" in l and not l.lstrip().startswith("#"))
+    except OSError:
+        raise Fail(f"judge env file {path} is not readable", 2)
+    env = {k.strip(): v.strip().strip("'\"") for k, v in env.items()}
+    base = os.environ.get("AVOS_JUDGE_BASE_URL") or env.get("OPENAI_BASE_URL")
+    if not env.get("OPENAI_API_KEY") or not base:
+        raise Fail(f"judge env file {path} lacks OPENAI_API_KEY or OPENAI_BASE_URL", 2)
+    return base, env["OPENAI_API_KEY"]
+
+
+def prompt_sha(framing):
+    return sha(canon({"framing": FRAMINGS[framing], "seed": SEED, "max_tokens": MAX_TOKENS, "temperature": 0}))
+
+
+def request_body(it, framing, rubric, model):
+    system, ask = FRAMINGS[framing]
+    tools = "\n".join(f"- {t['function']['name']}: {t['function'].get('description', '')}" for t in it["tools"])
+    convo = render(it)
+    if framing == "a":
+        msgs = [{"role": "system", "content": f"{system}\n\nRubric:\n{rubric}"},
+                {"role": "user", "content": f"{ask}\n\nConversation ({it['task']}):\n{convo}\n\nTools:\n{tools}"}]
+    else:
+        msgs = [{"role": "system", "content": system},
+                {"role": "user", "content": f"{ask}\n\nRubric:\n{rubric}\n\nTools:\n{tools}\n\nConversation to audit:\n{convo}"}]
+    return json.dumps({"model": model, "messages": msgs, "temperature": 0, "seed": SEED, "max_tokens": MAX_TOKENS,
+                       "user": it["item_id"], "response_format": {"type": "json_object"}}).encode()
+
+
+def parse_answer(data):
+    """(answers, reasons, usage, response_id) from a 2xx body, or None when it is not a valid rubric answer."""
+    try:
+        d = json.loads(data)
+        ch = d["choices"][0]
+        if ch.get("finish_reason") == "length":
+            return None
+        text = ch["message"]["content"].strip()
+        m = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, re.S)
+        a = json.loads(m.group(1) if m else text)
+        if not isinstance(a, dict) or not all(isinstance(a.get(k), bool) for k in ANSWERS):
+            return None
+        u = d.get("usage") or {}
+        usage = {k: u[k] for k in ("prompt_tokens", "completion_tokens") if isinstance(u.get(k), int)} or None
+        reasons = [r for r in a.get("reasons") or [] if isinstance(r, str)] if isinstance(a.get("reasons"), list) else []
+        return {k: a[k] for k in ANSWERS}, reasons, usage, d.get("id") if isinstance(d.get("id"), str) else None
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+        return None
+
+
+def verdict_of(a):
+    return "veto" if (not a["policy_followed"] or not a["right_tools"] or a["hallucinated_facts"] or a["unsafe_action"]) else "pass"
+
+
+class Judge:
+    """An OpenAI-compatible chat endpoint over one kept-alive connection per worker thread."""
+
+    def __init__(self, base, key):
+        u = urllib.parse.urlsplit(base)
+        if u.scheme not in ("http", "https") or not u.hostname:
+            raise Fail("judge base URL is not http(s)", 2)
+        self.cls = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
+        self.host, self.port, self.path = u.hostname, u.port, u.path.rstrip("/") + "/chat/completions"
+        self.headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        self.local, self.stop = threading.local(), threading.Event()
+        self.lock, self.calls = threading.Lock(), 0
+
+    def post(self, body):
+        with self.lock:
+            self.calls += 1
+        for fresh in (False, True):  # a kept-alive connection the server closed meanwhile is reopened once
+            c = getattr(self.local, "c", None)
+            reused = c is not None
+            if c is None:
+                c = self.local.c = self.cls(self.host, self.port, timeout=TIMEOUT)
+            try:
+                c.request("POST", self.path, body, self.headers)
+                r = c.getresponse()
+                return r.status, r.read()
+            except (http.client.RemoteDisconnected, BrokenPipeError, ConnectionResetError):
+                c.close()
+                self.local.c = None
+                if not reused or fresh:
+                    raise
+            except (OSError, http.client.HTTPException):
+                c.close()
+                self.local.c = None
+                raise
+
+    def ask(self, it, framing, rubric, model):
+        """One framing, ≤ ATTEMPTS attempts: ('ok', parsed, n) | ('invalid', None, n) | ('unavailable', None, n)."""
+        body = request_body(it, framing, rubric, model)
+        content_failures = 0
+        for n in range(1, ATTEMPTS + 1):
+            if self.stop.is_set():
+                raise Rejected()
+            try:
+                status, data = self.post(body)
+            except (OSError, http.client.HTTPException):
+                status, data = None, b""
+            if status in (401, 403):
+                self.stop.set()
+                raise Rejected()
+            if status is not None and 200 <= status < 300:
+                got = parse_answer(data)
+                if got:
+                    return "ok", got, n
+                content_failures += 1
+            elif n < ATTEMPTS:
+                time.sleep(0.5 * 2 ** (n - 1))
+        # only an endpoint that answered every time, never validly, gives a stored (reproducible) unknown
+        return ("invalid" if content_failures == ATTEMPTS else "unavailable"), None, ATTEMPTS
+
+
+# ----------------------------------------------------------------------------- run
+
+def kappa(a, b, c, d):
+    n = a + b + c + d
+    k = {"n": n, "a": a, "b": b, "c": c, "d": d, "po": None, "pe": None, "value": None, "se": None, "ci95": None,
+         "status": "unverified", "reason": None}
+    if n == 0:
+        k["reason"] = "n=0 < 50"
+        return k
+    po = (a + d) / n
+    pe = ((a + b) * (a + c) + (c + d) * (b + d)) / (n * n)
+    k["po"], k["pe"] = po, pe
+    if n < GOLD_REQUIRED:
+        k["reason"] = f"n={n} < {GOLD_REQUIRED}"
+    elif pe >= 1:
+        k["reason"] = "pe=1"
+    else:
+        v = (po - pe) / (1 - pe)
+        se = math.sqrt(po * (1 - po) / (n * (1 - pe) ** 2))
+        k.update({"value": v, "se": se, "ci95": [v - 1.96 * se, v + 1.96 * se], "status": "measured"})
+    return k
+
+
+def m10(rows, gold_runs):
+    tabs = {"judge": [0, 0, 0, 0], "reward": [0, 0, 0, 0]}
+    for r in rows:
+        if r["run"] not in gold_runs or not r["level2"]:
+            continue
+        h = r["level2"]["verdict"] == "pass"
+        v = (r["level1"] or {}).get("verdict")
+        raters = {"judge": v == "pass" if v in ("pass", "veto") else None,
+                  "reward": r["level0"]["passed"] if isinstance(r["level0"]["passed"], bool) and r["level0"]["reward_informative"] else None}
+        for name, p in raters.items():
+            if p is not None:
+                tabs[name][(0 if p else 2) + (0 if h else 1)] += 1
+    labelled = sum(1 for r in rows if r["run"] in gold_runs and r["level2"])
+    return {"gold": {"selected": len(gold_runs), "labelled": labelled, "required": GOLD_REQUIRED},
+            "kappa_judge_human": kappa(*tabs["judge"]), "kappa_reward_human": kappa(*tabs["reward"])}
+
+
+def final(l0, l1, l2):
+    if not l0["structural_ok"]:
+        return "fail", "level0"
+    if l2 and (l0["passed"] is True or not l0["reward_informative"]):
+        return l2["verdict"], "human"
+    if not l0["reward_informative"]:
+        return "fail", "tau2_384"
+    if l0["passed"] is not True:
+        return "fail", "reward"
+    if l1 and l1["verdict"] == "veto":
+        return "fail", "veto"
+    return "pass", "reward"
+
+
+def stratum(l0, l1):
+    if l0["witness_agrees"] is not True or not l0["checks"]["reward_known"]:
+        return None
+    if not l0["reward_informative"]:
+        return "disagree"
+    v = (l1 or {}).get("verdict")
+    if v in ("pass", "veto") and (v == "pass") != bool(l0["passed"]):
+        return "disagree"
+    return "passed" if l0["passed"] else "failed"
+
+
+def gold_set(rows, n, seed):
+    strata = {"disagree": [], "passed": [], "failed": []}
+    for r in rows:
+        if r["stratum"]:
+            strata[r["stratum"]].append(r["run"])
+    rnd = random.Random(seed)
+    quota = {"disagree": n - 2 * (n // 3), "passed": n // 3, "failed": n // 3}
+    picked = {s: rnd.sample(sorted(strata[s]), min(quota[s], len(strata[s]))) for s in strata}
+    left = n - sum(map(len, picked.values()))
+    for s in strata:
+        rest = sorted(set(strata[s]) - set(picked[s]))
+        k = min(left, len(rest))
+        if k:
+            picked[s] += rnd.sample(rest, k)
+            left -= k
+    runs = sorted(r for v in picked.values() for r in v)
+    done = {r["run"] for r in rows if r["level2"]}
+    return {"n": n, "seed": seed, "strata": {s: sorted(v) for s, v in strata.items()}, "picked": picked, "runs": runs,
+            "short": sum(map(len, strata.values())) < GOLD_REQUIRED, "labelled": [r for r in runs if r in done],
+            "left": [r for r in runs if r not in done]}
+
+
+def kappa_line(name, k):
+    if k["status"] == "measured":
+        return f"M10 kappa({name}, human) = {k['value']:.3f} (95% CI {k['ci95'][0]:.3f}–{k['ci95'][1]:.3f}, n={k['n']})"
+    return f"M10 kappa({name}, human): unverified ({k['reason']})"
+
+
+def card(summary, manifest, labels):
+    s, j = summary, summary["judge"]
+    c = j["consistency"]
+    lines = ["# Dataset card: labels", "",
+             f"- Dataset `{s['dataset']['dataset_sha256']}` ({s['dataset']['runs']} runs), label set `{labels['label_set_sha256']}`",
+             f"- {s['tiles']['labelled']}", f"- {s['tiles']['kept']}",
+             f"- Levels: {', '.join(map(str, s['levels']))}; by rule: "
+             + ", ".join(f"{k} {v}" for k, v in s["counts"]["by_rule"].items()),
+             f"- Judge: `{s['model']}`, rubric sha256 `{s['rubric_sha256']}`" if s["model"] else "- Judge: not run (level 0 only)",
+             f"- Judge consistency across two framings: {c['rate']:.3f} ({c['agree']} of {c['n']} runs)" if c["rate"] is not None
+             else "- Judge consistency across two framings: not measured (no run with both framings answered)",
+             f"- {kappa_line('judge', s['m10']['kappa_judge_human'])}", f"- {kappa_line('reward', s['m10']['kappa_reward_human'])}",
+             f"- Gold set: {s['m10']['gold']['labelled']} of {s['m10']['gold']['selected']} selected runs labelled blind "
+             f"({s['m10']['gold']['required']} required for a kappa)",
+             f"- M14 after veto: {labels['m14_after_veto']['train_kept']} kept of {labels['m14_after_veto']['train_runs']} train-split runs",
+             f"- Rule: {RULE}", ""]
+    return "\n".join(lines)
+
+
+def write_outputs(out, files):
+    os.makedirs(out, exist_ok=True)
+    for name, text in files.items():
+        tmp = os.path.join(out, f".{name}.tmp-{os.getpid()}")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, os.path.join(out, name))
+
+
+def cmd_run(a):
+    d = dataset_dir(a)
+    levels = {"0": [0], "0,1": [0, 1], "1": [0, 1], "1,0": [0, 1]}.get(a.level)
+    if levels is None:
+        raise Fail(f"--level {a.level}: want 0 or 0,1", 2)
+    if os.path.realpath(a.out) == os.path.realpath(d):
+        raise Fail("--out must not be the dataset directory", 2)
+    with open(os.path.join(d, "manifest.json"), encoding="utf-8") as f:
+        dman = json.load(f)
+    gold_n = max(GOLD_REQUIRED, min(100, a.gold_n))
+    level1 = 1 in levels
+    rubric = rubric_sha = None
+    if level1:
+        with open(a.rubric or RUBRIC, "rb") as f:
+            raw = f.read()
+        rubric, rubric_sha = raw.decode("utf-8"), sha(raw)
+    stored, invalid = read_root(ROOT)
+    l1_index, l2_by_key, l2_by_run = {}, {}, {}
+    for r in stored.values():
+        if r["level"] == 1 and r["model"] == MODEL and r["rubric_sha256"] == rubric_sha \
+                and r.get("prompt_sha256") == prompt_sha(r["framing"]):
+            k = (r["run"], r["content_sha256"], r["framing"])  # per run: clones of one conversation are judged apart
+            if k not in l1_index or (r["ts"], r["label_id"]) > (l1_index[k]["ts"], l1_index[k]["label_id"]):
+                l1_index[k] = r
+        elif r["level"] == 2:
+            l2_by_key.setdefault((r["run"], r["content_sha256"]), []).append(r)
+            l2_by_run.setdefault(r["run"], []).append(r)
+    want = set(a.run or [])
+
+    rows, framings, store, judge = {}, {}, Store(ROOT), None
+    reused = 0
+    pending, ex = {}, None
+
+    def settle(done):
+        for fut in done:
+            run, fr, it_sha, item_id, corpus = pending.pop(fut)
+            kind, got, n = fut.result()
+            if kind == "unavailable":
+                framings[run][fr] = {"label_id": None, "verdict": "unknown", "answers": None, "reasons": [], "error": "judge_unavailable"}
+                continue
+            answers, reasons, usage, rid = got if got else (None, [], None, None)
+            reasons = [scrub(x, corpus)[:REASONS_MAX[1]] for x in reasons[:REASONS_MAX[0]]]
+            row = make_row(level=1, content_sha256=it_sha, item_id=item_id, run=run, labeller=f"model:{MODEL}", ts=now(),
+                           verdict=verdict_of(answers) if answers else "unknown", model=MODEL, rubric_sha256=rubric_sha,
+                           prompt_sha256=prompt_sha(fr), framing=fr, answers=answers, reasons=reasons,
+                           error=None if answers else "judge_invalid", attempts=n, usage=usage, response_id=rid)
+            store.append([row])
+            framings[run][fr] = row
+
+    try:
+        for it in harness_items(d):
+            run = it["run"]
+            if want and run not in want:
+                continue
+            c_sha = content_key(it)
+            rows[run] = {"run": run, "item_id": it["item_id"], "content_sha256": c_sha, "task": it["task"],
+                         "task_id": it.get("task_id"), "split": it.get("split"), "level0": level0(it)}
+            if not (level1 and judged(it)):
+                continue
+            framings[run] = {}
+            corpus = None
+            for fr in FRAMINGS:
+                r = l1_index.get((run, c_sha, fr))
+                if r and not (a.retry_unknown and r["verdict"] == "unknown"):
+                    framings[run][fr] = r
+                    reused += 1
+                    continue
+                if judge is None:
+                    judge = Judge(*read_env(JUDGE_ENV))
+                    ex = concurrent.futures.ThreadPoolExecutor(WORKERS)
+                if corpus is None:
+                    corpus = "\x00".join(transcript_strings(it))
+                pending[ex.submit(judge.ask, it, fr, rubric, MODEL)] = (run, fr, c_sha, it["item_id"], corpus)
+                if len(pending) >= 4 * WORKERS:
+                    settle(concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED).done)
+        while pending:
+            settle(concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED).done)
+    except Rejected:
+        raise Fail("the judge endpoint rejected the credentials (HTTP 401/403)", 2)
+    finally:
+        if ex:
+            ex.shutdown(wait=False, cancel_futures=True)
+    if want - set(rows):
+        raise Fail(f"run(s) not in the dataset: {', '.join(sorted(want - set(rows)))}", 2)
+
+    # combine: level 1 per run, current human label, the disagreement rule, strata
+    stale = []
+    out_rows = []
+    for run in sorted(rows):
+        r = rows[run]
+        l1 = None
+        if run in framings:
+            fr = {k: {"label_id": x["label_id"], "verdict": x["verdict"],
+                      "answers": x["answers"] and {q: x["answers"][q] for q in ANSWERS}, "reasons": x["reasons"],
+                      "error": x["error"]} for k, x in framings[run].items()}
+            vs = [fr[k]["verdict"] for k in FRAMINGS]
+            l1 = {"model": MODEL, "rubric_sha256": rubric_sha,
+                  "verdict": "veto" if "veto" in vs else "pass" if "pass" in vs else "unknown",
+                  "framings": {k: fr[k] for k in FRAMINGS},
+                  "consistent": vs[0] == vs[1] if "unknown" not in vs else None,
+                  "reasons": [x for k in FRAMINGS for x in fr[k]["reasons"]]}
+        hs = l2_by_key.get((run, r["content_sha256"]), [])
+        cur = newest(hs)
+        l2 = cur and {"labeller": cur["labeller"], "verdict": cur["verdict"], "label_id": cur["label_id"], "ts": cur["ts"], "history": len(hs)}
+        for x in sorted(l2_by_run.get(run, []), key=lambda x: x["label_id"]):
+            if x["content_sha256"] != r["content_sha256"]:
+                stale.append({"run": run, "label_id": x["label_id"], "labelled_content_sha256": x["content_sha256"],
+                              "current_content_sha256": r["content_sha256"], "labelled_item_id": x["item_id"],
+                              "current_item_id": r["item_id"], "labeller": x["labeller"]})
+        label, rule = final(r["level0"], l1, l2)
+        out_rows.append({**r, "level1": l1, "level2": l2, "final": {"label": label, "rule": rule, "kept": label == "pass"},
+                         "stratum": stratum(r["level0"], l1)})
+
+    relabelled = {r["run"] for r in out_rows if r["level2"]}
+    gold = gold_set(out_rows, gold_n, a.seed)
+    gold_runs = set(gold["runs"])
+    quality = m10(out_rows, gold_runs)
+    n_rows = len(out_rows)
+    kept = sum(1 for r in out_rows if r["final"]["kept"])
+    cons = [r["level1"]["consistent"] for r in out_rows if r["level1"] and r["level1"]["consistent"] is not None]
+    unknown = sum(1 for r in out_rows if r["level1"] and r["level1"]["verdict"] == "unknown")
+    hash_bad = sum(1 for r in out_rows if not r["level0"]["checks"]["item_hash"])
+    # a stale label stops counting once the run is labelled again on its current content (still listed)
+    open_stale = sorted({x["run"] for x in stale if x["run"] not in relabelled})
+    rc = 1 if unknown or open_stale or invalid or hash_bad else 0
+    runs_m = dman["counts"]["runs_exported"]
+    summary = {
+        "format": "avos-label-summary/1",
+        "dataset": {"path_sha256": None, "dataset_sha256": dman.get("dataset_sha256"), "runs": runs_m},
+        "levels": levels, "model": MODEL if level1 else None, "rubric_sha256": rubric_sha if level1 else None, "seed": a.seed,
+        "counts": {"labelled": n_rows, "kept": kept, "dropped": n_rows - kept,
+                   "clean": sum(1 for r in out_rows if r["level0"]["status"] == "clean"),
+                   "not_clean": sum(1 for r in out_rows if r["level0"]["status"] != "clean"),
+                   "by_rule": dict(sorted(Counter(r["final"]["rule"] for r in out_rows).items())),
+                   "level0_reasons": dict(sorted(Counter(x for r in out_rows for x in r["level0"]["reasons"]).items())),
+                   "judged": sum(1 for r in out_rows if r["level1"]), "judge_unknown": unknown,
+                   "human_labelled": sum(1 for r in out_rows if r["level2"])},
+        "judge": {"calls_made": judge.calls if judge else 0, "calls_reused": reused,
+                  "consistency": {"n": len(cons), "agree": sum(cons), "rate": sum(cons) / len(cons) if cons else None}},
+        "tiles": {"labelled": f"{n_rows} / {runs_m} runs labelled",
+                  "kept": f"kept {kept} passed runs → training set · dropped {n_rows - kept} failed"},
+        "m10": quality, "stale_labels": stale, "invalid_rows": invalid, "exit": rc}
+
+    labels_text = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in out_rows)
+    by_run = {r["run"]: r for r in out_rows}
+    train = [r for r in out_rows if r["split"] == "train"]
+    train_kept = sum(1 for r in train if r["final"]["kept"])
+    labels = {"items": [{"item_id": x["item_id"], "run": x["run"],
+                         **({k: by_run[x["run"]]["final"][k] for k in ("label", "rule", "kept")}
+                            if x["run"] in by_run and by_run[x["run"]]["item_id"] == x["item_id"]
+                            else {"label": None, "rule": None, "kept": None})} for x in dman.get("items", [])],
+              "counts": {"labelled": n_rows, "kept": kept, "dropped": n_rows - kept},
+              "label_set_sha256": sha(labels_text.encode()), "rule": RULE,
+              "m14_after_veto": {"train_runs": len(train), "train_kept": train_kept,
+                                 "kept_run_fraction": train_kept / len(train) if train else None}}
+    manifest = {**dman, "format": "avos-retrain-manifest/1+labels", "labels": labels, "m10": quality,
+                "judge": {"model": summary["model"], "rubric_sha256": summary["rubric_sha256"],
+                          "consistency": summary["judge"]["consistency"]}}
+    write_outputs(a.out, {"labels.jsonl": labels_text,
+                          "summary.json": json.dumps(summary, indent=1, ensure_ascii=False) + "\n",
+                          "manifest.json": json.dumps(manifest, indent=1, ensure_ascii=False) + "\n",
+                          "gold.json": json.dumps(gold, indent=1) + "\n",
+                          "CARD.md": card(summary, manifest, labels)})
+    print(json.dumps({"out": a.out, "labelled": n_rows, "runs": runs_m, "kept": kept, "dropped": n_rows - kept,
+                      "judged": summary["counts"]["judged"], "judge_unknown": unknown, **summary["judge"],
+                      "stale_labels": len(stale), "invalid_rows": len(invalid), "exit": rc}, ensure_ascii=False))
+    if rc:
+        problems = [f"{unknown} run(s) without a judge verdict" if unknown else "",
+                    f"{len(open_stale)} run(s) with only stale human labels" if open_stale else "", f"{len(invalid)} invalid label row(s)" if invalid else "",
+                    f"{hash_bad} item(s) whose content does not match item_id" if hash_bad else ""]
+        print("label: " + "; ".join(p for p in problems if p) + f" (see {a.out}/summary.json)", file=sys.stderr)
+    return rc
+
+
+# ----------------------------------------------------------------------------- view, human, gold, merge
+
+def cmd_view(a):
+    it = find_item(dataset_dir(a), a.run)
+    if it is None:
+        raise Fail(f"{a.run}: not in the dataset", 1)
+    text = (f"run={it['run']} principal={it['principal']} task={it['task']} item={it['item_id']}\n"
+            f"tools={','.join(t['function']['name'] for t in it['tools'])}\n{render(it)}\n")
+    if a.html:
+        text = f"<!doctype html>\n<meta charset=\"utf-8\">\n<title>{html.escape(a.run)}</title>\n<pre>\n{html.escape(text)}</pre>\n"
+    sys.stdout.write(text)
+    return 0
+
+
+def cmd_human(a):
+    it = find_item(dataset_dir(a), a.run)
+    if it is None:
+        raise Fail(f"{a.run}: not in the dataset", 1)
+    name = a.labeller if a.labeller.startswith("human:") else f"human:{a.labeller}"
+    if not a.labeller.strip() or "\n" in name:
+        raise Fail("--labeller must be a non-empty name", 2)
+    note = scrub(a.note, "\x00".join(transcript_strings(it))) if a.note else None
+    row = make_row(level=2, content_sha256=content_key(it), item_id=it["item_id"], run=it["run"], labeller=name,
+                   ts=now(), verdict=a.verdict, note=note)
+    Store(ROOT).append([row])
+    print(json.dumps(row, sort_keys=True, ensure_ascii=False))
+    return 0
+
+
+def cmd_gold(a):
+    p = os.path.join(a.out, "gold.json")
+    if not os.path.isfile(p):
+        raise Fail(f"{p}: no gold set (run `label run` first)", 2)
+    with open(p, encoding="utf-8") as f:
+        gold = json.load(f)
+    keys = {}
+    lp = os.path.join(a.out, "labels.jsonl")
+    if os.path.isfile(lp):
+        with open(lp, encoding="utf-8") as f:
+            keys = {r["run"]: r["content_sha256"] for r in map(json.loads, filter(str.strip, f))}
+    rows, _ = read_root(ROOT)
+    done = {(r["run"], r["content_sha256"]) for r in rows.values() if r["level"] == 2}
+    labelled = [r for r in gold["runs"] if (r, keys.get(r)) in done] if keys else gold["labelled"]
+    left = [r for r in gold["runs"] if r not in labelled]
+    if a.next:
+        print(left[0] if left else "")
+        return 0
+    print(json.dumps({"selected": len(gold["runs"]), "labelled": len(labelled), "left": len(left),
+                      "strata": {s: {"selected": len(v), "labelled": sum(1 for r in v if r in labelled)}
+                                 for s, v in gold["picked"].items()}}))
+    return 0
+
+
+def cmd_merge(a):
+    have, _ = read_root(ROOT)
+    added, skipped, invalid = {}, 0, 0
+    for src in a.sources:
+        if not os.path.isdir(src):
+            raise Fail(f"{src}: not a label root", 2)
+        rows, bad = read_root(src)
+        invalid += len(bad)
+        for lid in sorted(rows):
+            if lid in have or lid in added:
+                skipped += 1
+            else:
+                added[lid] = rows[lid]
+    Store(ROOT).append([added[k] for k in sorted(added)])
+    print(json.dumps({"added": len(added), "skipped": skipped, "invalid": invalid}))
+    if invalid:
+        print(f"label: {invalid} invalid row(s) in the source root(s) were not merged", file=sys.stderr)
+    return 1 if invalid else 0
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        raise Fail(message, 2)
+
+
+def main():
+    ap = Parser(prog="label", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True, parser_class=Parser)
+    r = sub.add_parser("run")
+    r.add_argument("--dataset")
+    r.add_argument("--out", required=True)
+    r.add_argument("--level", required=True)
+    r.add_argument("--run", action="append")
+    r.add_argument("--rubric")
+    r.add_argument("--gold-n", type=int, default=60)
+    r.add_argument("--seed", type=int, default=0)
+    r.add_argument("--retry-unknown", action="store_true")
+    v = sub.add_parser("view")
+    v.add_argument("--dataset")
+    v.add_argument("--run", required=True)
+    v.add_argument("--html", action="store_true")
+    h = sub.add_parser("human")
+    h.add_argument("--dataset")
+    h.add_argument("--run", required=True)
+    h.add_argument("--verdict", required=True, choices=("pass", "fail"))
+    h.add_argument("--labeller", required=True)
+    h.add_argument("--note")
+    g = sub.add_parser("gold")
+    g.add_argument("--out", required=True)
+    which = g.add_mutually_exclusive_group(required=True)
+    which.add_argument("--next", action="store_true")
+    which.add_argument("--status", action="store_true")
+    m = sub.add_parser("merge")
+    m.add_argument("--from", dest="sources", action="append", required=True)
+    try:
+        a = ap.parse_args()
+        return {"run": cmd_run, "view": cmd_view, "human": cmd_human, "gold": cmd_gold, "merge": cmd_merge}[a.cmd](a)
+    except Fail as e:
+        print(f"label: {e}", file=sys.stderr)
+        return e.rc
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+        print(f"label: {type(e).__name__}: {e}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

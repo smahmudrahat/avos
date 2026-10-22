@@ -193,3 +193,49 @@ export directory plus its manifest.
 - **Statistics** (`stats.json`): policy turns and messages per item, the share of policy turns that call a tool,
   which tool is called at which message index, the most common (tool, index) with a flag at ≥ 90 % of items (the
   published τ-bench failure had 98 % at one index), and exact duplicates.
+
+## 11. Labels (POC 9)
+`label/bin/label` labels a POC 8 dataset in three levels and writes the labelled dataset (`label/CONTRACT.md`;
+results: `data/poc9/README.md`). It reads only the export directory, never the store, the results or the ledger,
+and writes only its output directory and the label root.
+
+- **Where labels live.** Append-only JSONL files under `AVOS_LABEL_ROOT` (default `/var/lib/avos/labels`), one per
+  labeller (`model_<judge>.jsonl`, `human_<name>.jsonl`), outside the three roots: the store stays the record of what
+  happened, the label root the record of what was judged about it. No database: a row is never edited, a relabel is a
+  new row, the newest valid row is current and the older ones stay as history. The set of rows is the state, so
+  hosts and labellers merge by concatenation (`label merge`) in any order with the same result. Each row carries
+  `label_id`, the SHA-256 of its own canonical JSON; a row edited in place or torn by a crash no longer matches, is
+  listed in `summary.invalid_rows` and is never applied.
+- **What a label points at.** The content the labeller judged: `content_sha256` over the task, the tools and every
+  message's role, content, tool calls and `tool_call_id`. `item_id` is recorded beside it; it also hashes evidence,
+  cost, host and lineage, so an import, a price table or a recomputed M8 changes it without changing what was read.
+  Labels survive such a re-export; a change to the conversation itself makes the run's human labels **stale**:
+  listed with both keys and the labeller, never applied, exit 1 until
+  the user labels the run's new content (the old rows stay listed).
+- **Level 0** decides from the item alone: the reward, the termination reason and POC 8's structural checks
+  (`item_id` matches the item, a `complete` trace, an agreeing witness, no infrastructure error, no context-window
+  overflow, a known reward). τ² retail tasks 10, 12, 25, 50, 57 and 65 pay a do-nothing agent 1.0 (τ² #384), so
+  their reward is marked uninformative and only a human pass keeps them. An empty NL-assertion list is normal.
+- **Level 1** asks `openai/gpt-oss-120b` (open weights, not the policy's family) a fixed rubric (`label/rubric.json`:
+  policy followed, right tools, hallucinated facts, unsafe action) in two framings that differ in wording and order,
+  each given the whole conversation and the tool descriptions, never the reward. A policy not followed, a wrong tool, a
+  hallucinated fact or an unsafe action is a veto; one framing's veto vetoes; the share of runs whose two framings agree is the judge's consistency.
+  Temperature 0 does not repeat on the hosted model (measured), so **the recorded answer is the label**: it is
+  asked for once and replayed for ever, keyed by run, content, model, rubric and prompt hash (a human label too is
+  current per run and content); changing any of them
+  asks again, never reuses. An endpoint that answers but never validly gives a stored `unknown`; one that does not
+  answer stores nothing, so a later run asks again.
+- **Level 2** is the user, blind: `label view` prints the conversation as POC 8's viewer does, minus every line about
+  the outcome, the judge, the trace or the split. The gold set is 50–100 runs drawn with a fixed seed from three
+  strata (reward passed, reward failed, judge disagrees with the reward or the reward is uninformative), resumable
+  with `label gold --next`.
+- **The rule.** Reward decides pass/fail; the judge can veto a pass; the user settles vetoes in the gold set. Flagged
+  or incomplete items are never labelled clean. In order: a structural failure fails; a human label decides a
+  reward-passed or uninformative run; an uninformative reward fails; a failed reward fails; a veto fails; else pass.
+- **No transcript text in labels.** Rows hold verdicts, the four answers, ids, usage and at most three judge reasons
+  of 300 characters, with every run of 60 or more characters copied from the conversation replaced by `[…]`.
+- **The labelled dataset.** `OUT/manifest.json` is the POC 8 manifest with `labels` (label, rule and kept flag per
+  item, the label set's hash, the rule, M14 after veto), `m10` and `judge`; `CARD.md` carries the tiles, M10, the
+  judge, its consistency and the rule. Same dataset, same rows, same arguments: byte-identical files.
+- **M10** is Cohen's kappa of judge and reward against the human on the gold set, with its 95 % interval. Below 50
+  human labels, or with no variation, it reads `unverified` with the reason and its parts, never a number.

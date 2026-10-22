@@ -1,0 +1,3 @@
+{"note": "POC 8 `export --all` over label/tests/lib.py build_env (fixtures + six clones), frozen 2026-10-22 before POC 9; CONTRACT.md §13",
+ "dataset_sha256": "6cdb9b0b0a230732a4d1a6acb8864dff4634159703d1e2695ebc25d95a5ed80e",
+ "counts": {"runs_requested": 24, "runs_exported": 18, "items": 18, "sft_examples": 116, "passed": 11, "failed": 6, "unknown": 1, "train": 17, "held_out": 0, "unsplit": 1, "flagged": 2}}

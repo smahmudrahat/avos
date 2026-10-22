@@ -230,6 +230,16 @@ M8 status that is byte-identical on re-export, diversity statistics, and a plain
 Design: `docs/trace.md` §10; interface and acceptance suite: `retrain/CONTRACT.md`, `retrain/tests/`; results:
 `data/poc8/README.md`.
 
-## 9. Planned
-- **Labeling and training:** automated checks, open-weight judges, human review; LoRA retraining on passed runs.
+## 9. Labels (`label/`)
+A dataset is labelled in three levels without touching the record. `label` reads a POC 8 export: level 0 is the
+reward and the structural checks, level 1 an open-weight judge asked a fixed rubric in two framings, level 2 the user,
+blind, on a stratified gold set. Every judge answer and human verdict is a row appended to a per-labeller JSONL file
+under `/var/lib/avos/labels`, keyed by the hash of the conversation that was judged; the recorded judge answer is the
+label and is replayed, never re-asked. The labelled manifest, the dataset card and M10 (kappa of judge and reward
+against the human, with an interval, or `unverified`) are derived from the export and those rows alone, byte-identical
+on re-run. Design: `docs/trace.md` §11; interface and acceptance suite: `label/CONTRACT.md`, `label/tests/`; results:
+`data/poc9/README.md`.
+
+## 10. Planned
+- **Training:** LoRA retraining on the runs the labels keep.
 - **Evaluation:** full held-out runs with pass^k, cost and latency, compared with frontier-model baselines.

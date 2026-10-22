@@ -39,5 +39,6 @@ Every tool, image and model the POCs depend on, recorded when first used (`conve
 |---|---|---|---|---|
 | Dev model (POC 1–9 plumbing) | `Qwen/Qwen3-30B-A3B-Instruct-2507` | Nebius Token Factory, `https://api.tokenfactory.nebius.com/v1` | 2026-10-19 | Not the policy model (8–9B, chosen in POC 10). `conventions.md` §2. |
 | NL-assertion judge | `deepseek-ai/DeepSeek-V4-Flash-0731` | Nebius Token Factory | 2026-10-19 | Bare-JSON verdicts correct in 2/2 checks, 2–3 s. `zai-org/GLM-5.3` timed out (>120 s) 2/2. |
+| Label judge (POC 9 level 1) | `openai/gpt-oss-120b` | same endpoint (`OPENAI_BASE_URL` of the gateway's env file) | 2026-10-22 | Open weights, Apache-2.0, not the policy's family. Temperature 0, seed 300, `max_tokens` 4000 (reasoning counts against it: valid JSON 60/60 in the probe), JSON object; answers recorded once and replayed (`docs/trace.md` §11). Rubric `label/rubric.json`. |
 | Policy model | — | — | POC 10 | |
 | User simulator | — | — | POC 10 | Larger and from a different family than the policy model. |

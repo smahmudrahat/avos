@@ -301,6 +301,25 @@ poc8:
     echo "== viewer: $r (header, outcome, first messages)"
     rt view --run $r | head -24
 
+# Host: POC 9 on the dry-run set (data/splits/dryrun_v1.json): POC 8 export, `label run` (level 0 by default; `just
+# poc9 0,1` asks the judge for every run without a recorded answer and records the answers in /var/lib/avos/labels),
+# the dataset card, the gold set. Label blind only after `0,1` (the judge's answers decide the gold set's disagreement
+# stratum): `label view --run R`, `label human --run R --verdict pass|fail --labeller NAME`, `label gold --out
+# /tmp/poc9/out --next` (AVOS_LABEL_DATASET=/tmp/poc9/ds). Suite: `python3 label/tests/run.py [--quick] [--host]`.
+poc9 level="0":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    t=/tmp/poc9; sudo rm -rf $t; mkdir -p $t
+    python3 -c 'import json; print("\n".join(json.load(open("data/splits/dryrun_v1.json"))["runs"]))' > $t/runs.txt
+    echo "== export $(wc -l < $t/runs.txt) dry-run runs"
+    sudo python3 retrain/bin/retrain export --out $t/ds --runs-file $t/runs.txt > /dev/null || echo "export exit $? (see $t/ds/manifest.json skipped)"
+    lb() { sudo env AVOS_LABEL_DATASET=$t/ds python3 label/bin/label "$@"; }
+    echo "== label run --level {{level}}"
+    lb run --out $t/out --level {{level}}; echo "exit $?"
+    sudo cat $t/out/CARD.md
+    echo "== gold set"; lb gold --out $t/out --status
+    echo "next to label blind: $(lb gold --out $t/out --next)"
+
 # Host: one principal's audit timeline, or one run's (`just audit --principal SPIFFE_ID`, `just audit --run vm-01-abc123`)
 audit *args:
     sudo python3 collect/bin/avos trace {{args}}
