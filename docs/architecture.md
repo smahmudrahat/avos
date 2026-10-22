@@ -218,6 +218,18 @@ Known limits: an in-VM action that makes no request has no writer but the audite
 without the forwarder (an agent may dial it with its own SVID) carry no number and read as more decisions than guest
 requests; and while a VM lives, a principal that has not exited counts as the highest number the host has seen.
 
-## 8. Planned
+## 8. Training store (`retrain/`)
+Runs become training data without a second record. `retrain` builds one item per (run, principal) from the run's
+own files on every call: the store's events by their own ids, the harness transcript as a witness, and the pinned
+τ² prompt template and tool schemas. The gateway adds hashes of what each model call was shown and what it answered
+to the `llm.call` it already writes (no text); a transcript message is accepted only where it hashes to what the
+host saw, and the host's view of each call (the agent's prompt and tools, or neither) decides whether it was the
+policy or the user simulator. Only the policy's own turns are trained. Outputs: `trajectories.jsonl` (per-message
+`train` flag, `tools` column), `sft.jsonl` (prompt→completion per policy turn), a manifest of item hashes, splits and
+M8 status that is byte-identical on re-export, diversity statistics, and a plain-text or HTML viewer for labelers.
+Design: `docs/trace.md` §10; interface and acceptance suite: `retrain/CONTRACT.md`, `retrain/tests/`; results:
+`data/poc8/README.md`.
+
+## 9. Planned
 - **Labeling and training:** automated checks, open-weight judges, human review; LoRA retraining on passed runs.
 - **Evaluation:** full held-out runs with pass^k, cost and latency, compared with frontier-model baselines.

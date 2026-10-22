@@ -6,6 +6,7 @@ principal's own X.509 SVID. The gateway names the caller from the certificate (a
 connection comes from), decides with Cedar (policies/*.cedar), attaches upstream credentials only to allowed calls,
 and writes one authz.decision event per request to the trace store (collect/store.py), in the stream of the caller's
 VM. Calls name the decision that allowed them (authz_ref); every row carries the forwarder's X-Avos-Attempt number.
+A model call also records hashes of what the model was shown and answered, never the text (seen(), docs/trace.md §5).
 
   POST /v1/...            llm.call     Model::<model>      forwarded to the upstream model API with its key
   POST /tools/<name>      tool.call    Tool::<name>        demo tools served here (issue_refund)
@@ -171,6 +172,24 @@ def issue_refund(args):
 TOOLS = {"issue_refund": (issue_refund, {"order_id": str, "amount_cents": int})}
 
 
+def seen(sent, answer):
+    """What the model was shown and what it answered, as hashes only (no text is kept on the host): the upstream
+    response id, the system prompt, the tool schemas sent (null: none were), each request message in order, and the
+    reply. The form is lib_trace's chat_form + content_sha, which a reader of the harness transcript recomputes."""
+    T = store.T
+    try:
+        msgs = sent.get("messages") or []
+        system = next((m.get("content") for m in msgs if m.get("role") == "system"), None)
+        reply = answer["choices"][0]["message"] if isinstance(answer, dict) and answer.get("choices") else None
+        return {"response_id": answer.get("id") if isinstance(answer, dict) else None,
+                "system_sha256": None if system is None else T.content_sha(system),
+                "tools_sha256": T.content_sha(sent["tools"]) if sent.get("tools") else None,
+                "messages_sha256": [T.content_sha(T.chat_form(m)) for m in msgs],
+                "output_sha256": None if reply is None else T.content_sha(T.chat_form(reply, "assistant"))}
+    except (AttributeError, TypeError, KeyError, IndexError):
+        return {}  # not a chat completion: the call is logged without hashes
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"  # keep-alive: one TLS handshake per forwarded connection, not per call
 
@@ -264,7 +283,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def llm(self, body):
         try:
-            model = json.loads(body)["model"]
+            sent = json.loads(body)
+            model = sent["model"]
         except (ValueError, KeyError, TypeError):
             return self.refuse(400, "llm.call", "body must be JSON with a model", {})
         if not (d := self.allowed("llm.call", f"Model::{json.dumps(model)}", {})):
@@ -282,15 +302,16 @@ class Handler(BaseHTTPRequestHandler):
         except OSError as e:
             code, out, ctype = 502, json.dumps({"error": f"upstream: {e}"}).encode(), "application/json"
         try:
-            usage = json.loads(out).get("usage") or {}
-        except (ValueError, AttributeError):
-            usage = {}
+            answer = json.loads(out)
+        except ValueError:
+            answer = None
+        usage = (answer.get("usage") if isinstance(answer, dict) else None) or {}
         # A halt or cut that landed while the call was upstream: the answer is not delivered (nor is it kept).
         c = cut_for(self.spiffe_id)
         store.count(self.home, "l")
         self.emit("llm.call", authz_ref=d["event_id"], model=model, status=code, ms=round((time.time() - t0) * 1000),
                   prompt_tokens=usage.get("prompt_tokens"), completion_tokens=usage.get("completion_tokens"),
-                  dropped=bool(c), **({"receipt": c["receipt"]} if c else {}))
+                  dropped=bool(c), **({"receipt": c["receipt"]} if c else {}), **seen(sent, answer))
         if c:
             return self.deny(f"{c['state']} by {c['receipt']}", [c["state"], c["receipt"]], {})
         self.reply(code, out, ctype)

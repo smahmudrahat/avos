@@ -21,7 +21,8 @@ Every step is reproducible from this repository: scripts, configuration, pinned 
 | 5. Supervisor | Stop, resume, kill or cut off any principal by name without disturbing siblings | Done |
 | 6. Trace design | One event schema serving audit (who, when, with what authority) and retraining (inputs → outputs → result), validated on a real run | Done |
 | 7. Collection | Every principal's events written append-only on the host as they happen; any identity's timeline answered from its VM's streams; loss before the host made visible (M8) | Done |
-| 8–9. Training store and labels | Training store, labeling pipeline | Planned |
+| 8. Training store | Every run as per-principal training data and a labeler's view, derived from the trace with the store's own ids; transcript content accepted only where it matches hashes the gateway took of what the model saw | Done |
+| 9. Labels | Labeling pipeline | Planned |
 | 10–13. Evaluation | Benchmark runs, retraining, comparison with frontier models | Planned |
 
 Results for each completed milestone are in `data/pocN/README.md`.
@@ -62,6 +63,7 @@ just poc5            # supervisor acceptance test; `just ctl ls`, `just ctl halt
 just poc5-baseline   # the same agents with no control at all: what M7 is measured against
 just claim1          # claim 1 acceptance suite, written independently (≈ 9 min)
 just poc6            # trace schema, validator, projections on a real run + acceptance suite
+just poc8            # training store: export, viewer, statistics on the host's runs + acceptance suite
 ```
 
 ## Repository layout
@@ -74,6 +76,7 @@ just poc6            # trace schema, validator, projections on a real run + acce
 | `supervisor/` | control table: halt, resume, kill, cut by name (milestone 5) |
 | `trace/` | event schema, validator, verifier, projections and their acceptance suite (milestone 6) |
 | `collect/` | the host trace store: emitters' stream writer, `avos` audit CLI, acceptance suite (milestone 7) |
+| `retrain/` | runs as training data and a labeler's view: `retrain` CLI, pinned τ² metadata, acceptance suite (milestone 8) |
 | `eval/` | benchmark split tooling and coding tasks |
 | `data/` | dataset splits and per-milestone results |
 | `docs/` | architecture, conventions, metrics, pinned versions |
@@ -81,7 +84,7 @@ just poc6            # trace schema, validator, projections on a real run + acce
 ## Documentation
 
 - [`docs/architecture.md`](docs/architecture.md): components and request paths
-- [`docs/trace.md`](docs/trace.md): the event catalog, lifecycle, two writers, projections, tamper evidence
+- [`docs/trace.md`](docs/trace.md): the event catalog, lifecycle, two writers, projections, tamper evidence, training store
 - [`docs/conventions.md`](docs/conventions.md): benchmark, model policy, naming, environment
 - [`docs/metrics.md`](docs/metrics.md): metrics M1–M17 and where each is measured
 - [`docs/versions.md`](docs/versions.md): every pinned tool, image and model

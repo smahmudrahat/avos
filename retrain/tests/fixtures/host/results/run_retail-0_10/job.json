@@ -1,0 +1,15 @@
+{
+ "run": "run_retail-0_10",
+ "vm": "vm-01",
+ "vm_id": "vm-01-c060a5",
+ "vm_spiffe_id": "spiffe://avoslab.com/vm/vm-01-c060a5",
+ "agent_spiffe_id": "spiffe://avoslab.com/vm/vm-01-c060a5/agent/tau2",
+ "harness": "tau2",
+ "task": "retail/0",
+ "status": "done",
+ "http": "200",
+ "wall_ms": 17311,
+ "harness_version": "96a3ef92329baf908ffe9dfe188cea34e8701d2a",
+ "reward": 0.0,
+ "termination_reason": "user_stop"
+}

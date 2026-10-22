@@ -1,0 +1,13 @@
+{
+ "run": "run_retail-2_1",
+ "vm": "vm-01",
+ "harness": "tau2",
+ "task": "retail/2",
+ "status": "failed",
+ "http": "200",
+ "wall_ms": 409424,
+ "harness_commit": "96a3ef92329baf908ffe9dfe188cea34e8701d2a",
+ "reward": null,
+ "termination_reason": "infrastructure_error",
+ "error": "litellm.NotFoundError: NotFoundError: OpenAIException - Error code: 404 - {'detail': 'The model `gpt-4.1-2025-04-14` does not exist.'}"
+}

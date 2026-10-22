@@ -79,7 +79,7 @@ def content(fields, name, value, keep):
     if keep:
         fields[name] = value
     else:
-        fields[name + "_sha256"] = T.sha(value)
+        fields.setdefault(name + "_sha256", T.sha(value))  # a hash the gateway wrote (what it saw) is kept
 
 
 def first_host(path):

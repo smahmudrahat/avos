@@ -37,6 +37,38 @@ def sha(obj):
     return hashlib.sha256(json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def strip_nulls(x):
+    if isinstance(x, dict):
+        return {k: strip_nulls(v) for k, v in x.items() if v is not None}
+    if isinstance(x, list):
+        return [strip_nulls(v) for v in x]
+    return x
+
+
+def content_sha(obj):
+    """SHA-256 of a value in the one form the gateway and a reader of the harness transcript both compute: nulls
+    dropped, keys sorted, compact. The model-call hashes on llm.call use it (docs/trace.md §5)."""
+    return hashlib.sha256(json.dumps(strip_nulls(obj), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def chat_form(m, role=None):
+    """A chat message reduced to what both sides can state: role, content (empty = none), tool calls as (id, name,
+    parsed arguments), tool_call_id. Takes Chat Completions messages and τ² messages (a tool call's name and dict
+    arguments at its top level); `role` overrides the message's own (a model's reply is always the assistant's)."""
+    tcs = []
+    for t in m.get("tool_calls") or []:
+        fn = t.get("function") or t
+        args = fn.get("arguments")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                pass
+        tcs.append({"id": t.get("id"), "name": fn.get("name"), "arguments": args})
+    return {"role": role or m.get("role"), "content": m.get("content") or None, "tool_calls": tcs or None,
+            "tool_call_id": m.get("tool_call_id")}
+
+
 def dumps(ev):
     # One line as stored: the emitters' own json.dumps style, UTF-8 rather than \u escapes.
     return json.dumps(ev, ensure_ascii=False) + "\n"

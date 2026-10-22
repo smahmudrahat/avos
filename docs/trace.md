@@ -24,7 +24,7 @@ and cannot collide: `seq` never repeats within a writer, and the writer name sta
 | `session.open` / `session.close` | the VM | `run`, `harness`, `task` / `run`, `status`, `wall_ms` | `infra/job` |
 | `agent.spawn` / `agent.exit` | the agent | `spiffe_id`, `parent`, `name` / `spiffe_id`, `exit_reason` | registrar |
 | `authz.decision` | the caller | `action`, `resource`, `args`, `decision`, `policy_ids`, `errors` | gateway |
-| `llm.call` | the caller | `authz_ref`, `model`, `status`, `ms`, `prompt_tokens`, `completion_tokens`, `dropped`, `receipt` if dropped; `price`, `cost_usd`; merged: `role`, `guest_ts`, `input`, `output` | gateway (+ harness content) |
+| `llm.call` | the caller | `authz_ref`, `model`, `status`, `ms`, `prompt_tokens`, `completion_tokens`, `dropped`, `receipt` if dropped; `response_id`, `system_sha256`, `tools_sha256`, `messages_sha256`, `output_sha256` (§5); `price`, `cost_usd`; merged: `role`, `guest_ts`, `input`, `output` | gateway (+ harness content) |
 | `tool.call` / `tool.result` | the caller | `via`, `tool`, `authz_ref` (gateway), `call_id` (harness), `args` / `call_ref`, `result`, `error` | gateway or harness |
 | `net.connect` | the caller | `authz_ref`, `dest` | gateway |
 | `fs.write` | the writing process | `path` | (reserved; no emitter yet) |
@@ -82,6 +82,19 @@ off, only their SHA-256 (`output_sha256`, `args_sha256`, `result_sha256`) is kep
 both modes: they equal the decision's `args`, which is the audit record. A tool result that is JSON text is stored
 as JSON when that is lossless.
 
+**Model-call hashes** (since POC 8, always on, no text). The gateway holds each request and reply whole, so it adds
+to the `llm.call` it writes what the model was shown and what it said, as hashes only: `response_id` (the upstream
+reply's `id`), `system_sha256` (the system message's content), `tools_sha256` (the tool schemas sent; `null` when
+none were), `messages_sha256` (each request message, in order) and `output_sha256` (the reply). Every hash is
+`content_sha(chat_form(x))` from `trace/lib_trace.py`: a message reduced to role, content (empty = none), tool calls
+as (id, name, parsed arguments) and `tool_call_id`, then SHA-256 of its JSON with nulls dropped, keys sorted, compact.
+That is the form a reader of the harness transcript can compute too: on a real run the τ² transcript reproduces all
+14 replies and all 9 agent prompts hash for hash, though the transcript stores parsed arguments and the client adds
+fields of its own on the wire. Nothing here needs content capture, and nothing on the host holds the text.
+(`messages_sha256` is a list, so it does not reuse POC 6's `input_sha256`, a string. The 14 calls of
+`run_retail-0_15` carry a pre-release form of these fields, hashes of the raw wire messages under `input_sha256`
+as a list; the schema accepts it and §10 compares only what that form allows.)
+
 ## 6. Tamper evidence
 Within a writer, file order must equal `seq` order: each event's `seq` is greater than the previous one of that writer
 in the file (`validate`: `E_SEQ_ORDER`; gaps are allowed). The chain is defined in that order. Per writer, `prev` is
@@ -113,13 +126,15 @@ call, one `label`. A writer that loses its tail cannot be seen by `seq` alone; i
   on a run copied from the store (`infra/job` writes `events.jsonl` with `avos trace --run`) still re-chains them,
   because merging the witness's content changes the model calls: its output is a derived training file, the store
   remains the record.
-- **No model input is recorded.** The gateway does not log prompts and τ² does not store them, so `llm.call.input`
-  holds only the messages no other event carries; the full prompt is the projection up to that call.
+- **No model input text is recorded.** The gateway does not log prompts and τ² does not store them, so
+  `llm.call.input` holds only the messages no other event carries. Since POC 8 the gateway hashes every prompt
+  message (§5): the text comes from the witness, and the host can tell whether it is the text the model saw.
 - **The user simulator shares the agent's identity.** τ² runs the simulated user in the same process, so the
-  gateway attributes its 5 calls to `agent/tau2` and only the witness's `role` tells them apart. Cost per task
-  (M12) must therefore be split by `role`, and the training projection must treat `role: user` turns as the
-  environment, never as policy output. The fix belongs in the harness image: start the simulator as its own
-  principal (POC 3 gives one for free), so authority and cost separate without the witness.
+  gateway attributes its calls to `agent/tau2`. Since POC 8 the host tells them apart by what it saw: agent calls
+  carry the agent's system prompt and tools, simulator calls carry neither (`tools_sha256` null), and §10 checks
+  that against the witness's `role`. Cost per task (M12) is split that way; the training projection treats the
+  simulator's turns as the environment, never as policy output. Authority still does not separate: the fix belongs
+  in the harness image (start the simulator as its own principal, which POC 3 gives for free).
 - **VM pauses:** the POC 5 emitter omitted a VM target from its own `nodes` until 2026-10-21; `ingest` adds it to
   those legacy rows.
 - **The side index is a cache that is checked, not trusted.** It is valid only while the file's device, inode, size,
@@ -128,3 +143,53 @@ call, one `label`. A writer that loses its tail cannot be seen by `seq` alone; i
   (Until 2026-10-22 it trusted size and mtime alone, and a stale index for a different file at the same path once
   answered an audit with nothing.) An edit in the middle of a file that keeps its size, mtime, inode and both ends
   still slips past the fingerprint, though not past the per-line check or `verify`.
+
+## 10. Training store (POC 8)
+`retrain/bin/retrain` turns runs into training data and into a labeler's view (`retrain/CONTRACT.md`; results:
+`data/poc8/README.md`). It keeps no store of its own: an **item** (one run, one principal) is a pure function of
+that run's files, the VM's streams, its counters, its `result.json` and the pinned τ² metadata
+(`retrain/tau2_pinned.json`: the 16 retail tool schemas and `llm_agent`'s prompt template at `96a3ef9`), rebuilt on
+every call. There is no cache to go stale, and nothing is written under the three roots; a dataset version is the
+export directory plus its manifest.
+
+- **Evidence.** A run's host rows come from the store (`evidence: store`, M8 exactly as `avos completeness`), else
+  from its POC 1–6 ledger rows converted as `ingest --ledger` does (`ledger`: ids stamped by that conversion, so not
+  the store's; `unverified`), else from nowhere (`witness`: exported only on request, nothing trained). Each stream's
+  chain is recomputed on every read; a row edited in place is a problem on every item of the run, not a different
+  answer. The `events.jsonl` copy `infra/job` leaves in a run directory is never read.
+- **Ids are the store's.** Every model-produced message names its stored `llm.call` (`event_id`, host `ts`), and
+  `lineage.events` lists every stored event the item was built from. Nothing is re-minted or re-chained: this retires
+  the re-chain of §9 for training data (`ingest --run-dir` still re-chains for its own derived file).
+- **Join.** A witness message with `usage` carries the upstream reply id (`raw_data.id`); when every call has a
+  `response_id`, they join on it, in order and with equal token counts. Runs from before POC 8 have no ids on the host
+  and join by §4's token-count order. `witness.join` says which (`response_id`, `tokens`, `count` for coding runs). Only calls to the models the witness names
+  (`info.agent_info.llm`, `info.user_info.llm`) take part: τ²'s NL-assertion judge calls a different model under the
+  same identity after the conversation, so its calls grade the run rather than speak in it. They stay in the cost and
+  the lineage and are listed in `witness.other_calls` with their model and tokens; a judge configured with the agent's own model would be a
+  leftover call, so the run would be flagged, never silently merged.
+- **Accepted only where the host vouches for it.** Where the call carries the §5 hashes: an agent turn (witness role
+  `assistant`) must have been sent the item's system prompt (`system_sha256`) and tools (`tools_sha256`); a
+  simulator turn (`user`) must not have been (the host's own view of who spoke); the turn's content must hash to
+  `output_sha256`; and an agent turn's prompt, every item message before it, must hash message for message to
+  `messages_sha256`. That covers in-harness tool results and the fixed greeting as well, since they are part of
+  every later prompt. `witness.checked` lists what was compared, named after the host fields (`tokens` only for older runs, `count` for coding runs; `role`, `system`,
+  `tools`, `tokens` for the pre-release form; all six since). Any mismatch is a `witness.problems` entry: the item is
+  written and viewable, every `train` flag is false, no `sft.jsonl` row comes from it, and `export` exits 1. The host
+  rows are never changed to fit the witness, and the witness is never trimmed to fit the host.
+- **What is trained.** `train` is true only on an assistant turn matched to a call of this principal. The system
+  prompt, τ²'s fixed greeting (no call), the simulator's turns and tool results are context. Two forms:
+  `trajectories.jsonl` (whole conversation, per-message `train`, the `tools` column: Axolotl `chat_template` with
+  `message_field_training`) and `sft.jsonl` (one prompt→completion row per policy turn, for TRL's completion-only
+  loss: TRL's `messages` form with `assistant_only_loss` would train the greeting, which the template marks as an
+  assistant turn).
+- **Per principal.** Each principal with a model or tool call is an item. Principals with no witness, such as a POC 7
+  tree, are what the host saw: one content-less assistant message per `llm.call`, each gateway tool call and result
+  with the store's ids. A parent lists its children's item ids and outcomes.
+- **Versioning.** `item_id` is the SHA-256 of the canonical item, so ids change with content (a redaction hook gives
+  new ids). The manifest lists items in file order with split, outcome, M8 status and witness verdict, and
+  `dataset_sha256` hashes the id list: re-exporting the same sources gives the same bytes, wherever the roots live.
+  Datasets from separate hosts merge by concatenating items and re-sorting. Splits come from
+  `data/splits/retail_user_disjoint_v1.json`; a held-out task is never `train`.
+- **Statistics** (`stats.json`): policy turns and messages per item, the share of policy turns that call a tool,
+  which tool is called at which message index, the most common (tool, index) with a flag at ≥ 90 % of items (the
+  published τ-bench failure had 98 % at one index), and exact duplicates.

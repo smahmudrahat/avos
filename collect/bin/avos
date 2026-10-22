@@ -170,7 +170,12 @@ def trace(a):
 
 def completeness(a):
     vm = resolve(a.run)
-    evs = [e for e in (vm_events(vm) if vm else []) if e.get("vm_id") == vm]
+    T.out({"run": a.run, **m8(vm, [e for e in (vm_events(vm) if vm else []) if e.get("vm_id") == vm])})
+    return 0
+
+
+def m8(vm, evs):
+    """The M8 record of one VM from its stored events and the counters beside the store (retrain/ carries it per item)."""
     stored = {k: sum(e["kind"] == k for e in evs) for k in KINDS7}
     # seq gaps of this VM's own writers (imported writers span VMs, so their seq jumps here mean nothing)
     seqs = {}
@@ -190,19 +195,18 @@ def completeness(a):
         ratio = num / den if den else 1.0
         status = "complete" if ratio == 1.0 else "incomplete"
     counter = f"{store.ROOT}/counters/{vm}: one byte per act, appended before the act is written"
-    T.out({"run": a.run, "vm_id": vm, "status": status, "ratio": ratio, "stored": stored, "happened": happened,
-           "gaps": gaps, "attempt_gaps": attempt_gaps,
-           "sources": {"authz.decision": f"gateway, requests received ({counter})",
-                       "llm.call": "gateway, model answers forwarded (same file)",
-                       "tool.call": "gateway, tool calls executed (same file)",
-                       "agent.spawn": "registrar, spawns processed (same file)",
-                       "agent.exit": "registrar, exits processed (same file)",
-                       "halt": "ctl, halts/kills/cuts issued, counted before acting (same file)",
-                       "resume": "ctl, resumes/uncuts issued, counted before acting (same file)",
-                       "guest_requests": "the VM's forwarder, per principal: final counters read at teardown (vm.exit "
-                                         "guest), else counts the shim reported at each agent.exit, never less than "
-                                         "the highest X-Avos-Attempt the gateway saw"}})
-    return 0
+    return {"vm_id": vm, "status": status, "ratio": ratio, "stored": stored, "happened": happened,
+            "gaps": gaps, "attempt_gaps": attempt_gaps,
+            "sources": {"authz.decision": f"gateway, requests received ({counter})",
+                        "llm.call": "gateway, model answers forwarded (same file)",
+                        "tool.call": "gateway, tool calls executed (same file)",
+                        "agent.spawn": "registrar, spawns processed (same file)",
+                        "agent.exit": "registrar, exits processed (same file)",
+                        "halt": "ctl, halts/kills/cuts issued, counted before acting (same file)",
+                        "resume": "ctl, resumes/uncuts issued, counted before acting (same file)",
+                        "guest_requests": "the VM's forwarder, per principal: final counters read at teardown (vm.exit "
+                                          "guest), else counts the shim reported at each agent.exit, never less than "
+                                          "the highest X-Avos-Attempt the gateway saw"}}
 
 
 def guest_requests(evs):

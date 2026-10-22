@@ -47,7 +47,10 @@ Common fields, all required:
 Unknown extra fields are allowed and must be preserved (they are part of the hash). Optional, with fixed meaning when present: `run` (`run_<task>_<trial>`), `guest_ts` (a clock inside the VM; never
 used for ordering), `receipt` (`hr_[0-9a-f]{4}`), `role` (`assistant`|`user` for harness-derived model calls),
 `price` (`{"prompt_per_mtok","completion_per_mtok","currency"}`), `cost_usd`, `agent_id` (`ag_xxxx`),
-`call_id` (harness tool-call id), content fields (§5), `*_sha256`.
+`call_id` (harness tool-call id), content fields (§5), `*_sha256`; on an `llm.call` the gateway writes,
+`response_id` (upstream reply id, string or null), `system_sha256` and `tools_sha256` (string or null),
+`messages_sha256` (list of strings), `output_sha256` (string or null), defined in §5. `input_sha256` is a string, or
+a list in 14 events written before `messages_sha256` existed.
 
 Per-kind required fields and `principal`:
 
@@ -101,6 +104,13 @@ Environment `AVOS_TRACE_CONTENT` (`0` default, `1`) read by `ingest`. With `1`, 
 tool result text (hashes allowed); `authz.decision.args` is still kept (it is the audit record of what was
 decided — today it is small structured data). The schema and all rules hold in both modes; the projection
 in §9 requires `1`.
+
+Independent of `AVOS_TRACE_CONTENT`, the gateway hashes every model call it forwards (never text):
+`response_id` = the reply's `id`; `system_sha256` = `content_sha` of the system message's content (null without
+one); `tools_sha256` = `content_sha` of the request's `tools` (null when none were sent); `messages_sha256` =
+`content_sha(chat_form(m))` per request message in order; `output_sha256` = `content_sha(chat_form(reply,
+"assistant"))` (null without a reply). `content_sha` and `chat_form` are in `trace/lib_trace.py` (nulls dropped, keys
+sorted, compact; a message as role, content, tool calls (id, name, parsed arguments), `tool_call_id`).
 
 ## 6. Tamper evidence
 

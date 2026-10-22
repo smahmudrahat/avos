@@ -1,0 +1,327 @@
+#!/usr/bin/env python3
+"""retrain: runs from the trace store as training data and as a labeler's view (POC 8, retrain/CONTRACT.md).
+
+  retrain runs                                  every run and its evidence (store, ledger, witness)
+  retrain view --run R [--principal P] [--redact MOD:FUNC] [--html]
+  retrain export --out DIR (--run R ... | --all | --runs-file F) [--split F] [--seed N] [--redact MOD:FUNC]
+                 [--include-witness-only]       trajectories.jsonl, sft.jsonl, manifest.json, stats.json
+  retrain stats --dataset DIR                   diversity statistics of DIR/trajectories.jsonl
+
+Items are built per run from that run's own files (retrain/build.py), on every call; nothing is cached and nothing
+is written under $AVOS_TRACE_ROOT, $AVOS_RESULTS_ROOT or the ledger. Design: docs/trace.md §10.
+"""
+import argparse
+import hashlib
+import html
+import json
+import os
+import shutil
+import sys
+from collections import Counter, defaultdict
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import build  # noqa: E402
+from build import Skip  # noqa: E402
+
+SHORTCUT = 0.9  # share of items calling one tool at one message index that flags a shortcut (τ-bench failure: 98 %)
+REASONS = ("unknown_run", "no_host_rows", "witness_unreadable", "store_unreadable")
+
+
+def fail(msg, rc):
+    print(f"retrain: {msg}", file=sys.stderr)
+    return rc
+
+
+def load_split(path):
+    if path is None:
+        return {}, None
+    with open(path, "rb") as f:
+        raw = f.read()
+    s = json.loads(raw)
+    return ({t: "train" for t in s["train"]} | {t: "held_out" for t in s["held_out"]},
+            {"path": path, "sha256": hashlib.sha256(raw).hexdigest()})
+
+
+def default_split():
+    """The user-disjoint split, relative to the working directory when it is there, else to the repository."""
+    rel = build.DEFAULT_SPLIT
+    return rel if os.path.exists(rel) else os.path.join(build.REPO, rel)
+
+
+# ----------------------------------------------------------------------------- diversity statistics
+
+class Stats:
+    def __init__(self):
+        self.n, self.runs, self.turns, self.tool_turns = 0, set(), 0, 0
+        self.pt, self.mh, self.called = Counter(), Counter(), Counter()
+        self.at, self.dups = defaultdict(Counter), defaultdict(list)
+
+    def add(self, it):
+        self.n += 1
+        self.runs.add(it.get("run"))
+        k, seen = 0, set()
+        for i, m in enumerate(it["messages"]):
+            if m.get("train"):
+                k += 1
+                tcs = m.get("tool_calls") or []
+                self.tool_turns += bool(tcs)
+                for t in tcs:
+                    self.called[t["function"]["name"]] += 1
+                    seen.add((t["function"]["name"], i))
+        for name, i in seen:
+            self.at[name][i] += 1
+        self.turns += k
+        self.pt[str(k)] += 1
+        self.mh[str(len(it["messages"]))] += 1
+        self.dups[hashlib.sha256(dup_key(it).encode()).hexdigest()].append(it["item_id"])
+
+    def result(self):
+        top = max((c for cs in self.at.values() for c in cs.values()), default=0)
+        shortcut = None
+        if top:  # ties: the first (tool, index) in order
+            name, i = min((n, i) for n, cs in self.at.items() for i, c in cs.items() if c == top)
+            shortcut = {"tool": name, "index": i, "share": top / self.n, "flag": top / self.n >= SHORTCUT}
+        groups = sorted(sorted(g) for g in self.dups.values() if len(g) >= 2)
+        return {"items": self.n, "runs": len(self.runs), "policy_turns_hist": dict(self.pt), "messages_hist": dict(self.mh),
+                "tool_call_share": self.tool_turns / self.turns if self.turns else None,
+                "tools_called": dict(self.called),
+                "tool_at_index": {n: {str(i): c for i, c in cs.items()} for n, cs in self.at.items()},
+                "shortcut": shortcut, "exact_duplicates": {"groups": groups, "items": sum(map(len, groups))}}
+
+
+def dup_key(it):
+    """The conversation as (role, content, tool name, arguments) per message: ids, event ids, ts and usage aside."""
+    def args(a):
+        try:
+            return json.dumps(json.loads(a), sort_keys=True)
+        except (TypeError, ValueError):
+            return a
+    return json.dumps([(m["role"], m.get("content"), [(t["function"]["name"], args(t["function"]["arguments"]))
+                                                      for t in m.get("tool_calls") or []]) for m in it["messages"]],
+                      ensure_ascii=True)
+
+
+def dump_stats(s):
+    return json.dumps(s, sort_keys=True, indent=1) + "\n"
+
+
+# ----------------------------------------------------------------------------- subcommands
+
+def cmd_runs(a):
+    src = build.Sources()
+    rows = []
+    for r in src.runs():
+        try:
+            rows.append(build.describe(src, r))
+        except Skip as e:  # a store run whose stream cannot be read
+            rows.append({"run": r, "harness": None, "task": None, "vm_id": src.vm_of(r), "evidence": None,
+                         "witness": False, "exportable": False, "reason": e.reason})
+    sys.stdout.write(json.dumps(rows, indent=1) + "\n")
+    return 0
+
+
+def view_text(src, a):
+    tools, template = build.pinned()
+    split, _ = load_split(default_split())
+    red = build.Redactor(a.redact) if a.redact else None
+    run, items, default = build.run_items(src, a.run, tools, template, split, red, witness_only=True)
+    it = items.get(a.principal or default)
+    if it is None:
+        raise Skip("unknown_run", f"no principal {a.principal or '(default)'} in {run}")
+    o, w, c, t = it["outcome"], it["witness"], it["cost"], it["timestamps"]
+    out = [f"run={it['run']} principal={it['principal']} task={it['task']} evidence={it['evidence']} "
+           f"trace={it['trace_complete']['status']}",
+           f"item={it['item_id']} harness={it['harness']} vm={it['vm_id']} split={it['split']} "
+           f"ratio={it['trace_complete']['ratio']} witness={'absent' if not w['present'] else w['agrees']} "
+           f"join={w['join']} checked={','.join(w['checked'])}"
+           + (f" not_conversation={','.join(c['event_id'] + ':' + str(c['model']) for c in w['other_calls'])}" if w["other_calls"] else "")]
+    if w["agrees"] is False:
+        out.append("WITNESS DISAGREES: " + "; ".join(w["problems"]))
+    verdict = {True: "passed", False: "failed", None: "unknown"}[o["passed"]]
+    out.append(f"reward={'unknown' if o['reward'] is None else o['reward']} {verdict} "
+               f"termination_reason={o['termination_reason']}")
+    rb = o["reward_breakdown"] or {}
+    if o["source"] == "tau2" and rb:
+        if rb.get("db_check"):
+            out.append(f"db_match={str(rb['db_check'].get('db_match')).lower()}")
+        for x in rb.get("action_checks") or []:
+            out.append(f"action {x['action']['name']} {json.dumps(x['action'].get('arguments'), ensure_ascii=False)} "
+                       f"match={str(x.get('action_match')).lower()}")
+        for x in rb.get("nl_assertions") or []:
+            out.append(f"nl_assertion {x.get('nl_assertion')} met={str(x.get('met')).lower()}")
+    elif o["source"] == "mini-swe-agent":
+        out.append(f"tests_passed={str(rb.get('tests_passed')).lower()} exit_status={rb.get('exit_status')}")
+    out.append(f"cost prompt_tokens={c['prompt_tokens']} completion_tokens={c['completion_tokens']} "
+               f"llm_calls={c['llm_calls']} policy_calls={c['policy_calls']} environment_calls={c['environment_calls']} "
+               f"usd={c['usd']}")
+    out.append(f"time start={t['start']} end={t['end']} wall_ms={t['wall_ms']}")
+    out.append("tools=" + ",".join(x["function"]["name"] for x in it["tools"]))
+    for i, m in enumerate(it["messages"]):
+        mark = "[policy]" if m.get("train") else "[env]"
+        out.append(f"#{i} tool {m.get('tool_call_id')} {mark}" if m["role"] == "tool" else f"#{i} {m['role']} {mark}")
+        if m.get("event_id"):
+            out.append(f"event={m['event_id']}")
+        if m.get("content") is not None:
+            out.append(m["content"] if isinstance(m["content"], str) else json.dumps(m["content"], ensure_ascii=False))
+        for x in m.get("tool_calls") or []:
+            out.append(f"tool_call {x['id']} {x['function']['name']} {x['function']['arguments']}")
+    out.append(f"children={len(it['children'])}")
+    for ch in it["children"]:
+        p = ch["outcome"]["passed"]
+        out.append(f"child {ch['principal']} item={ch['item_id']} passed={'null' if p is None else str(p).lower()}")
+    return "\n".join(out) + "\n"
+
+
+def cmd_view(a):
+    src = build.Sources()
+    try:
+        text = view_text(src, a)
+    except Skip as e:
+        return fail(f"{a.run}: {e}", 1)
+    if a.html:
+        text = (f"<!doctype html>\n<meta charset=\"utf-8\">\n<title>{html.escape(a.run)}</title>\n"
+                f"<pre>\n{html.escape(text)}</pre>\n")
+    sys.stdout.write(text)
+    return 0
+
+
+def requested(src, a):
+    if a.all:
+        return src.runs()
+    if a.runs_file:
+        with open(a.runs_file, encoding="utf-8") as f:
+            return [x.strip() for x in f if x.strip() and not x.startswith("#")]
+    return a.run
+
+
+def cmd_export(a):
+    src = build.Sources()
+    tools, template = build.pinned()
+    split_path = a.split or build.DEFAULT_SPLIT
+    split, split_file = load_split(split_path if a.split else default_split())
+    split_file["path"] = split_path
+    red = build.Redactor(a.redact) if a.redact else None
+    want = list(dict.fromkeys(requested(src, a)))
+
+    # one pass per run, in (run, principal) order; only manifest rows and statistics stay in memory
+    located, skipped = [], []
+    for r in want:
+        try:
+            located.append((build.locate(src, r)["run"], r))
+        except Skip as e:
+            skipped.append({"run": r, "reason": e.reason})
+    out = os.path.abspath(a.out)
+    tmp = f"{out}.tmp-{os.getpid()}"
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp)
+    stats, rows, agents, done = Stats(), [], {}, set()
+    n_sft = 0
+    with open(f"{tmp}/trajectories.jsonl", "w", encoding="utf-8") as tf, open(f"{tmp}/sft.jsonl", "w", encoding="utf-8") as sf:
+        for run, r in sorted(located):
+            if run in done:
+                continue
+            try:
+                run, items, default = build.run_items(src, r, tools, template, split, red, a.include_witness_only)
+            except Skip as e:
+                print(f"retrain: {r}: {e}", file=sys.stderr)
+                skipped.append({"run": r, "reason": e.reason})
+                continue
+            done.add(run)
+            for p in sorted(items, key=lambda p: p or ""):
+                it = items[p]
+                tf.write(json.dumps(it, ensure_ascii=False) + "\n")
+                n = 0
+                if it["witness"]["agrees"] is not False:
+                    for i, m in enumerate(it["messages"]):
+                        if m["train"]:
+                            sf.write(json.dumps({"item_id": it["item_id"], "turn_index": i, "prompt": it["messages"][:i],
+                                                 "completion": [m], "tools": it["tools"]}, ensure_ascii=False) + "\n")
+                            n += 1
+                n_sft += n
+                stats.add(it)
+                rows.append({"item_id": it["item_id"], "run": it["run"], "principal": it["principal"],
+                             "split": it["split"], "passed": it["outcome"]["passed"],
+                             "trace_complete": it["trace_complete"]["status"],
+                             "witness_agrees": it["witness"]["agrees"], "sft_examples": n})
+            if default in items:
+                agents[run] = items[default]
+    st = stats.result()
+    runs_by = lambda f: sum(1 for it in agents.values() if f(it))  # noqa: E731
+    train = [it for it in agents.values() if it["split"] == "train"]
+    kept = sum(1 for it in train if it["outcome"]["passed"] is True)
+    ids = [x["item_id"] for x in rows]
+    manifest = {
+        "format": "avos-retrain-manifest/1", "seed": a.seed, "redact": a.redact, "split_file": split_file,
+        "items": rows, "skipped": sorted(skipped, key=lambda s: s["run"]),
+        "counts": {"runs_requested": len(want), "runs_exported": len(done), "items": len(rows), "sft_examples": n_sft,
+                   "passed": runs_by(lambda it: it["outcome"]["passed"] is True),
+                   "failed": runs_by(lambda it: it["outcome"]["passed"] is False),
+                   "unknown": runs_by(lambda it: it["outcome"]["passed"] is None),
+                   "train": len(train), "held_out": runs_by(lambda it: it["split"] == "held_out"),
+                   "unsplit": runs_by(lambda it: it["split"] is None),
+                   "flagged": sum(1 for x in rows if x["witness_agrees"] is False)},
+        "m14": {"train_runs": len(train), "train_passed": kept, "kept_run_fraction": kept / len(train) if train else None},
+        "dataset_sha256": hashlib.sha256("\n".join(ids).encode()).hexdigest()}
+    with open(f"{tmp}/manifest.json", "w", encoding="utf-8") as f:
+        f.write(json.dumps(manifest, indent=1, ensure_ascii=False) + "\n")
+    with open(f"{tmp}/stats.json", "w", encoding="utf-8") as f:
+        f.write(dump_stats(st))
+    old = f"{out}.old-{os.getpid()}"
+    if os.path.exists(out):
+        os.rename(out, old)
+    os.rename(tmp, out)
+    shutil.rmtree(old, ignore_errors=True)
+    c = manifest["counts"]
+    print(json.dumps({"out": a.out, **{k: c[k] for k in ("runs_requested", "runs_exported", "items", "sft_examples",
+                                                          "passed", "failed", "unknown", "flagged")},
+                      "skipped": len(skipped), "m14": manifest["m14"]}))
+    if c["flagged"]:
+        print(f"retrain: {c['flagged']} item(s) whose witness disagrees with the store (no training examples)", file=sys.stderr)
+    return 1 if skipped or c["flagged"] else 0
+
+
+def cmd_stats(a):
+    s = Stats()
+    with open(os.path.join(a.dataset, "trajectories.jsonl"), encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                s.add(json.loads(line))
+    sys.stdout.write(dump_stats(s.result()))
+    return 0
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        print(f"retrain: {message}", file=sys.stderr)
+        sys.exit(2)
+
+
+def main():
+    ap = Parser(prog="retrain", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True, parser_class=Parser)
+    sub.add_parser("runs")
+    v = sub.add_parser("view")
+    v.add_argument("--run", required=True)
+    v.add_argument("--principal")
+    v.add_argument("--redact")
+    v.add_argument("--html", action="store_true")
+    e = sub.add_parser("export")
+    e.add_argument("--out", required=True)
+    which = e.add_mutually_exclusive_group(required=True)
+    which.add_argument("--run", action="append")
+    which.add_argument("--all", action="store_true")
+    which.add_argument("--runs-file")
+    e.add_argument("--split")
+    e.add_argument("--seed", type=int, default=0)
+    e.add_argument("--redact")
+    e.add_argument("--include-witness-only", action="store_true")
+    sub.add_parser("stats").add_argument("--dataset", required=True)
+    a = ap.parse_args()
+    try:
+        return {"runs": cmd_runs, "view": cmd_view, "export": cmd_export, "stats": cmd_stats}[a.cmd](a)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, ImportError) as e:
+        return fail(f"{type(e).__name__}: {e}", 2)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

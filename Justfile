@@ -277,6 +277,30 @@ claim1 *args:
 poc7 *args:
     sudo python3 collect/tests/run.py {{args}}
 
+# Host: POC 8 on the host's runs: evidence per run, `export --all` twice (byte-compared), the latest run in the
+# viewer, statistics. Acceptance suite: from the workstation, `python3 retrain/tests/run.py [--quick] [--host]`.
+poc8:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    t=/tmp/poc8; sudo rm -rf $t; mkdir -p $t
+    rt() { sudo python3 retrain/bin/retrain "$@"; }
+    echo "== runs: evidence per run"
+    rt runs | python3 -c 'import json, sys, collections; r = json.load(sys.stdin); print(len(r), "runs", dict(collections.Counter(x["evidence"] for x in r)))'
+    echo "== export --all, twice (exit 1 is expected: witness-only runs are skipped)"
+    rt export --out $t/a --all; rt export --out $t/b --all > /dev/null
+    for f in trajectories.jsonl sft.jsonl manifest.json stats.json; do sudo cmp $t/a/$f $t/b/$f && echo "$f identical"; done
+    sudo python3 -c 'import json, sys, collections
+    m = json.load(open(sys.argv[1]))
+    print("skipped", dict(collections.Counter(s["reason"] for s in m["skipped"])), "counts", m["counts"], "M14", m["m14"])
+    items = [json.loads(l) for l in open(sys.argv[2])]
+    print("witness join", dict(collections.Counter(i["witness"]["join"] for i in items)),
+          "checked", dict(collections.Counter(",".join(i["witness"]["checked"]) for i in items)))' $t/a/manifest.json $t/a/trajectories.jsonl
+    echo "== statistics"
+    sudo python3 -c 'import json, sys; s = json.load(open(sys.argv[1])); print({k: s[k] for k in ("items", "runs", "policy_turns_hist", "tool_call_share", "shortcut")}, "duplicates", s["exact_duplicates"]["items"])' $t/a/stats.json
+    r=$(ls -t /var/lib/avos/results | head -1)
+    echo "== viewer: $r (header, outcome, first messages)"
+    rt view --run $r | head -24
+
 # Host: one principal's audit timeline, or one run's (`just audit --principal SPIFFE_ID`, `just audit --run vm-01-abc123`)
 audit *args:
     sudo python3 collect/bin/avos trace {{args}}

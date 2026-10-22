@@ -1,0 +1,16 @@
+{
+ "run": "run_coding-slugify_2",
+ "vm": "vm-01",
+ "vm_id": "vm-01-fc4298",
+ "vm_spiffe_id": "spiffe://avoslab.com/vm/vm-01-fc4298",
+ "agent_spiffe_id": "spiffe://avoslab.com/vm/vm-01-fc4298/agent/mini-swe-agent",
+ "harness": "mini-swe-agent",
+ "task": "coding/slugify",
+ "status": "done",
+ "http": "200",
+ "wall_ms": 83408,
+ "harness_version": "2.4.6",
+ "tests_passed": true,
+ "exit_status": "RepeatedFormatError",
+ "api_calls": 15
+}
