@@ -1,0 +1,306 @@
+#!/usr/bin/env python3
+"""avos: questions to the host's trace store (POC 7, collect/CONTRACT.md).
+
+  avos trace --principal P [--day D]   P's audit timeline: its events + halts/resumes covering it, with authority
+  avos trace --run R [--day D]         one VM life (R = vm_id, or run_<task>_<trial> through its session.open)
+  avos completeness --run R            M8 for the run: stored events vs counters kept outside the store
+  avos store                           the store's files, size, retention and flush
+  avos import FILE...                  append POC 6 trace files under their own writers (then re-index them)
+
+Collected events sit in per-VM streams, so a principal's or a run's answer reads only its VM's few files. Imported
+writers span many VMs; the index under <root>/index holds a copy of their lines clustered by VM, rebuilt whenever
+the imported files change (each file's device, inode, size, mtime and first/last 64 KB are checked on every use,
+and every line read back must belong to the VM asked for). Reads and writes only under $AVOS_TRACE_ROOT (default /var/lib/avos/trace).
+"""
+import argparse
+import glob
+import json
+import os
+import shutil
+import sys
+import tempfile
+import zlib
+from urllib.parse import quote
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import store  # noqa: E402
+from store import T  # noqa: E402
+
+KINDS7 = ("authz.decision", "llm.call", "tool.call", "agent.spawn", "agent.exit", "halt", "resume")
+COUNTER = {"authz.decision": "a", "llm.call": "l", "tool.call": "t", "agent.spawn": "s", "agent.exit": "e",
+           "halt": "h", "resume": "r"}
+BUCKETS = 256
+INDEX = f"{store.ROOT}/index"
+
+
+# ----------------------------------------------------------------------------- imported writers and their index
+
+def import_files():
+    return sorted(glob.glob(f"{store.ROOT}/import/*.jsonl"))
+
+
+def bucket(vm_id):
+    return f"{zlib.crc32(vm_id.encode()) % BUCKETS:02x}"
+
+
+def build_index(prints):
+    """One pass over the imported files: each line goes to its VM's bucket; each bucket is then sorted by VM
+    (stable, so file order is kept) with a map vm_id -> byte range. A query reads one map and one range."""
+    tmp = tempfile.mkdtemp(dir=store.ROOT, prefix=".index-")
+    parts = [open(f"{tmp}/{b:02x}.part", "wb") for b in range(BUCKETS)]
+    runs = {}
+    for path, fp in prints.items():
+        size = fp[2]
+        with open(path, "rb") as f:
+            for raw in f:
+                size -= len(raw)
+                if size < 0:
+                    break
+                ev = json.loads(raw)
+                vm = ev.get("vm_id") or ""
+                parts[int(bucket(vm), 16)].write(vm.encode() + b"\t" + raw)
+                if ev.get("kind") == "session.open" and ev.get("run"):
+                    runs[ev["run"]] = vm
+    for b, part in enumerate(parts):
+        part.close()
+        lines = open(part.name, "rb").read().splitlines(keepends=True)
+        os.remove(part.name)
+        if not lines:
+            continue
+        lines.sort(key=lambda x: x[:x.index(b"\t")])
+        ranges, off = {}, 0
+        with open(f"{tmp}/{b:02x}.jsonl", "wb") as out:
+            for x in lines:
+                t = x.index(b"\t")
+                vm, raw = x[:t].decode(), x[t + 1:]
+                ranges.setdefault(vm, [off, off])[1] = off + len(raw)
+                out.write(raw)
+                off += len(raw)
+        json.dump(ranges, open(f"{tmp}/{b:02x}.json", "w"))
+    json.dump(runs, open(f"{tmp}/runs.json", "w"))
+    json.dump(prints, open(f"{tmp}/manifest.json", "w"))  # last: an index without it is rebuilt
+    old = f"{store.ROOT}/.index-old"
+    shutil.rmtree(old, ignore_errors=True)
+    if os.path.isdir(INDEX):
+        os.rename(INDEX, old)
+    os.rename(tmp, INDEX)
+    shutil.rmtree(old, ignore_errors=True)
+
+
+def index(rebuild=False):
+    """The index directory, rebuilt first unless it was built from exactly these imported files."""
+    prints = {p: T.fingerprint(p) for p in import_files()}
+    if not prints:
+        return None
+    try:
+        fresh = not rebuild and json.load(open(f"{INDEX}/manifest.json")) == prints
+    except (OSError, ValueError):
+        fresh = False
+    if not fresh:
+        build_index(prints)
+    return INDEX
+
+
+def indexed_events(vm_id, rebuild=False):
+    """The VM's imported events, or None if a line read back is not an event of that VM (a wrong index)."""
+    d = index(rebuild)
+    if not d:
+        return []
+    try:
+        start, end = json.load(open(f"{d}/{bucket(vm_id)}.json"))[vm_id]
+    except (FileNotFoundError, KeyError):
+        return []
+    with open(f"{d}/{bucket(vm_id)}.jsonl", "rb") as f:
+        f.seek(start)
+        data = f.read(end - start)
+    if end <= start or len(data) != end - start:
+        return None
+    lines = data.splitlines()
+    try:
+        evs = [json.loads(x) for x in lines]
+    except ValueError:
+        return None
+    return evs if all(isinstance(e, dict) and (e.get("vm_id") or "") == vm_id for e in evs) else None
+
+
+def vm_events(vm_id):
+    """Every stored event of one VM: its collected streams and its share of the imported writers."""
+    out = list(store.vm_events(vm_id))
+    imported = indexed_events(vm_id)
+    if imported is None:  # never answer from a wrong index: rebuild it from the files, once
+        imported = indexed_events(vm_id, rebuild=True)
+    if imported is None:
+        raise ValueError("import index does not match the imported files even after a rebuild")
+    return out + imported
+
+
+def resolve(run):
+    """run_* -> the vm_id of its session.open; a vm_id -> itself; anything unsafe or unknown -> None."""
+    if not store.SAFE.fullmatch(run or ""):
+        return None
+    if not run.startswith("run_"):
+        return run
+    try:
+        return open(f"{store.ROOT}/runs/{run}").read().strip()
+    except FileNotFoundError:
+        pass
+    d = index()
+    return json.load(open(f"{d}/runs.json")).get(run) if d else None
+
+
+# ----------------------------------------------------------------------------- subcommands
+
+def answer(events, keep, day):
+    evs = [e for e in events if keep(e) and (not day or e["ts"].startswith(day))]
+    evs.sort(key=lambda e: (e["ts"], e["writer"], e["seq"]))
+    by_id = {e["event_id"]: e for e in evs if e["kind"] == "authz.decision"}  # a call's decision is in the same VM
+    sys.stdout.write("".join(json.dumps({**e, "authority": T.authority(e, by_id)}, ensure_ascii=False) + "\n" for e in evs))
+    return 0
+
+
+def trace(a):
+    if a.principal:
+        p = a.principal
+        vm = store.vm_of(p)
+        return answer(vm_events(vm) if vm else store.vm_events(None),
+                      lambda e: e["principal"] == p or (e["kind"] in ("halt", "resume") and p in e.get("nodes", ())), a.day)
+    vm = resolve(a.run)
+    return answer(vm_events(vm) if vm else [], lambda e: e.get("vm_id") == vm, a.day)
+
+
+def completeness(a):
+    vm = resolve(a.run)
+    evs = [e for e in (vm_events(vm) if vm else []) if e.get("vm_id") == vm]
+    stored = {k: sum(e["kind"] == k for e in evs) for k in KINDS7}
+    # seq gaps of this VM's own writers (imported writers span VMs, so their seq jumps here mean nothing)
+    seqs = {}
+    for e in evs:
+        if e["writer"].endswith("/" + vm):
+            seqs.setdefault(e["writer"], set()).add(e["seq"])
+    gaps = [{"writer": w, "seq": s} for w, ss in sorted(seqs.items()) for s in range(1, max(ss) + 1) if s not in ss]
+    c = store.counters(vm) if vm else None
+    happened = {k: c[COUNTER[k]] if c else None for k in KINDS7}
+    happened["guest_requests"], attempt_gaps = guest_requests(evs) if c else (None, [])
+    status, ratio = "unverified", None
+    if None not in happened.values():
+        d, g = stored["authz.decision"], happened["guest_requests"]
+        pairs = [(stored[k], happened[k]) for k in KINDS7 if k != "authz.decision"]
+        num = sum(min(s, h) for s, h in pairs) + min(d, happened["authz.decision"], g)
+        den = sum(max(s, h) for s, h in pairs) + max(d, happened["authz.decision"], g) + len(gaps)
+        ratio = num / den if den else 1.0
+        status = "complete" if ratio == 1.0 else "incomplete"
+    counter = f"{store.ROOT}/counters/{vm}: one byte per act, appended before the act is written"
+    T.out({"run": a.run, "vm_id": vm, "status": status, "ratio": ratio, "stored": stored, "happened": happened,
+           "gaps": gaps, "attempt_gaps": attempt_gaps,
+           "sources": {"authz.decision": f"gateway, requests received ({counter})",
+                       "llm.call": "gateway, model answers forwarded (same file)",
+                       "tool.call": "gateway, tool calls executed (same file)",
+                       "agent.spawn": "registrar, spawns processed (same file)",
+                       "agent.exit": "registrar, exits processed (same file)",
+                       "halt": "ctl, halts/kills/cuts issued, counted before acting (same file)",
+                       "resume": "ctl, resumes/uncuts issued, counted before acting (same file)",
+                       "guest_requests": "the VM's forwarder, per principal: final counters read at teardown (vm.exit "
+                                         "guest), else counts the shim reported at each agent.exit, never less than "
+                                         "the highest X-Avos-Attempt the gateway saw"}})
+    return 0
+
+
+def guest_requests(evs):
+    """Requests the VM's forwarder numbered, summed over principals, and the numbers that never reached the host.
+    None when the guest's counters did not survive (forwarder restarted, or unreadable at teardown)."""
+    seen, final, reset = {}, {}, False
+    for e in evs:
+        if e["kind"] == "authz.decision" and type(e.get("attempt")) is int:
+            s = seen.setdefault(e["principal"], set())
+            reset |= e["attempt"] in s  # numbering started over: a restarted forwarder
+            s.add(e["attempt"])
+        elif e["kind"] == "agent.exit" and type(e.get("attempts")) is int:
+            final[e["principal"]] = e["attempts"]
+    vm_exit = next((e for e in evs if e["kind"] == "vm.exit"), None)
+    if vm_exit:
+        g = vm_exit.get("guest")
+        if not g or g.get("restarted"):
+            return None, []
+        final = g["attempts"]
+    if reset:
+        return None, []
+    total, gaps = 0, []
+    for p in sorted(set(final) | set(seen)):
+        top = max(final.get(p, 0), max(seen.get(p, ()), default=0))
+        total += top
+        gaps += [{"principal": p, "attempt": n} for n in range(1, top + 1) if n not in seen.get(p, ())]
+    return total, gaps
+
+
+def show_store(a):
+    fs = store.files()
+    n = 0
+    for path in fs:
+        with open(path, "rb") as f:
+            n += sum(chunk.count(b"\n") for chunk in iter(lambda: f.read(1 << 20), b""))
+    T.out({"root": store.ROOT, "files": fs, "events": n,
+           "retention": {"rule": "keep everything: files are only appended to, never rotated or deleted", "keep_days": None},
+           "services": [], "flush_ms": 0})
+    return 0
+
+
+def do_import(a):
+    """Each writer's events go to its own file, after what is already stored for it; the chain must continue."""
+    os.makedirs(f"{store.ROOT}/import", exist_ok=True)
+    out, state, n = {}, {}, 0
+    try:
+        for path in a.files:
+            for line, raw in enumerate(open(path, "rb"), 1):
+                if not raw.strip():
+                    continue
+                ev = json.loads(raw)
+                w = ev["writer"]
+                if w not in out:
+                    dest = f"{store.ROOT}/import/{quote(w, safe='')}.jsonl"
+                    s = store.Stream("import", None)
+                    s.path = dest
+                    s.tail(os.path.getsize(dest) if os.path.exists(dest) else 0)
+                    state[w] = [s.seq, s.head]
+                    out[w] = open(dest, "ab", buffering=1 << 20)
+                if ev["seq"] <= state[w][0]:
+                    continue  # already stored
+                if ev["prev"] != state[w][1]:
+                    raise ValueError(f"{path}:{line}: {w} seq {ev['seq']} does not continue the stored chain")
+                out[w].write(raw if raw.endswith(b"\n") else raw + b"\n")
+                state[w] = [ev["seq"], ev["hash"]]
+                n += 1
+    finally:
+        for f in out.values():
+            f.close()
+    index()
+    T.out({"imported": n})
+    return 0
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        print(f"avos: {message}", file=sys.stderr)
+        sys.exit(2)
+
+
+def main():
+    ap = Parser(prog="avos", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True, parser_class=Parser)
+    t = sub.add_parser("trace")
+    who = t.add_mutually_exclusive_group(required=True)
+    who.add_argument("--principal")
+    who.add_argument("--run")
+    t.add_argument("--day")
+    sub.add_parser("completeness").add_argument("--run", required=True)
+    sub.add_parser("store")
+    sub.add_parser("import").add_argument("files", nargs="+")
+    a = ap.parse_args()
+    try:
+        return {"trace": trace, "completeness": completeness, "store": show_store, "import": do_import}[a.cmd](a)
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        print(f"avos: store unreadable: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

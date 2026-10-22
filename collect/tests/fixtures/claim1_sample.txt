@@ -1,0 +1,3 @@
+PASS 1 halt-by-name M6+freeze+progress+resume measured=median=62ms worst=66ms child_froze=10/10 B_ticks_in_halt=0 sibs_ok=True seq_ok=True bar=M6<=500ms, all others 0/true (71s)
+PASS 7 gateway reliability under concurrency measured=calls=20000 agents=8 unanswered=0 p50=41ms p99=84ms max=1073ms bar=calls>=20000 and unanswered=0 (190s)
+FAIL 7 gateway reliability under concurrency measured=calls=20000 agents=8 unanswered=3 p50=41ms p99=84ms max=10073ms bar=calls>=20000 and unanswered=0 (190s)

@@ -6,8 +6,9 @@
   query lineage --principal P FILE   P up through agent.spawn parents to its VM
   query cost    --run R FILE         tokens x price, wall time and host of one run, from the file alone
 
-audit reads a side index partitioned by principal (under $TMPDIR, keyed by the file's path, size and mtime;
-built on first use in one pass), so a repeat query reads only P's partition and P's lines.
+audit reads a side index partitioned by principal (under $TMPDIR, one per path, valid only while the file's device,
+inode, size, mtime and first/last 64 KB match; built on first use in one pass), so a repeat query reads only P's
+partition and P's lines. Every line fetched by offset must be one of P's events, or the index is rebuilt.
 """
 import argparse
 import hashlib
@@ -22,21 +23,23 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import lib_trace as T  # noqa: E402
 
 BUCKETS = 256
-GATED = {"llm.call", "tool.call", "net.connect"}
 
 
 def bucket(p):
     return f"{zlib.crc32(p.encode()) % BUCKETS:02x}.json"
 
 
-def index(path):
-    """Directory of BUCKETS files {principal: [byte offsets of its lines]}; built once per file version."""
-    st = os.stat(path)
-    key = hashlib.sha256(f"{os.path.realpath(path)}\0{st.st_size}\0{st.st_mtime_ns}".encode()).hexdigest()[:24]
+def index(path, rebuild=False):
+    """Directory of BUCKETS files {principal: [byte offsets of its lines]}, one per input path, valid only for the
+    file it was built from (its fingerprint, checked on every use); otherwise rebuilt in one pass."""
+    fp = T.fingerprint(path)
     root = os.path.join(tempfile.gettempdir(), "avos-trace-index")
-    final = os.path.join(root, key)
-    if os.path.isdir(final):
-        return final
+    final = os.path.join(root, hashlib.sha256(os.path.realpath(path).encode()).hexdigest()[:24])
+    try:
+        if not rebuild and json.load(open(os.path.join(final, "fingerprint.json"))) == fp:
+            return final
+    except (OSError, ValueError):
+        pass
     os.makedirs(root, exist_ok=True)
     parts, off = {}, 0
     with open(path, "rb") as f:
@@ -59,45 +62,55 @@ def index(path):
     for name, g in groups.items():
         with open(os.path.join(tmp, name), "w") as f:
             json.dump(g, f)
+    json.dump(fp, open(os.path.join(tmp, "fingerprint.json"), "w"))  # last: a half-built index is never valid
+    old = tmp + ".old"
+    try:
+        os.rename(final, old)
+    except OSError:
+        pass
     try:
         os.rename(tmp, final)
     except OSError:  # another query built it first
         shutil.rmtree(tmp, ignore_errors=True)
+    shutil.rmtree(old, ignore_errors=True)
     return final
 
 
-def authority(ev, by_id):
-    k = ev["kind"]
-    if k in GATED:
-        if k == "tool.call" and ev.get("via") == "harness":
-            return {"via": "harness"}
-        d = by_id.get(ev.get("authz_ref"), {})
-        a = {"authz_ref": ev.get("authz_ref"), "decision": d.get("decision"), "policy_ids": d.get("policy_ids")}
-        if ev.get("receipt"):
-            a["receipt"] = ev["receipt"]
-        return a
-    if k == "authz.decision":
-        return {"decision": ev["decision"], "policy_ids": ev["policy_ids"]}
-    if k in ("halt", "resume"):
-        return {"receipt": ev["receipt"], "by": ev["by"]}
-    return {}
+def covers(ev, p):
+    return isinstance(ev, dict) and (ev.get("principal") == p or (ev.get("kind") in ("halt", "resume") and p in (ev.get("nodes") or ())))
 
 
-def audit(a):
+def fetch(path, p, rebuild=False):
+    """P's events by the index's offsets; None if any fetched line is not one of P's events (the index is wrong)."""
     try:
-        offs = json.load(open(os.path.join(index(a.file), bucket(a.principal)))).get(a.principal, [])
+        offs = json.load(open(os.path.join(index(path, rebuild), bucket(p)))).get(p, [])
     except FileNotFoundError:
         offs = []
     evs = []
-    with open(a.file, "rb") as f:
+    with open(path, "rb") as f:
         for o in offs:
             f.seek(o)
-            evs.append(json.loads(f.readline()))
+            try:
+                ev = json.loads(f.readline())
+            except ValueError:
+                return None
+            if not covers(ev, p):
+                return None
+            evs.append(ev)
+    return evs
+
+
+def audit(a):
+    evs = fetch(a.file, a.principal)
+    if evs is None:  # never answer from a wrong index: rebuild it from the file, once
+        evs = fetch(a.file, a.principal, rebuild=True)
+    if evs is None:
+        raise ValueError(f"{a.file}: index does not match the file even after a rebuild")
     # a valid call's decision is by the same principal, so it is in this partition
     by_id = {e["event_id"]: e for e in evs if e["kind"] == "authz.decision"}
     evs.sort(key=lambda e: (e["ts"], e["writer"], e["seq"]))
     for e in evs:
-        e["authority"] = authority(e, by_id)
+        e["authority"] = T.authority(e, by_id)
         sys.stdout.write(json.dumps(e, ensure_ascii=False) + "\n")
     return 0
 

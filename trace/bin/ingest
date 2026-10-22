@@ -9,6 +9,8 @@ Host rows are the evidence: one event per row, writer = the emitter that wrote i
 with usage becomes the content of the next gateway llm.call of the run's agent with the same token counts, and
 its tool calls/results become events of the writer <host>/harness/<run>, anchored to that call's host time.
 AVOS_TRACE_CONTENT=1 keeps message, argument and result text; 0 (default) keeps only their SHA-256.
+Input rows may also be contract events as the POC 7 store holds them (`avos trace --run`, which `infra/job` copies
+into the run directory): they are read back as ledger rows, so the output is the same derived file either way.
 """
 import argparse
 import json
@@ -89,11 +91,29 @@ def first_host(path):
     return None
 
 
+def rows(src):
+    """Ledger rows of the file. A contract event becomes the row it stands for; a gateway tool.call waits for its
+    tool.result, whose result the row carries inline."""
+    held = {}
+    for line, r in T.events(src):
+        if r is None or "event_id" not in r:
+            yield line, r
+        elif r["kind"] == "tool.result":
+            if r.get("call_ref") in held:
+                row = held.pop(r["call_ref"])
+                row["result"] = r.get("result")
+                yield line, row
+        elif r["kind"] == "tool.call" and r.get("via") == "gateway":
+            held[r["event_id"]] = T.legacy(r)
+        else:
+            yield line, T.legacy(r)
+
+
 def convert(src, out, keep, prices, harness=None):
     allows = {}      # (principal, resource[, args]) -> deque of allow event ids, FIFO
     receipts = {}    # principal -> receipt of its latest delivery-time deny of a model answer
     run_of = {}      # vm_id -> run of its open session
-    for line, r in T.events(src):
+    for line, r in rows(src):
         if r is None:
             raise ValueError(f"{src}:{line}: not a JSON object")
         k, ts = r.pop("kind"), r.pop("ts")

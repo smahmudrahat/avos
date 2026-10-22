@@ -646,6 +646,210 @@ def q01(ctx):
     return ok_chat and inside and anchored and causal and valid, f"projection_ok={ok_chat} inside_session={inside} llm_ts_host_anchored={anchored} tool_events_causal={causal} validates={valid}"
 
 
+# =============================================================================== cache staleness (M9 correctness)
+
+def _audit_ids(res):
+    return [g.get("event_id") for g in lib.cli_ndjson(res)]
+
+
+def _refused(res):
+    """A refusal is acceptable: exit 1 and an error on stdout (JSON with "error") or stderr; never a silent empty."""
+    if res["rc"] != 1:
+        return False
+    try:
+        return bool(json.loads(res["out"]).get("error")) or bool(res["err"].strip())
+    except ValueError:
+        return bool(res["err"].strip())
+
+
+def _audit_ok_or_refused(res, want):
+    if _refused(res):
+        return True, "refused(rc=1)"
+    got = _audit_ids(res) if res["rc"] == 0 else None
+    return res["rc"] == 0 and got == want, f"rc={res['rc']} got={len(got) if got is not None else None}/{len(want)} correct={got == want}"
+
+
+@check("X01_audit_file_replaced_same_size_mtime", "M9/audit: after a warm query, the file's content is replaced (same path, inode, size, mtime); the answer follows the content")
+def x01(ctx):
+    p = ctx.path("stale-a.jsonl")
+    principal, want_a = synth.multiwriter_fixture(p)
+    other = principal.replace("b0b0b0", "a0a0a0")
+    lib.run_cli("query", "audit", "--principal", principal, p)
+    r0 = lib.run_cli("query", "audit", "--principal", principal, p)
+    warm_ok = _audit_ids(r0) == want_a
+    rows_b = synth.swap_principals_text(lib.read_jsonl(p), "a0a0a0", "b0b0b0")
+    synth.rewrite_in_place(p, rows_b)
+    want_b = [e for e, _ in lib.audit_oracle(rows_b, principal)]
+    assert want_b != want_a and len(want_b) == len(want_a)
+    r1 = lib.run_cli("query", "audit", "--principal", principal, p)
+    ok, m = _audit_ok_or_refused(r1, want_b)
+    return warm_ok and ok, f"warm_before={warm_ok} after_replace: {m} (want the new content's {len(want_b)} events, or rc 1 with an error)"
+
+
+@check("X02_audit_two_files_same_name_same_tmpdir", "M9/audit: two different traces with the same basename, queried alternately under one TMPDIR, each answer belongs to its file")
+def x02(ctx):
+    d1, d2 = ctx.path("same-name", "one"), ctx.path("same-name", "two")
+    os.makedirs(d1), os.makedirs(d2)
+    p1, p2 = os.path.join(d1, "t.jsonl"), os.path.join(d2, "t.jsonl")
+    principal, want1 = synth.multiwriter_fixture(p1)
+    rows2 = synth.swap_principals_text(lib.read_jsonl(p1), "a0a0a0", "b0b0b0")
+    lib.write_jsonl(p2, rows2)
+    st = os.stat(p1)
+    os.utime(p2, ns=(st.st_atime_ns, st.st_mtime_ns))
+    want2 = [e for e, _ in lib.audit_oracle(rows2, principal)]
+    seq = [(p1, want1), (p2, want2), (p1, want1), (p2, want2), (p1, want1)]
+    outs = [_audit_ok_or_refused(lib.run_cli("query", "audit", "--principal", principal, f), w) for f, w in seq]
+    return all(o for o, _ in outs), " ; ".join(m for _, m in outs)
+
+
+@check("X03_audit_inplace_edit_same_size_mtime", "M9/audit: two events move to another principal in place (size and mtime unchanged); both principals' answers follow")
+def x03(ctx):
+    p = ctx.path("stale-c.jsonl")
+    pb, _ = synth.multiwriter_fixture(p)
+    pa = pb.replace("b0b0b0", "a0a0a0")
+    for q in (pa, pb, pa, pb):
+        lib.run_cli("query", "audit", "--principal", q, p)
+    rows = synth.move_pair(lib.read_jsonl(p), pa, pb)
+    synth.rewrite_in_place(p, rows)
+    want_a = [e for e, _ in lib.audit_oracle(rows, pa)]
+    want_b = [e for e, _ in lib.audit_oracle(rows, pb)]
+    oa, ma = _audit_ok_or_refused(lib.run_cli("query", "audit", "--principal", pa, p), want_a)
+    ob, mb = _audit_ok_or_refused(lib.run_cli("query", "audit", "--principal", pb, p), want_b)
+    return oa and ob, f"A: {ma} ; B: {mb}"
+
+
+@check("X04_cost_file_replaced_same_size_mtime", "claim 2/M12: cost after the file is replaced in place by a same-size, same-mtime trace with other token counts")
+def x04(ctx):
+    p = ctx.path("stale-e.jsonl")
+    rows_a, want_a = synth.economics_variant(None, 0)
+    rows_b, want_b = synth.economics_variant(None, 7)
+    synth.same_size(rows_a, rows_b)
+    lib.write_jsonl(p, rows_a)
+    lib.run_cli("query", "cost", "--run", want_a["run"], p)
+    g0 = lib.cli_json(lib.run_cli("query", "cost", "--run", want_a["run"], p))
+    before = lib.cost_matches(want_a, g0) is None
+    synth.rewrite_in_place(p, rows_b)
+    r1 = lib.run_cli("query", "cost", "--run", want_b["run"], p)
+    if _refused(r1):
+        return before, f"before={before} after=refused(rc=1)"
+    g1 = lib.cli_json(r1) if r1["rc"] == 0 else {}
+    d = lib.cost_matches(want_b, g1)
+    return before and r1["rc"] == 0 and d is None, f"before={before} after: rc={r1['rc']} diff={d} cost={g1.get('cost_usd')} (want {want_b['cost_usd']})"
+
+
+def _snapshot(dirs):
+    """{path: (size, mtime_ns, sha256)} for every regular file under dirs (recursive)."""
+    import hashlib
+    out = {}
+    for d in dirs:
+        for root, _, files in os.walk(d):
+            for n in files:
+                fp = os.path.join(root, n)
+                try:
+                    st = os.stat(fp)
+                    with open(fp, "rb") as f:
+                        h = hashlib.sha256(f.read()).hexdigest()
+                except OSError:
+                    continue
+                out[fp] = (st.st_size, st.st_mtime_ns, h)
+    return out
+
+
+def _new_or_changed(before, after, ignore=()):
+    return sorted(p for p, v in after.items() if p not in ignore and before.get(p) != v)
+
+
+def _flip(path, where):
+    with open(path, "r+b") as f:
+        data = bytearray(f.read())
+        if not data:
+            return
+        n = min(64, len(data))
+        start = {"start": 0, "middle": max(0, len(data) // 2 - n // 2), "end": len(data) - n}[where]
+        for i in range(start, start + n):
+            data[i] ^= 0xFF
+        f.seek(0)
+        f.write(data)
+        f.truncate()
+
+
+def _truncate(path, frac):
+    with open(path, "r+b") as f:
+        f.truncate(int(os.path.getsize(path) * frac))
+
+
+def _swap(a, b):
+    with open(a, "rb") as f:
+        da = f.read()
+    with open(b, "rb") as f:
+        db = f.read()
+    with open(a, "wb") as f:
+        f.write(db)
+    with open(b, "wb") as f:
+        f.write(da)
+
+
+@check("X05_audit_cache_tampered", "M9/audit: whatever the tool cached (under its TMPDIR/HOME or next to the input) is truncated, byte-flipped or swapped with another file's cache; the next answer is correct or refused")
+def x05(ctx):
+    import shutil as sh
+    T = ctx.path("x05", "tmp")
+    D1, D2 = ctx.path("x05", "in1"), ctx.path("x05", "in2")
+    for d in (T, D1, D2):
+        os.makedirs(d)
+    p1, p2 = os.path.join(D1, "t.jsonl"), os.path.join(D2, "t.jsonl")
+    principal, want1 = synth.multiwriter_fixture(p1)
+    rows2 = synth.swap_principals_text(lib.read_jsonl(p1), "a0a0a0", "b0b0b0")
+    lib.write_jsonl(p2, rows2)
+    st = os.stat(p1)
+    os.utime(p2, ns=(st.st_atime_ns, st.st_mtime_ns))
+    want2 = [e for e, _ in lib.audit_oracle(rows2, principal)]
+    env = {k: T for k in ("TMPDIR", "TMP", "TEMP", "HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME")}
+
+    def q(path):
+        return lib.run_cli("query", "audit", "--principal", principal, path, env=env)
+    before = _snapshot([T, D1, D2])
+    q(p1), q(p1)
+    after1 = _snapshot([T, D1, D2])
+    cache1 = _new_or_changed(before, after1, ignore=(p1, p2))
+    q(p2), q(p2)
+    after2 = _snapshot([T, D1, D2])
+    cache2 = _new_or_changed(after1, after2, ignore=(p1, p2))
+    if not cache1 and not cache2:
+        return True, "no side files written under TMPDIR/HOME or next to the input: nothing to tamper (cache-free design)"
+    keep = ctx.path("x05", "pristine")
+    os.makedirs(keep)
+    pristine = {c: os.path.join(keep, f"{i}.bin") for i, c in enumerate(cache1 + cache2)}
+    for c, k in pristine.items():
+        sh.copy2(c, k)
+
+    def restore():
+        for c, k in pristine.items():
+            os.makedirs(os.path.dirname(c), exist_ok=True)
+            sh.copy2(k, c)
+    results = []
+    for name, act in (("flip_start", lambda: [_flip(c, "start") for c in cache1]),
+                      ("flip_middle", lambda: [_flip(c, "middle") for c in cache1]),
+                      ("flip_end", lambda: [_flip(c, "end") for c in cache1]),
+                      ("truncate_half", lambda: [_truncate(c, 0.5) for c in cache1]),
+                      ("truncate_zero", lambda: [_truncate(c, 0.0) for c in cache1]),
+                      ("delete", lambda: [os.unlink(c) for c in cache1])):
+        if not cache1:
+            break
+        restore()
+        act()
+        ok, m = _audit_ok_or_refused(q(p1), want1)
+        results.append((name, ok, m))
+    if cache1 and cache2 and len(cache1) == len(cache2):
+        restore()
+        for a, b in zip(cache1, cache2):
+            _swap(a, b)
+        ok, m = _audit_ok_or_refused(q(p1), want1)
+        results.append(("swap_with_other_input", ok, m))
+        ok, m = _audit_ok_or_refused(q(p2), want2)
+        results.append(("swap_other_side", ok, m))
+    return all(ok for _, ok, _ in results), f"cache_files={len(cache1)}+{len(cache2)} " + " ; ".join(f"{n}:{'ok' if ok else 'FAIL'}({m})" for n, ok, m in results)
+
+
 # =============================================================================== scale (full run only)
 
 def _big(ctx):
@@ -869,6 +1073,46 @@ def selftest():
         from collections import Counter
         mix = Counter(r["kind"] for r in rows)
         ok("big_fixture_mimics_real_mix", 0.6 < mix["authz.decision"] / len(rows) < 0.85 and mix["llm.call"] > 0 and mix["halt"] > 0, f"{dict(mix.most_common(4))}")
+        # staleness fixtures: same byte size and mtime, different valid content, different expected answers
+        p = os.path.join(tmp, "st.jsonl")
+        principal, want = synth.multiwriter_fixture(p)
+        st = os.stat(p)
+        rows_b = synth.swap_principals_text(lib.read_jsonl(p), "a0a0a0", "b0b0b0")
+        synth.rewrite_in_place(p, rows_b)
+        st2 = os.stat(p)
+        want_b = [e for e, _ in lib.audit_oracle(rows_b, principal)]
+        ok("stale_swap_same_size_mtime_valid", st.st_size == st2.st_size and st.st_mtime_ns == st2.st_mtime_ns and st.st_ino == st2.st_ino
+           and lib.lint(rows_b) == [] and lib.chain_check(rows_b) is None and want_b != want and len(want_b) == len(want), f"size={st2.st_size} lint={lib.lint(rows_b)[:1]}")
+        pa = principal.replace("b0b0b0", "a0a0a0")
+        rows_c = synth.move_pair(lib.read_jsonl(p), pa, principal)
+        wa, wb = lib.audit_oracle(rows_c, pa), lib.audit_oracle(rows_c, principal)
+        ok("stale_move_pair_valid", lib.lint(rows_c) == [] and synth.serialized_size(rows_c) == synth.serialized_size(rows_b)
+           and len(wb) == len(want_b) + 2 and len(wa) == len(want) - 2, f"lint={lib.lint(rows_c)[:1]}")
+        ra, wa_ = synth.economics_variant(None, 0)
+        rb, wb_ = synth.economics_variant(None, 7)
+        synth.same_size(ra, rb)
+        ok("stale_cost_same_size_valid", synth.serialized_size(ra) == synth.serialized_size(rb) and lib.lint(ra) == [] and lib.lint(rb) == []
+           and lib.chain_check(rb) is None and lib.cost_matches(wa_, lib.cost_oracle(ra, wa_["run"])) is None
+           and lib.cost_matches(wb_, lib.cost_oracle(rb, wb_["run"])) is None and wa_["cost_usd"] != wb_["cost_usd"])
+        ok("stale_refusal_detector", _refused({"rc": 1, "out": '{"error":"stale index"}', "err": ""}) and not _refused({"rc": 0, "out": "", "err": ""})
+           and not _refused({"rc": 1, "out": "", "err": ""}))
+        # cache-tamper oracle: snapshot diff sees new and changed files; tamper functions do what they claim
+        cd = os.path.join(tmp, "cache")
+        os.makedirs(os.path.join(cd, "sub"))
+        f1, f2, f3 = (os.path.join(cd, n) for n in ("a.idx", "sub/b.idx", "c.idx"))
+        open(f1, "wb").write(b"A" * 300)
+        open(f2, "wb").write(b"B" * 300)
+        snap0 = _snapshot([cd])
+        open(f3, "wb").write(b"C" * 300)
+        open(f2, "r+b").write(b"Z")
+        os.utime(f2, ns=(snap0[f2][1], snap0[f2][1]))  # same mtime and size: only the content hash differs
+        changed = _new_or_changed(snap0, _snapshot([cd]))
+        ok("cache_diff_sees_new_and_changed", changed == sorted([f2, f3]), f"{[os.path.basename(c) for c in changed]}")
+        _flip(f1, "middle")
+        _truncate(f3, 0.5)
+        _swap(f1, f2)
+        ok("cache_tamper_functions", os.path.getsize(f3) == 150 and open(f2, "rb").read()[:10] == b"AAAAAAAAAA" and open(f2, "rb").read().count(0xBE) == 64
+           and open(f1, "rb").read()[:1] == b"Z", f"sizes={os.path.getsize(f1)},{os.path.getsize(f2)},{os.path.getsize(f3)}")
         # skew generator shifts guest clocks only
         d = os.path.join(tmp, "skew")
         synth.skewed_run_dir(REAL_RUN, d)

@@ -4,7 +4,8 @@
 Each VM's egress forwarder (infra/agent/agent.py) relays a principal's connection here over mTLS with that
 principal's own X.509 SVID. The gateway names the caller from the certificate (and checks it belongs to the VM the
 connection comes from), decides with Cedar (policies/*.cedar), attaches upstream credentials only to allowed calls,
-and writes one authz.decision row per decision to /var/lib/avos/events.jsonl.
+and writes one authz.decision event per request to the trace store (collect/store.py), in the stream of the caller's
+VM. Calls name the decision that allowed them (authz_ref); every row carries the forwarder's X-Avos-Attempt number.
 
   POST /v1/...            llm.call     Model::<model>      forwarded to the upstream model API with its key
   POST /tools/<name>      tool.call    Tool::<name>        demo tools served here (issue_refund)
@@ -12,7 +13,8 @@ and writes one authz.decision row per decision to /var/lib/avos/events.jsonl.
 
 Kill switch (POC 5): supervisor/ctl.py writes the halted, killed or cut branches to /var/lib/avos/cut.json
 ({spiffe prefix: {receipt, state}}). A request from such a branch is denied before Cedar, and a response for a
-branch that was halted or cut while its call was in flight is dropped instead of delivered.
+branch that was halted or cut while its call was in flight is dropped instead of delivered; the call's event
+carries the receipt that dropped it.
 
   gateway.py serve        mTLS on :8443
   gateway.py check        assert the policy's expected decisions (no host needed)
@@ -32,15 +34,16 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cedarpy
 
-ROOT = "/var/lib/avos"
-EVENTS = f"{ROOT}/events.jsonl"
-JAIL = f"{ROOT}/jail/firecracker"
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, "..", "collect"))
+import store  # noqa: E402
+
+ROOT = "/var/lib/avos"
+JAIL = f"{ROOT}/jail/firecracker"
 SPIRE = ["/opt/spire/bin/spire-server"]
 SOCK = ["-socketPath", "/run/spire-server/api.sock"]
 GATEWAY_ID = "spiffe://avoslab.com/gateway"
@@ -73,15 +76,6 @@ def cut_for(spiffe_id):
     return next((v for k, v in cut["table"].items() if spiffe_id == k or spiffe_id.startswith(k + "/")), None)
 
 
-def now():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-
-
-def emit(kind, **fields):
-    with open(EVENTS, "a") as f:
-        f.write(json.dumps({"kind": kind, "ts": now(), **fields}) + "\n")
-
-
 def principal(spiffe_id):
     """Cedar entity for a SPIFFE ID: kind vm|agent|sub, its own name, and the top-level agent's name."""
     m = SPIFFE.fullmatch(spiffe_id)
@@ -93,17 +87,15 @@ def principal(spiffe_id):
                   "parents": []}
 
 
-def decide(spiffe_id, action, resource, args, vm_id=None):
-    """Cedar decision for one call, logged as authz.decision. Returns (allowed, policy ids)."""
+def decide(spiffe_id, action, resource, args):
+    """Cedar decision for one call. Returns (allowed, policy ids, errors)."""
     _, entity = principal(spiffe_id)
     r = cedarpy.is_authorized({"principal": f"Agent::{json.dumps(spiffe_id)}", "action": f"Action::{json.dumps(action)}",
                                "resource": resource, "context": args}, POLICIES, [entity])
     allowed = r.decision == cedarpy.Decision.Allow
     # No matching permit means Cedar's default deny; name it, so a denial always carries a rule.
     ids = [POLICY_IDS.get(p, p) for p in r.diagnostics.reasons] or ([] if allowed else ["default-deny"])
-    emit("authz.decision", principal=spiffe_id, vm_id=vm_id, action=action, resource=resource, args=args,
-         decision="allow" if allowed else "deny", policy_ids=ids, errors=[str(e) for e in r.diagnostics.errors])
-    return allowed, ids
+    return allowed, ids, [str(e) for e in r.diagnostics.errors]
 
 
 def env_file(path):
@@ -194,34 +186,52 @@ class Handler(BaseHTTPRequestHandler):
         except FileNotFoundError:
             self.vm_id = None
 
+    def parse_request(self):
+        """Count every request before anything is decided or written (M8 "happened"), in its principal's VM."""
+        if not super().parse_request():
+            return False
+        n = self.headers.get("X-Avos-Attempt", "")
+        self.attempt = int(n) if n.isdigit() else None
+        self.home = store.vm_of(self.spiffe_id)  # the principal's VM: its stream and its counters
+        store.count(self.home, "a")
+        return True
+
+    def emit(self, kind, **fields):
+        if self.attempt is not None:
+            fields["attempt"] = self.attempt
+        return store.emit("gateway", kind, self.spiffe_id, self.home, **fields)
+
     def allowed(self, action, resource, args):
+        """The allow decision event (calls name it in authz_ref), or None once a deny has been answered."""
         try:
             vm_id, _ = principal(self.spiffe_id)
-            if vm_id != self.vm_id:
-                emit("authz.decision", principal=self.spiffe_id, vm_id=self.vm_id, action=action, resource=resource,
-                     args=args, decision="deny", policy_ids=["vm-binding"], errors=[])
+            if vm_id != self.vm_id:  # filed under the principal it names, so its audit shows the attempt
+                self.emit("authz.decision", action=action, resource=resource, args=args, decision="deny",
+                          policy_ids=["vm-binding"], errors=[], via_vm=self.vm_id)
                 return self.deny(f"{self.spiffe_id} does not belong to the calling VM ({self.vm_id})", ["vm-binding"], args)
             if c := cut_for(self.spiffe_id):
-                return self.cut_off(action, resource, args, c)
-            ok, ids = decide(self.spiffe_id, action, resource, args, vm_id)
-            return ok or self.deny(f"{action} on {resource} not permitted", ids, args)
+                ids = [c["state"], c["receipt"]]
+                self.emit("authz.decision", action=action, resource=resource, args=args, decision="deny",
+                          policy_ids=ids, errors=[])
+                return self.deny(f"{c['state']} by {c['receipt']}", ids, args)
+            ok, ids, errors = decide(self.spiffe_id, action, resource, args)
+            d = self.emit("authz.decision", action=action, resource=resource, args=args,
+                          decision="allow" if ok else "deny", policy_ids=ids, errors=errors)
+            return d if ok else self.deny(f"{action} on {resource} not permitted", ids, args)
         except PermissionError as e:
             return self.deny(str(e), [], args)
 
-    def cut_off(self, action, resource, args, c):
-        ids = [c["state"], c["receipt"]]
-        emit("authz.decision", principal=self.spiffe_id, vm_id=self.vm_id, action=action, resource=resource,
-             args=args, decision="deny", policy_ids=ids, errors=[])
-        return self.deny(f"{c['state']} by {c['receipt']}", ids, args)
-
-    def still_allowed(self, action, resource, args):
-        # A halt or cut that landed while the call was upstream: the answer is not delivered (nor is it kept).
-        c = cut_for(self.spiffe_id)
-        return not c or self.cut_off(action, resource, args, c)
+    def refuse(self, code, action, why, args):
+        """A request no policy can be asked about (no such tool, bad body): still one decision, so every request
+        the gateway received has its row."""
+        if self.home:
+            self.emit("authz.decision", action=action, resource=f"Path::{json.dumps(self.path)}", args=args,
+                      decision="deny", policy_ids=["malformed-request"], errors=[why])
+        self.reply(code, {"error": why, "policy_ids": ["malformed-request"]})
 
     def deny(self, why, ids, args):
         self.reply(403, {"error": why, "principal": self.spiffe_id, "policy_ids": ids, "args": args})
-        return False
+        return None
 
     def body(self):
         return self.rfile.read(int(self.headers.get("Content-Length", 0)))
@@ -231,28 +241,33 @@ class Handler(BaseHTTPRequestHandler):
             return self.llm(self.body())
         m = re.fullmatch(r"/tools/([a-z_]+)", self.path)
         if not m or m[1] not in TOOLS:
-            return self.reply(404, {"error": f"no tool at {self.path}"})
+            self.body()
+            return self.refuse(404, "tool.call", f"no tool at {self.path}", {})
         fn, types = TOOLS[m[1]]
         try:
             args = json.loads(self.body())
             if set(args) != set(types) or not all(type(args[k]) is t for k, t in types.items()):
                 raise ValueError(f"arguments must be {', '.join(f'{k}: {t.__name__}' for k, t in types.items())}")
-        except ValueError as e:
-            return self.reply(400, {"error": str(e)})
-        resource = f"Tool::{json.dumps(m[1])}"
-        if self.allowed("tool.call", resource, args):
+        except (ValueError, TypeError) as e:
+            return self.refuse(400, "tool.call", str(e), {})
+        if d := self.allowed("tool.call", f"Tool::{json.dumps(m[1])}", args):
             result = fn(args)
-            emit("tool.call", principal=self.spiffe_id, vm_id=self.vm_id, tool=m[1], args=args, result=result)
-            if self.still_allowed("tool.call", resource, args):
-                self.reply(200, result)
+            store.count(self.home, "t")
+            call = self.emit("tool.call", via="gateway", tool=m[1], args=args, authz_ref=d["event_id"])
+            # A halt or cut that landed while the tool ran: the result is kept but not delivered.
+            c = cut_for(self.spiffe_id)
+            self.emit("tool.result", call_ref=call["event_id"], result=result,
+                      **({"dropped": True, "receipt": c["receipt"]} if c else {}))
+            if c:
+                return self.deny(f"{c['state']} by {c['receipt']}", [c["state"], c["receipt"]], args)
+            self.reply(200, result)
 
     def llm(self, body):
         try:
             model = json.loads(body)["model"]
         except (ValueError, KeyError, TypeError):
-            return self.reply(400, {"error": "body must be JSON with a model"})
-        resource = f"Model::{json.dumps(model)}"
-        if not self.allowed("llm.call", resource, {}):
+            return self.refuse(400, "llm.call", "body must be JSON with a model", {})
+        if not (d := self.allowed("llm.call", f"Model::{json.dumps(model)}", {})):
             return
         t0 = time.time()
         # Limit: the upstream answer is read whole, so a streamed reply reaches the agent in one piece.
@@ -270,24 +285,33 @@ class Handler(BaseHTTPRequestHandler):
             usage = json.loads(out).get("usage") or {}
         except (ValueError, AttributeError):
             usage = {}
-        delivered = self.still_allowed("llm.call", resource, {})
-        emit("llm.call", principal=self.spiffe_id, vm_id=self.vm_id, model=model, status=code,
-             ms=round((time.time() - t0) * 1000), prompt_tokens=usage.get("prompt_tokens"),
-             completion_tokens=usage.get("completion_tokens"), dropped=not delivered)
-        if delivered:
-            self.reply(code, out, ctype)
+        # A halt or cut that landed while the call was upstream: the answer is not delivered (nor is it kept).
+        c = cut_for(self.spiffe_id)
+        store.count(self.home, "l")
+        self.emit("llm.call", authz_ref=d["event_id"], model=model, status=code, ms=round((time.time() - t0) * 1000),
+                  prompt_tokens=usage.get("prompt_tokens"), completion_tokens=usage.get("completion_tokens"),
+                  dropped=bool(c), **({"receipt": c["receipt"]} if c else {}))
+        if c:
+            return self.deny(f"{c['state']} by {c['receipt']}", [c["state"], c["receipt"]], {})
+        self.reply(code, out, ctype)
+
+    def do_GET(self):
+        self.close_connection = True  # any body is left unread
+        self.refuse(405, "tool.call", f"{self.command} is not served; POST or CONNECT", {})
+
+    do_HEAD = do_PUT = do_PATCH = do_DELETE = do_GET
 
     def do_CONNECT(self):
         if not HOSTPORT.fullmatch(self.path):
-            return self.reply(400, {"error": "CONNECT host:port"})
-        if not self.allowed("net.connect", f"Host::{json.dumps(self.path)}", {}):
+            return self.refuse(400, "net.connect", "CONNECT host:port", {})
+        if not (d := self.allowed("net.connect", f"Host::{json.dumps(self.path)}", {})):
             return
         host, port = self.path.rsplit(":", 1)
         try:
             up = socket.create_connection((host, int(port)), timeout=10)
         except OSError as e:
             return self.reply(502, {"error": str(e)})
-        emit("net.connect", principal=self.spiffe_id, vm_id=self.vm_id, host=self.path)
+        self.emit("net.connect", authz_ref=d["event_id"], dest=self.path)
         self.send_response(200)
         self.end_headers()
         self.wfile.flush()
@@ -320,8 +344,7 @@ class Server(ThreadingHTTPServer):
 
 
 def stats(*vm_ids):
-    rows = [json.loads(line) for line in open(EVENTS)]
-    rows = [r for r in rows if not vm_ids or r.get("vm_id") in vm_ids]
+    rows = list(store.ledger(vm_ids))
     denials = [r for r in rows if r["kind"] == "authz.decision" and r["decision"] == "deny"]
     ok = [r for r in denials if r.get("principal") and r.get("policy_ids") and "args" in r]
     decisions = sum(r["kind"] == "authz.decision" for r in rows)
@@ -346,11 +369,9 @@ def check():
         (vm, "llm.call", 'Model::"m"', None, True, "llm-all"),
         (f"{vm}/agent/support", "net.connect", 'Host::"pypi.org:443"', None, False, "default-deny"),
     ]
-    global emit
-    emit = lambda *_, **__: None  # noqa: E731 (no ledger off-host)
     for p, action, resource, cents, want, rule in cases:
         args = {"order_id": "#W1", "amount_cents": cents} if cents is not None else {}
-        got, ids = decide(p, action, resource, args)
+        got, ids, _ = decide(p, action, resource, args)
         assert (got, ids) == (want, [rule]), (p, action, cents, got, ids)
     for bad in ("spiffe://avoslab.com/vm/vm-01-abcdef/sub/x", "spiffe://evil.com/vm/vm-01-abcdef/agent/a"):
         try:

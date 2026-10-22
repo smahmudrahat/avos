@@ -148,6 +148,63 @@ def principal_table(paths):
     return L
 
 
+def fingerprint(path):
+    """Identity and content of a file, for derived indexes: device, inode, size, mtime and SHA-256 of its first and
+    last 64 KB. Size and mtime alone matched a different file at the same path (a stale index answered nothing)."""
+    st = os.stat(path)
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        h.update(f.read(65536))
+        f.seek(max(0, st.st_size - 65536))
+        h.update(f.read(65536))
+    return [st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, h.hexdigest()]
+
+
+# ----------------------------------------------------------------------------- projections
+
+GATED = {"llm.call", "tool.call", "net.connect"}
+
+
+def authority(ev, by_id):
+    """What an event acted under (§8): the decision a gated call names, the receipt of a control, or nothing."""
+    k = ev["kind"]
+    if k in GATED:
+        if k == "tool.call" and ev.get("via") == "harness":
+            return {"via": "harness"}
+        d = by_id.get(ev.get("authz_ref"), {})
+        a = {"authz_ref": ev.get("authz_ref"), "decision": d.get("decision"), "policy_ids": d.get("policy_ids")}
+        if ev.get("receipt"):
+            a["receipt"] = ev["receipt"]
+        return a
+    if k == "authz.decision":
+        return {"decision": ev["decision"], "policy_ids": ev["policy_ids"]}
+    if k in ("halt", "resume"):
+        return {"receipt": ev["receipt"], "by": ev["by"]}
+    return {}
+
+
+LEGACY_DROP = {"event_id", "writer", "seq", "host", "prev", "hash", "authority", "authz_ref", "call_ref"}
+
+
+def legacy(ev):
+    """A contract event in the shape of a POC 1-6 ledger row, for `ingest` and the reports written for those rows
+    (registrar who/stats, ctl stats, gateway stats)."""
+    k = ev["kind"]
+    r = {f: v for f, v in ev.items() if f not in LEGACY_DROP}
+    p = r.pop("principal")
+    if k in ("vm.boot", "vm.exit"):
+        r["spiffe_id"] = p
+    elif k.startswith("session."):
+        r["vm_spiffe_id"] = p
+    elif k not in ("agent.spawn", "agent.exit", "halt", "resume"):
+        r["principal"] = p
+    if k == "net.connect":
+        r["host"] = r.pop("dest", None)
+    if "agent_id" in r:
+        r["id"] = r.pop("agent_id")
+    return r
+
+
 # ----------------------------------------------------------------------------- CLI
 
 def cli(main):

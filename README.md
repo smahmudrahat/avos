@@ -20,7 +20,8 @@ Every step is reproducible from this repository: scripts, configuration, pinned 
 | 4. Authorization | Per-principal policy at a host gateway; credentials never enter a VM | Done |
 | 5. Supervisor | Stop, resume, kill or cut off any principal by name without disturbing siblings | Done |
 | 6. Trace design | One event schema serving audit (who, when, with what authority) and retraining (inputs → outputs → result), validated on a real run | Done |
-| 7–9. Trace and labels | Audit store, training store, labeling pipeline | Planned |
+| 7. Collection | Every principal's events written append-only on the host as they happen; any identity's timeline answered from its VM's streams; loss before the host made visible (M8) | Done |
+| 8–9. Training store and labels | Training store, labeling pipeline | Planned |
 | 10–13. Evaluation | Benchmark runs, retraining, comparison with frontier models | Planned |
 
 Results for each completed milestone are in `data/pocN/README.md`.
@@ -72,6 +73,7 @@ just poc6            # trace schema, validator, projections on a real run + acce
 | `gateway/` | authorization gateway and policies (milestone 4) |
 | `supervisor/` | control table: halt, resume, kill, cut by name (milestone 5) |
 | `trace/` | event schema, validator, verifier, projections and their acceptance suite (milestone 6) |
+| `collect/` | the host trace store: emitters' stream writer, `avos` audit CLI, acceptance suite (milestone 7) |
 | `eval/` | benchmark split tooling and coding tasks |
 | `data/` | dataset splits and per-milestone results |
 | `docs/` | architecture, conventions, metrics, pinned versions |

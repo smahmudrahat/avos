@@ -4,9 +4,12 @@
 # One Firecracker microVM per name: tap-vm-NN, host 172.16.NN.1/30, guest 172.16.NN.2.
 # M1 vm_boot_ms = `vm create` start -> agent answers GET /health (upper bound on "agent process running").
 # Identity (POC 3): each boot mints a unique VM name vm-NN-xxxxxx and a SPIRE join token (identity/registrar.py).
+# Trace (POC 7): vm.boot goes to the VM's own stream in the trace store; destroy reads the guest forwarder's final
+# request counters (GET /health) before the kill, for the registrar's vm.exit (collect/store.py).
 set -euo pipefail
 ROOT=/var/lib/avos
 ID=$(dirname "$0")/../identity/registrar.py
+STORE=$(dirname "$0")/../collect/store.py
 IMG=$ROOT/images
 MEM_MIB=${MEM_MIB:-2048}
 VCPUS=${VCPUS:-1}
@@ -87,14 +90,16 @@ EOF
   done
   local m1=$(($(ms) - t0))
   rm -f "$dir/metadata.json"
-  printf '{"kind":"vm.boot","ts":"%s","vm":"%s","vm_id":"%s","spiffe_id":"spiffe://avoslab.com/vm/%s","ip":"%s","boot_ms":%d,"disk_ms":%d,"runtime":"firecracker","host":"%s","mem_mib":%d}\n' \
-    "$(date -u +%FT%T.%3NZ)" "$name" "$vm_id" "$vm_id" "$IP" "$m1" $((t_disk - t0)) "$(hostname)" "$MEM_MIB" >> $ROOT/events.jsonl
+  python3 "$STORE" emit vm vm.boot "$vm_id" "spiffe://avoslab.com/vm/$vm_id" "$(printf '{"vm":"%s","ip":"%s","boot_ms":%d,"disk_ms":%d,"runtime":"firecracker","mem_mib":%d}' \
+    "$name" "$IP" "$m1" $((t_disk - t0)) "$MEM_MIB")"
   echo "$name ip=$IP m1_ms=$m1 (disk prep $((t_disk - t0)) ms) vm_id=$vm_id"
 }
 
 destroy() {
   local name=$1 jail=$ROOT/jail/firecracker/$1
   net "$name"
+  # Before the kill: what the guest's forwarder counted (vm-down files it; unreachable = M8 unverified for this VM).
+  [ -d "$jail" ] && { curl -sf -m 2 "http://$IP/health" -o "$jail/health.json" || rm -f "$jail/health.json"; }
   if [ -f "$jail/pid" ]; then
     local pid; pid=$(cat "$jail/pid")
     kill "$pid" 2>/dev/null || true

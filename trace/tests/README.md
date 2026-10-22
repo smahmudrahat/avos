@@ -72,6 +72,11 @@ Regenerate goldens with `python3 trace/tests/synth.py golden` (selftest asserts 
 | E02 | claim 2, M12, M16 | Real run priced via `--prices`: each `llm.call` carries `price` and `cost_usd` = tokens × price; `query cost` sums; `wall_ms` 30,692; host attribution | exact to 1e-9 | real |
 | E03 | claim 2 | Cost is read from the trace alone: a copy with doubled tokens in an otherwise empty dir doubles the answer | exact | real (mutated) |
 | Q01 | clock | Guest clock +1 h: trace validates, projection identical, `llm.call.ts` stays the gateway's, tool events sit between their issuing call and the next, all inside the session | all true | real (mutated) |
+| X01 | M9, audit | Warm a query on F, then overwrite F in place with a different valid trace of identical byte size, same inode, same mtime (a consistent swap of two principals); the answer must be the new content's (or exit 1 with an error) | correct for the new file, or refused. A side index keyed by path/size/mtime answers from the old file: silently wrong, which is the worst outcome for an audit tool. Found on the production host: 0/14 events with exit 0 after a previous run left state under `$TMPDIR`. | synthetic |
+| X02 | M9, audit | Two different traces named `t.jsonl` in two directories, same size and mtime, queried alternately five times under one `$TMPDIR` | every answer belongs to its file (or refused). Catches caches keyed by basename or by (size, mtime). | synthetic |
+| X03 | M9, audit | After warming both principals, move one (authz.decision, llm.call) pair from A to B in place (size and mtime unchanged; trace stays valid) | A loses 2 events, B gains 2 (or refused). Catches partial/incremental indexes that trust unchanged metadata. | synthetic |
+| X04 | claim 2, M12 | Same as X01 for `query cost`: the file is replaced in place by a same-size trace (padded via an extra field) with other token counts | cost equals the new content's (or refused). | synthetic |
+| X05 | M9, audit | After warming two different inputs under a private TMPDIR/HOME, every new or changed file the tool left there (or next to the inputs) is byte-flipped at start/middle/end, truncated to half and to zero, deleted, and swapped with the other input's cache; a query follows each | every answer correct for the file's content, or exit 1 with an error. A cache is an optimisation, never a source of truth: a damaged or foreign index must be detected (checksummed, verified against the file) and rebuilt or refused. Vacuously passes for a cache-free design (reported as such). | synthetic |
 | S01 | scale, M8 | Validator over 1,000,126 events | ≥ 50k ev/s, ≤ 512 MiB. `json.loads` alone runs ≈ 110k/s on these 533-B rows; loading the file whole costs 2.5 GB, so 512 MiB proves streaming. | synthetic (real mix) |
 | S02 | scale, trust | Verifier over 1M | ≥ 40k ev/s (SHA-256 + canonical JSON measured at 140k/s), ≤ 512 MiB | synthetic |
 | S03 | M9 | Cold per-principal audit over 1M (index build allowed) | ≤ 20 s and correct: about two sequential passes at `json.loads` speed. | synthetic |
@@ -84,10 +89,11 @@ VM with 40% sub-agents, halt/resume pairs, labels. Median row 533 B.
 
 ## Selftest
 
-`--selftest` runs 45 items with no solver: golden files regenerate byte-identically; `lint` (the suite's
+`--selftest` runs 52 items with no solver: golden files regenerate byte-identically; `lint` (the suite's
 independent rule checker) accepts `good.jsonl` and reports the expected `code@event_id` for each `bad_*`; the
 chain oracle catches edit, deletion and re-hash; the chat oracle equals `expected_chat.json` and catches a dropped
 tool message, a reorder, a usage change, an argument change, a duplicated call and a changed tool id; the real
 run's harness usage sequence equals the gateway's 14 rows; the real ledger window satisfies the liveness, pairing
 and lineage rules (so the real-data checks are satisfiable); the completeness, audit-sort, cost and big-fixture
-oracles behave as claimed; the skew and poc2 generators do what the checks assume.
+oracles behave as claimed; the staleness fixtures really keep size, inode and mtime while changing the expected
+answer and staying valid; the skew and poc2 generators do what the checks assume.

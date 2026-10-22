@@ -6,21 +6,25 @@
    Both hold on 10 repetitions."
 
 Black box: this driver only uses documented interfaces -- infra/vm, POST /spawn, the shim's spawn socket,
-supervisor/ctl.py, the gateway as seen from inside a guest, and cgroup.events read from inside a guest. It does
-not read any implementation file. Run ON THE HOST from ~/poc:
+supervisor/ctl.py, the gateway as seen from inside a guest, cgroup.events read from inside a guest, and the
+POC 7 event store through `collect/bin/avos` (collect/CONTRACT.md: `trace --principal`, `import`,
+`AVOS_TRACE_ROOT`). It never reads or writes the store's files directly and never touches the live store's
+history. It does not read any implementation file. Run ON THE HOST from ~/poc:
 
   sudo python3 supervisor/tests/claim1.py [--only 1,3] [--quick]
 
 One line per check:  PASS|FAIL <id> <what> measured=<v> bar=<v>. Exit 0 only if every check passed.
-Raw per-check measurements land in /tmp/claim1/. VMs and any appended ledger rows are cleaned up in finally.
+Raw per-check measurements land in /tmp/claim1/. VMs and the scratch trace root are cleaned up in finally.
 """
-import argparse, json, os, pathlib, secrets, statistics, subprocess, sys, threading, time, urllib.request, urllib.error
+import argparse, json, os, pathlib, shutil, statistics, subprocess, sys, threading, time, urllib.request, urllib.error
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 HERE = pathlib.Path(__file__).resolve().parent
 OUT = pathlib.Path("/tmp/claim1")
 KEY = "/var/lib/avos/images/vm_key"
-LEDGER = "/var/lib/avos/events.jsonl"
+AVOS = ["python3", str(REPO / "collect" / "bin" / "avos")]   # collect/CONTRACT.md §1: the documented query path
+INGEST = ["python3", str(REPO / "trace" / "bin" / "ingest")]  # Justfile poc6: raw ledger rows -> POC 6 trace file
+SCRATCH_ROOT = OUT / "scratch-trace"                          # AVOS_TRACE_ROOT for check 6; never the live store
 CGROOT = "/sys/fs/cgroup/system.slice/avos-agent.service"
 IP = {"vm-01": "172.16.1.2", "vm-02": "172.16.2.2"}
 MODEL = None  # read from agent.env at startup
@@ -37,7 +41,6 @@ SYN_ROWS_QUICK = 20_000
 
 _offsets = {}         # slot -> (host_clock - guest_clock) seconds
 _created = set()      # slots to destroy in finally
-_appended = []        # list of unique tokens appended to the ledger, to remove in finally
 
 
 # --------------------------------------------------------------------------------------------------- shell / ssh
@@ -58,8 +61,10 @@ def gssh(slot, cmd, timeout=60):
     return run(gssh_base(slot) + [cmd], timeout=timeout)
 
 
-def ctl(*args, timeout=30):
-    return run(["python3", str(REPO / "supervisor" / "ctl.py"), *args], timeout=timeout)
+def ctl(*args, timeout=30, env=None):
+    e = dict(os.environ, **env) if env else None
+    return subprocess.run(["python3", str(REPO / "supervisor" / "ctl.py"), *args], capture_output=True, text=True,
+                          timeout=timeout, env=e)
 
 
 # --------------------------------------------------------------------------------------------------- VM lifecycle
@@ -398,7 +403,7 @@ def check4(reps):
     caller afterwards."""
     slot = "vm-01"
     vm_create(slot)
-    delivered = 0
+    delivered, uncorroborated = 0, 0
     detail = []
     n = max(1, reps // 3)  # slow LLM calls are ~9 s each; a few per mode is enough
     for mode in ("halt", "cut"):
@@ -408,24 +413,33 @@ def check4(reps):
                                                calls_max=1))
             spiffe = info["spiffe_id"]
             time.sleep(1.5)  # let the call get in flight
+            t_ctl = time.time()
             ctl(mode, spiffe)
-            # wait for the upstream answer to be handled (ledger llm.call row for this principal), then release
-            rowstate = wait_llm_row(spiffe, timeout=60)
+            # Hold the control until the upstream answer has reached the gateway and been handled: the store's
+            # llm.call event for this principal, read through the documented query (`avos trace --principal`).
+            # The control must not be released earlier -- an answer that arrives after release is legitimately
+            # delivered. The upstream model has been seen to take up to ~40 s; bound the wait at 240 s and treat
+            # a missing event as a FAIL (uncorroborated), never as a pass.
+            rowstate = wait_llm_row(spiffe, timeout=240)
             time.sleep(0.5)
             ctl("resume" if mode == "halt" else "uncut", spiffe)
             time.sleep(2.0)
             logs = read_logs(slot)
             fcalls = calls(logs, nm)
             got200 = any(c["st"] == 200 for c in fcalls)
+            in_flight = bool(fcalls) and hostclock(slot, fcalls[-1]["t0"]) < t_ctl < hostclock(slot, fcalls[-1]["t1"])
             if got200:
                 delivered += 1
-            detail.append({"name": nm, "mode": mode, "agent_saw_200": got200,
-                           "agent_call": fcalls[-1] if fcalls else None, "ledger_dropped": rowstate})
-    dump("check4.json", {"delivered_after_control": delivered, "detail": detail})
-    ok = delivered == 0
+            if rowstate is not True or not in_flight:
+                uncorroborated += 1
+            detail.append({"name": nm, "mode": mode, "agent_saw_200": got200, "call_was_in_flight_at_control": in_flight,
+                           "agent_call": fcalls[-1] if fcalls else None, "store_llm_call_dropped": rowstate})
+    dump("check4.json", {"delivered_after_control": delivered, "uncorroborated": uncorroborated, "detail": detail})
+    ok = delivered == 0 and uncorroborated == 0
     vm_destroy(slot)
     return ok, "in-flight answer dropped on halt/cut", \
-        "delivered_to_caller=%d (over %d halt + %d cut)" % (delivered, n, n), "delivered=0"
+        "delivered_to_caller=%d store_not_dropped_or_missing=%d (over %d halt + %d cut)" % \
+        (delivered, uncorroborated, n, n), "delivered=0 and every store llm.call dropped=true"
 
 
 def check5(reps, load_secs):
@@ -499,8 +513,16 @@ def check5(reps, load_secs):
 
 
 def check6(reps):
-    """Scale independence of M6: stop latency must not grow with the host's history. Measure M6, append many
-    synthetic authz.decision rows for a dead VM id, measure M6 again, require no material growth, remove them."""
+    """Scale independence of M6: stop latency must not grow with the host's history.
+
+    The live store is append-only (collect/CONTRACT.md §2), so synthetic history cannot be put there and taken
+    back. The contract's documented path for a large history is a scratch root: `AVOS_TRACE_ROOT=<dir>` makes
+    every `avos` subcommand read and write only under <dir>, and `ctl.py` honours the same variable (probed: a
+    halt issued with it set lands in the scratch store and not in the live one). So: both M6 series run with
+    ctl's trace root pointed at the scratch root -- first while it is empty, then after `avos import` of N
+    well-formed authz.decision events for a dead VM id (built with `trace/bin/ingest --ledger`, the Justfile's
+    documented raw-rows -> trace-file path). Growth is measured under identical conditions; the scratch root is
+    deleted afterwards and the live store never changes."""
     slot = "vm-01"
     vm_create(slot)
     spawn_top(slot, "A", cfg_for("A", tick=TICK, children=[{"name": "B", "cfg": cfg_for("B", tick=TICK)}]))
@@ -508,36 +530,48 @@ def check6(reps):
     logs = wait_logs(slot, ["A", "B", "S"])
     cgB = cg_of(logs, "B")
     spiffeB = ctl_spiffe(slot, "/agent/A/sub/B")
+    env = {"AVOS_TRACE_ROOT": str(SCRATCH_ROOT)}
+    shutil.rmtree(SCRATCH_ROOT, ignore_errors=True)
+    SCRATCH_ROOT.mkdir(parents=True)
+    live_before = store_events()
 
     def measure(n):
         w = Watcher(slot, [cgB]); time.sleep(0.4); vals = []
         try:
             for _ in range(n):
-                t0 = time.time(); ctl("halt", spiffeB)
+                t0 = time.time(); ctl("halt", spiffeB, env=env)
                 fz = w.wait_edge(cgB, "1", t0)
                 if fz:
                     vals.append((fz - t0) * 1000)
-                time.sleep(0.4); ctl("resume", spiffeB); w.wait_edge(cgB, "0", time.time()); time.sleep(0.3)
+                time.sleep(0.4); ctl("resume", spiffeB, env=env); w.wait_edge(cgB, "0", time.time()); time.sleep(0.3)
         finally:
             w.close()
         return vals
 
     before = measure(reps)
     nrows = SYN_ROWS_QUICK if QUICK else SYN_ROWS_FULL
-    token = append_ledger(nrows)
+    imported = import_history(nrows, env)
+    scratch_events = store_events(env)
     after = measure(reps)
+    live_after = store_events()
+    # the control path really wrote into the scratch root (so the large history was on its path)
+    ctl_rows_in_scratch = sum(1 for e in avos_trace(spiffeB, env) if e.get("kind") in ("halt", "resume"))
 
     bmed = statistics.median(before) if before else 1e9
     amed = statistics.median(after) if after else 1e9
     growth = amed - bmed
     dump("check6.json", {"before_ms": before, "after_ms": after, "before_median": bmed, "after_median": amed,
-                         "growth_ms": growth, "rows_appended": nrows, "token": token})
-    ok = len(before) == reps and len(after) == reps and amed <= M6_BAR_MS and growth <= M6_GROWTH_BAR_MS
-    remove_ledger(token)
+                         "growth_ms": growth, "rows_requested": nrows, "imported": imported,
+                         "scratch_store_events": scratch_events, "ctl_rows_in_scratch": ctl_rows_in_scratch,
+                         "live_store_events_before": live_before, "live_store_events_after": live_after})
+    ok = (len(before) == reps and len(after) == reps and amed <= M6_BAR_MS and growth <= M6_GROWTH_BAR_MS
+          and imported == nrows and ctl_rows_in_scratch >= 2 * reps)
+    shutil.rmtree(SCRATCH_ROOT, ignore_errors=True)
     vm_destroy(slot)
-    return ok, "M6 scale independence vs %d-row history" % nrows, \
-        "before=%.0fms after=%.0fms growth=%.0fms" % (bmed, amed, growth), \
-        "after<=%dms and growth<=%dms" % (M6_BAR_MS, M6_GROWTH_BAR_MS)
+    return ok, "M6 scale independence vs %d-event history (scratch AVOS_TRACE_ROOT)" % nrows, \
+        "before=%.0fms after=%.0fms growth=%.0fms imported=%d ctl_rows_in_scratch=%d" % \
+        (bmed, amed, growth, imported, ctl_rows_in_scratch), \
+        "after<=%dms, growth<=%dms, imported=%d, ctl wrote to scratch" % (M6_BAR_MS, M6_GROWTH_BAR_MS, nrows)
 
 
 def check7(reps):
@@ -636,46 +670,64 @@ def ctl_spiffe(slot, suffix):
     return None
 
 
-def append_ledger(nrows):
-    token = "claim1-" + secrets.token_hex(5)
-    dead_vm = "vm-09-dead00"
-    row = {"kind": "authz.decision", "ts": "2026-01-01T00:00:00.000Z",
-           "principal": "spiffe://avoslab.com/vm/%s/agent/synthetic" % dead_vm, "vm_id": dead_vm,
-           "action": "tool.call", "resource": "Tool::\"issue_refund\"",
-           "args": {"order_id": "#W0", "amount_cents": 100}, "decision": "deny",
-           "policy_ids": ["default-deny"], "errors": [], "_synthetic": token}
-    line = json.dumps(row) + "\n"
-    with open(LEDGER, "a") as f:
-        for _ in range(nrows):
-            f.write(line)
-    _appended.append(token)
-    return token
+def avos(args, env=None, timeout=120):
+    e = dict(os.environ, **env) if env else None
+    return subprocess.run(AVOS + args, capture_output=True, text=True, timeout=timeout, env=e)
 
 
-def remove_ledger(token):
-    marker = '"_synthetic": "%s"' % token
-    tmp = LEDGER + ".claim1tmp"
-    with open(LEDGER) as src, open(tmp, "w") as dst:
-        for line in src:
-            if marker not in line:
-                dst.write(line)
-    os.replace(tmp, LEDGER)
-    if token in _appended:
-        _appended.remove(token)
+def avos_trace(principal, env=None):
+    """collect/CONTRACT.md §1: `avos trace --principal P` -> the audit projection of P as NDJSON."""
+    out = []
+    for line in avos(["trace", "--principal", principal], env=env).stdout.splitlines():
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
+    return out
 
 
-def wait_llm_row(spiffe, timeout=60):
+def store_events(env=None):
+    p = avos(["store"], env=env)
+    try:
+        return json.loads(p.stdout)["events"]
+    except (json.JSONDecodeError, KeyError):
+        return None
+
+
+def wait_llm_row(spiffe, timeout=45):
+    """Poll the documented query until the principal's llm.call event is stored; return its `dropped` value.
+    Returns the string "no-row" if nothing is stored within the timeout -- the caller treats that as a FAIL."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        p = run(["grep", '"kind": "llm.call"', LEDGER], timeout=30)
-        for line in reversed(p.stdout.splitlines()):
-            if spiffe + '"' in line:
-                try:
-                    return json.loads(line).get("dropped")
-                except json.JSONDecodeError:
-                    pass
+        rows = [e for e in avos_trace(spiffe) if e.get("kind") == "llm.call"]
+        if rows:
+            return rows[-1].get("dropped", "missing-field")
         time.sleep(0.5)
     return "no-row"
+
+
+def import_history(nrows, env):
+    """Documented path to a large history: raw authz.decision rows -> `trace/bin/ingest --ledger` (POC 6 trace
+    file) -> `avos import` into the scratch AVOS_TRACE_ROOT. Returns the number imported as reported by avos."""
+    dead_vm = "vm-09-dead00"
+    raw = OUT / "synthetic_ledger.jsonl"
+    tracef = OUT / "synthetic_trace.jsonl"
+    row = {"kind": "authz.decision", "principal": "spiffe://avoslab.com/vm/%s/agent/synthetic" % dead_vm,
+           "vm_id": dead_vm, "action": "tool.call", "resource": "Tool::\"issue_refund\"",
+           "args": {"order_id": "#W0", "amount_cents": 100}, "decision": "deny",
+           "policy_ids": ["default-deny"], "errors": []}
+    with open(raw, "w") as f:
+        for i in range(nrows):
+            row["ts"] = "2026-01-01T%02d:%02d:%02d.%03dZ" % ((i // 3_600_000) % 24, (i // 60_000) % 60, (i // 1000) % 60, i % 1000)
+            f.write(json.dumps(row) + "\n")
+    import socket
+    run(INGEST + ["--ledger", str(raw), "-o", str(tracef), "--host", socket.gethostname()], timeout=600, check=True)
+    p = avos(["import", str(tracef)], env=env, timeout=600)
+    raw.unlink(missing_ok=True); tracef.unlink(missing_ok=True)
+    try:
+        return json.loads(p.stdout)["imported"]
+    except (json.JSONDecodeError, KeyError):
+        return -1
 
 
 # --------------------------------------------------------------------------------------------------- main
@@ -721,8 +773,7 @@ def main():
     finally:
         for slot in list(_created):
             vm_destroy(slot)
-        for token in list(_appended):
-            remove_ledger(token)
+        shutil.rmtree(SCRATCH_ROOT, ignore_errors=True)   # the only history this suite ever creates
         run(["sh", "-c", "rm -f %s/cm-*" % OUT], timeout=15)
     print("total %.0fs, %d/%d passed" % (time.time() - t_start, sum(results), len(results)))
     sys.exit(0 if all(results) and results else 1)

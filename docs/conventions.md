@@ -30,13 +30,14 @@ The fixed choices every component is checked against. A change to anything here 
 - SPIFFE trust domain `avoslab.com`. Paths:
   `spiffe://avoslab.com/vm/<vm-id>` for a VM, `/vm/<vm-id>/agent/<name>` for an agent,
   `.../agent/<name>/sub/<name>` for a sub-agent (nested to any depth).
-- Event kinds (one JSON object per line in `events.jsonl`):
+- Event kinds (one JSON object per line; `trace/CONTRACT.md`, stored per VM under `/var/lib/avos/trace`, which
+  replaced the single `events.jsonl` of POC 1–6 in POC 7):
   `vm.boot`, `vm.exit`, `session.open`, `session.close`, `agent.spawn`, `agent.exit`, `llm.call`, `tool.call`,
   `tool.result`, `fs.write`, `net.connect`, `authz.decision`, `halt`, `resume`, `label`.
-  `agent.spawn` / `agent.exit` rows carrying `spiffe_id` form the identity ledger.
+  `agent.spawn` / `agent.exit` events carrying `spiffe_id` form the identity ledger.
 
 ## 4. Repository
-- One directory per component: `infra/` (microVMs), `identity/`, `gateway/`, `supervisor/`, `trace/`, `eval/`,
+- One directory per component: `infra/` (microVMs), `identity/`, `gateway/`, `supervisor/`, `trace/`, `collect/`, `eval/`,
   `data/`, `docs/`; later `train/` as it is built.
 - The `Justfile` has one target per milestone acceptance test (`just poc1`, `just poc2`, ...).
 - Dataset splits live in `data/splits/`; each `data/pocN/` holds that milestone's recorded results.

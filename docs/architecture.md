@@ -7,7 +7,7 @@ that can later train an open-weight model.
 ```
                          host
  ┌───────────────────────────────────────────────────────────────────────┐
- │  SPIRE Server ── registrar ── events.jsonl ── policy (Cedar)  ctl     │
+ │  SPIRE Server ── registrar ── trace store ─── policy (Cedar)  ctl     │
  │        ▲            ▲              ▲              │        (control  │
  │        │            │              │       ┌──────▼──────┐  table)   │
  │        │            │              └───────┤   gateway   ├──► model APIs, tools,
@@ -59,7 +59,7 @@ and credentials are attached at a broker the workload cannot reach into, and eve
 | Edge proxy: intercepts outbound calls, attaches the caller's identity | egress forwarder | VM, root |
 | Policy decision point | Cedar policies evaluated by the gateway | host |
 | Policy enforcement point + credential provider | gateway: forwards allowed calls, attaches upstream credentials | host |
-| Audit | `authz.decision` rows in `events.jsonl` | host |
+| Audit | `authz.decision` events in the trace store (§7) | host |
 
 Two properties are deliberate:
 - **Decisions are local.** The policy engine runs on the same host as the VMs. There is no remote control plane on
@@ -80,7 +80,9 @@ Two properties are deliberate:
    `net.connect`; the context carries the arguments (for example a refund amount).
 5. Allow: attach the upstream credential, forward, return the answer, write `llm.call` (status, latency, token
    counts) or `tool.call` (arguments and result). Deny: return HTTP 403 with the principal, policy IDs and arguments.
-6. Both outcomes write one `authz.decision` row: `principal`, `action`, `resource`, `args`, `decision`, `policy_ids`.
+6. Both outcomes write one `authz.decision` event: `principal`, `action`, `resource`, `args`, `decision`,
+   `policy_ids`, and the forwarder's attempt number (§7). So does a request no policy can be asked about (no such
+   tool, bad body: `malformed-request`), so every request the gateway receives has its decision.
 
 ### 4.3 Containment
 - **No route out.** The host never forwards guest traffic. On the host, a tap may reach only the SPIRE Server
@@ -134,7 +136,7 @@ resolves a name to the VM, the cgroup and the SPIFFE prefix, and acts through th
 | `kill` | `cgroup.kill`; each death is ledgered as `agent.exit (signal 9)` and its SPIRE entry deleted | `infra/vm destroy` | |
 | `cut` / `uncut` | | | the gateway refuses every request from the branch (`cut.json`, by SPIFFE prefix) |
 
-Every command writes one `halt` or `resume` row to `events.jsonl` with a receipt (`hr_xxxx`), who issued it, the
+Every command writes one `halt` or `resume` event to the trace store with a receipt (`hr_xxxx`), who issued it, the
 target, the nodes under it and the time it took; `ctl.py ls` shows each live principal's state and receipt.
 
 Three properties are deliberate:
@@ -143,7 +145,7 @@ Three properties are deliberate:
   guest refuses any other caller; cgroup files are root-owned).
 - **In-flight answers are dropped.** The gateway checks the kill switch before it forwards a request *and* before it
   returns a response. A model answer that arrives for a branch halted or cut mid-call is not delivered; the
-  `llm.call` row records `dropped: true` and the receipt.
+  `llm.call` event records `dropped: true` and the receipt (a tool result held back: its `tool.result`).
 - **No central hot path.** Names are hierarchical and resolved on the host that runs the VM; a stop costs one write
   per branch, whatever the size of the fleet.
 
@@ -169,6 +171,53 @@ the evidence; the harness transcript is a declared witness merged in for in-proc
 projections: a per-principal audit timeline with authority, and a chat-format training run with reward. Design,
 lifecycle and limits: `docs/trace.md`; interface and acceptance suite: `trace/CONTRACT.md`, `trace/tests/`.
 
-## 7. Planned
+## 7. Collection (`collect/`)
+Every host-side emitter writes contract events (§6) itself, at the moment it acts: the gateway, the registrar,
+`ctl`, `infra/vm` and `infra/job`. Nothing in a VM writes to the store and no guest clock reaches `ts`. Interface and
+acceptance suite: `collect/CONTRACT.md`, `collect/tests/`; results: `data/poc7/README.md`.
+
+**Streams.** One stream per (host, component, VM): writer `<host>/<component>/<vm_id>`, file
+`/var/lib/avos/trace/vm/<vm_id>/<component>.jsonl` (`trace/host/` for an event with no VM). An append mints the id,
+`seq`, host `ts` and chain link under an exclusive `flock` on the file, so the processes that share a stream (the
+registrar service and `vm-down`; every `ctl` run) keep one gap-free chain, and writes the whole line in one
+`O_APPEND` write. A writer killed at any instant leaves whole lines; there is no `fsync` on the request path (the
+kernel holds the line once `write` returns; a host crash can lose the last moments). The gateway stamps `authz_ref`
+with the decision's own id at decision time; nothing is linked after the fact. A principal's events are in its VM's
+four or five small files, so `avos trace --principal P` and `--run R` read only those: no index, no scan. The
+registrar's per-host principal index (§2) and the hot paths are unchanged; `infra/job` finds its harness in the VM's
+own registrar stream.
+
+**Attempt numbering.** The in-VM forwarder reads the HTTP/1.1 requests it relays (keep-alive, `Content-Length` or
+chunked bodies; after `CONNECT` the bytes are a tunnel, from the same single thread as before) and stamps each with
+`X-Avos-Attempt: n`, counted per principal when the request head is complete, before the gateway is dialled. The
+gateway copies `n` onto the decision and the call. A request lost between the VM and the host leaves its number
+missing on the host (`attempt_gaps`), and the guest's count higher than the host's.
+
+**Counters and teardown.** M8 compares the store with counts kept outside it: `trace/counters/<vm_id>` gets one byte
+per act, appended just before the act's event is written (gateway: request received, model answer or tool call
+forwarded; registrar: spawn, exit; `ctl`: halt, resume, counted before it acts). The guest's per-principal counts
+reach the host three ways, each host-stamped: the shim sends a principal's count with its `/exit` (retried until
+the registrar answers), the gateway sees the running number on every request, and `infra/vm destroy` reads the
+forwarder's final table from `GET /health` **before** it kills the VM, which the registrar files on `vm.exit`. Kill
+paths (`infra/job`'s EXIT trap, a bare `vm destroy`) go through the same destroy.
+
+**M8 statuses** (`avos completeness --run R`): `complete` when every counter is known, equals what is stored, the
+guest's count equals the stored decisions and no writer has a `seq` gap; `incomplete` when the counters are known
+and something differs; `unverified` when a counter cannot be produced: the guest was unreachable at teardown, its
+forwarder restarted (a `/run` marker, or attempt numbers starting over), or the run was imported. A request the
+forwarder counted but the gateway never received therefore reads `incomplete`, never `complete`.
+
+**Retention.** Everything is kept: files are only appended to, never rotated or deleted. Imported days (`avos
+import`) are kept under their own writers; a derived index clusters their lines by VM so a principal's day is one
+read, rebuilt whenever the imported files change.
+
+**Tamper-proofing** is out of scope. It would go on the per-writer `head`s that `trace/bin/verify` prints: sign a
+VM's heads at `vm.exit` and anchor them off the host, so a rewritten tail no longer verifies.
+
+Known limits: an in-VM action that makes no request has no writer but the audited party; requests sent to the gateway
+without the forwarder (an agent may dial it with its own SVID) carry no number and read as more decisions than guest
+requests; and while a VM lives, a principal that has not exited counts as the highest number the host has seen.
+
+## 8. Planned
 - **Labeling and training:** automated checks, open-weight judges, human review; LoRA retraining on passed runs.
 - **Evaluation:** full held-out runs with pass^k, cost and latency, compared with frontier-model baselines.

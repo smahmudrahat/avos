@@ -141,11 +141,11 @@ poc4:
     vm 2 "curl $stolen https://172.16.2.1:8443/tools/issue_refund" && echo "FAIL: expired copy accepted" || echo "expired copy refused at the TLS handshake: ok"
     echo "== agents' own logs"
     vm 1 "journalctl -o cat -u avos-agent | grep -E 'refund 1[05]|refund 4|egress|after'"
-    echo "== 1-4: authz.decision rows (tool and network; the VMs' own heartbeat model calls left out)"
-    sudo python3 -c 'import json, sys
-    for r in map(json.loads, open("/var/lib/avos/events.jsonl")):
-        if r["kind"] == "authz.decision" and r["vm_id"] in sys.argv[1:] and r["action"] != "llm.call" and r["args"].get("amount_cents") != 100:
-            print(r["decision"].ljust(5), r["principal"].split("/vm/")[1].ljust(52), r["action"], r["resource"], r["args"].get("amount_cents", ""), r["policy_ids"])' "$vm_id" "$vm2_id"
+    echo "== 1-4: authz.decision events (tool and network; the VMs' own heartbeat model calls left out)"
+    for v in "$vm_id" "$vm2_id"; do sudo python3 collect/bin/avos trace --run "$v"; done | python3 -c 'import json, sys
+    for r in map(json.loads, sys.stdin):
+        if r["kind"] == "authz.decision" and r["action"] != "llm.call" and r["args"].get("amount_cents") != 100:
+            print(r["decision"].ljust(5), r["principal"].split("/vm/")[1].ljust(52), r["action"], r["resource"], r["args"].get("amount_cents", ""), r["policy_ids"])'
     echo "== gateway round trip (forwarder + mTLS + Cedar + log), 20 allowed calls"
     vm 1 "journalctl -o cat -u avos-agent | grep -oP 'refund 100: allowed \S+ \(\K\d+'" | sort -n | awk '{a[NR]=$1} END {print "median", a[int((NR+1)/2)], "ms, worst", a[NR], "ms"}'
     echo "guest agent (shim + forwarder) RSS: $(vm 1 'ps -o rss=,args= -C python3 | grep /agent.py' | awk '{print int($1/1024)}') MB"
@@ -194,8 +194,9 @@ poc5 n="10":
     F=$(spawn 1 F "\"--slow-llm\",\"$model\",\"--tick\",\"0.05\",\"--sleep\",\"30\""); sleep 1.5
     ctl halt "$F"
     echo "waiting for the upstream answer to reach the gateway while F is frozen..."
-    timeout 150 bash -c "until sudo grep '\"kind\": \"llm.call\"' /var/lib/avos/events.jsonl | grep -q '$F\"'; do sleep 0.5; done"
-    sudo grep '"kind": "llm.call"' /var/lib/avos/events.jsonl | grep "$F\"" | tail -1 | grep -oE '"status": [0-9]+|"ms": [0-9]+|"completion_tokens": [0-9]+|"dropped": \w+' | tr '\n' ' '; echo
+    llm_of() { sudo python3 collect/bin/avos trace --principal "$1" | grep '"kind": "llm.call"' | tail -1; }
+    timeout 150 bash -c "until sudo python3 collect/bin/avos trace --principal '$F' | grep -q '\"kind\": \"llm.call\"'; do sleep 0.5; done"
+    llm_of "$F" | grep -oE '"status": [0-9]+|"ms": [0-9]+|"completion_tokens": [0-9]+|"dropped": \w+|"receipt": "hr_\w+"' | tr '\n' ' '; echo
     ctl resume "$F"; sleep 1.5
     vm 1 "journalctl -o cat -u avos-agent | grep agent/F | grep llm:" | cut -c1-200
     echo "== 6: network cut of support: its refunds flip to 403 naming the receipt; it keeps ticking; others unchanged"
@@ -207,7 +208,7 @@ poc5 n="10":
     e_seq=$(last 2 agent/E); ctl halt "$vm2"; sleep 2; echo "A during vm-02 pause: $(last 1 'agent/A"')"
     ctl resume "$vm2"; sleep 0.2; echo "E: $e_seq before the pause, $(last 2 agent/E) 2 s later (about 4 ticks = it was paused)"
     echo "== 8: an agent cannot use the controls"
-    a_uid=$(sudo grep '"agent.spawn"' /var/lib/avos/events.jsonl | grep "\"$A\"" | tail -1 | python3 -c 'import json, sys; print(json.loads(sys.stdin.read())["uid"])')
+    a_uid=$(sudo python3 collect/bin/avos trace --principal "$A" | grep '"agent.spawn"' | python3 -c 'import json, sys; print(json.loads(sys.stdin.read())["uid"])')
     echo "agent -> POST /halt: $(vm 1 "setpriv --reuid=$a_uid --regid=$a_uid --clear-groups curl -s -m 5 http://172.16.1.2/halt -d '{\"spiffe_id\":\"$B\"}'")"
     echo "agent -> own cgroup.freeze: $(vm 1 "setpriv --reuid=$a_uid --regid=$a_uid --clear-groups sh -c 'echo 1 > /sys/fs/cgroup/system.slice/avos-agent.service/$b_dir/cgroup.freeze'" 2>&1 | tail -1)"
     echo "== errors in the forwarder (guest) and the gateway (host) during the run"
@@ -217,10 +218,10 @@ poc5 n="10":
     { vm 1 "journalctl -o cat -u avos-agent | grep '\"tick\"'"; vm 2 "journalctl -o cat -u avos-agent | grep '\"tick\"'"; } > /tmp/poc5-ticks.jsonl
     ctl stats /tmp/poc5-ticks.jsonl --tick 0.05
     echo "== receipts"
-    sudo python3 -c 'import json, sys
-    for r in map(json.loads, open("/var/lib/avos/events.jsonl")):
-        if r["kind"] in ("halt", "resume") and r.get("vm_id") in sys.argv[1:]:
-            print(r["receipt"], r["kind"].ljust(6), r["action"].ljust(10), r["target"].split("/vm/")[1].ljust(50), len(r["nodes"]), "nodes", r["ms"], "ms")' "$vm1" "$vm2"
+    for v in "$vm1" "$vm2"; do sudo python3 collect/bin/avos trace --run "$v"; done | python3 -c 'import json, sys
+    for r in map(json.loads, sys.stdin):
+        if r["kind"] in ("halt", "resume"):
+            print(r["receipt"], r["kind"].ljust(6), r["action"].ljust(10), r["target"].split("/vm/")[1].ljust(50), len(r["nodes"]), "nodes", r["ms"], "ms")'
     sudo gateway/gateway.py stats "$vm1" "$vm2"
     echo "cgroups in vm-01: $(vm 1 'ls -d /sys/fs/cgroup/system.slice/avos-agent.service/*/ 2>/dev/null | wc -l') (one per live top-level agent: A, support, G, H, F)"
 
@@ -270,6 +271,15 @@ poc6:
 # Host: claim 1 acceptance suite, written independently of the implementation (`just claim1 --quick` to iterate)
 claim1 *args:
     sudo python3 supervisor/tests/claim1.py {{args}}
+
+# Host: POC 7 acceptance suite (collect/tests, written independently): the tree, a τ² job, kills and cuts, M8, M9 at
+# 1M imported events, overhead, then claim 1, poc4 and the POC 6 suite (≈ 30 min; `just poc7 --quick` to iterate)
+poc7 *args:
+    sudo python3 collect/tests/run.py {{args}}
+
+# Host: one principal's audit timeline, or one run's (`just audit --principal SPIFFE_ID`, `just audit --run vm-01-abc123`)
+audit *args:
+    sudo python3 collect/bin/avos trace {{args}}
 
 # Host: M7 baseline: the poc5 tree ticking SECS with no control at all, RUNS times (what happens anyway)
 poc5-baseline runs="10" secs="120":

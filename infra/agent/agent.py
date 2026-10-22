@@ -20,6 +20,11 @@ are just OPENAI_BASE_URL; anything else can use it as an HTTPS proxy). The forwa
 owns the connection, and relays it to the host gateway (gateway/gateway.py) over mTLS with that principal's own SVID;
 root's connections carry the VM's SVID. No model key is in this VM: the gateway attaches it to allowed calls.
 The shim's calls to the registrar also carry the VM's SVID, which only root can read, so agents cannot register.
+The forwarder reads the HTTP/1.1 requests it relays (keep-alive, Content-Length or chunked bodies; after CONNECT the
+bytes are a tunnel) and stamps each with `X-Avos-Attempt: n`, n counted per principal here, before the gateway is even
+reached. The gateway records n on its decision, so a missing n is a request lost between this VM and the host; the
+final counts are on GET /health (`attempts`), read by the host before the VM is destroyed, and each principal's count
+goes with its /exit to the registrar (POC 7, docs/architecture.md §7). Nothing in the VM writes to the trace.
 
 Supervisor (POC 5): every principal runs in its own cgroup, nested like the identity tree (a sub-agent's cgroup is
 inside its parent's), so freezing or killing one cgroup stops that whole branch and nothing else. The host's
@@ -186,6 +191,21 @@ def spawn(name, parent, argv):
     return p
 
 
+def record_exit(p, reason, svid_ms):
+    """Retry until the registrar answers (it may be restarting); an exit it never hears of is printed here and ends up
+    as `vm destroyed` at teardown."""
+    body = {"spiffe_id": p["spiffe_id"], "reason": reason, "svid_ms": svid_ms, "attempts": attempts.get(p["spiffe_id"], 0)}
+    for i in range(40):
+        try:
+            return registrar("/exit", body)
+        except ValueError:
+            return None  # answered with a refusal (already recorded): nothing to retry
+        except OSError as e:
+            err = e
+            time.sleep(min(2.0, 0.1 * 2 ** i))
+    print(json.dumps({"vm": VM, "exit_unrecorded": p["spiffe_id"], "error": repr(err)}), flush=True)
+
+
 def run_principal(uid, p, argv, env=None, cwd=None, out=None):
     # Its own uid and a private dir for its SVID. Its stdout joins this service's journal (or `out`); each line names its writer.
     t0 = time.time()
@@ -200,8 +220,7 @@ def run_principal(uid, p, argv, env=None, cwd=None, out=None):
     rc = subprocess.Popen(["/bin/sh", "-c", enter, p["cgroup"], str(uid), *argv], env={**base, **(env or {})},
                           cwd=cwd or home, stdin=subprocess.DEVNULL, stdout=out, stderr=out and subprocess.STDOUT).wait()
     fetch.join()  # before /exit deletes the entry
-    reason = f"signal {-rc}" if rc < 0 else f"exit {rc}"
-    registrar("/exit", {"spiffe_id": p["spiffe_id"], "reason": reason, "svid_ms": svid.get("ms")})
+    record_exit(p, f"signal {-rc}" if rc < 0 else f"exit {rc}", svid.get("ms"))
     shutil.rmtree(home, ignore_errors=True)
     with lock:
         del principals[uid]
@@ -342,6 +361,71 @@ def run_job():
 
 
 svids = {}  # uid -> (client TLS context with its SVID, fetched at)
+attempts = {}  # principal -> requests the forwarder accepted from it (M8 guest_requests); kept for this process's life
+attempts_lock = threading.Lock()
+
+
+def bump(who):
+    with attempts_lock:
+        n = attempts[who] = attempts.get(who, 0) + 1
+    return n
+
+
+class Stamper:
+    """The agent -> gateway half of a connection, request by request: each request head gets `X-Avos-Attempt: n`
+    (an agent's own value is dropped), n counted when the head is complete. Bodies are passed by Content-Length or
+    chunk framing; after CONNECT (or a head that never ends) the rest is passed through untouched."""
+
+    def __init__(self, who):
+        self.who, self.buf, self.state, self.left = who, b"", "head", 0
+
+    def feed(self, data):
+        self.buf += data
+        out = []
+        while self.buf:
+            if self.state == "tunnel":
+                out.append(self.buf)
+                self.buf = b""
+            elif self.left:
+                n = min(self.left, len(self.buf))
+                out.append(self.buf[:n])
+                self.buf, self.left = self.buf[n:], self.left - n
+            elif self.state == "head":
+                if self.buf.startswith(b"\r\n"):
+                    self.buf = self.buf[2:]
+                    continue
+                i = self.buf.find(b"\r\n\r\n")
+                if i < 0:
+                    if len(self.buf) > 65536:
+                        self.state = "tunnel"
+                        continue
+                    break
+                lines, self.buf = self.buf[:i].split(b"\r\n"), self.buf[i + 4:]
+                head, fields = [lines[0]], {}
+                for line in lines[1:]:
+                    k, _, v = line.partition(b":")
+                    if k.strip().lower() != b"x-avos-attempt":
+                        head.append(line)
+                        fields[k.strip().lower()] = v.strip().lower()
+                out.append(b"\r\n".join(head + [b"X-Avos-Attempt: %d" % bump(self.who)]) + b"\r\n\r\n")
+                if lines[0].split(b" ", 1)[0].upper() == b"CONNECT":
+                    self.state = "tunnel"
+                elif b"chunked" in fields.get(b"transfer-encoding", b""):
+                    self.state = "size"
+                else:
+                    self.left = int(fields.get(b"content-length", b"0"))
+            else:  # chunk-size line (then its data + CRLF as `left`), or trailer lines up to an empty one
+                i = self.buf.find(b"\r\n")
+                if i < 0:
+                    break
+                line, self.buf = self.buf[:i + 2], self.buf[i + 2:]
+                out.append(line)
+                if self.state == "size":
+                    n = int(line.split(b";")[0], 16)
+                    self.left, self.state = (n + 2, "size") if n else (0, "trailer")
+                elif line == b"\r\n":
+                    self.state = "head"
+        return b"".join(out)
 
 
 def peer_uid(port):
@@ -371,10 +455,11 @@ def client_ctx(uid):
     return ctx
 
 
-def pipe(a, b):
-    """Copy bytes both ways until either side closes, from this one thread. A TLS socket must never be read by one
-    thread while another writes it (OpenSSL objects are not thread-safe): with a thread per direction, a TLS 1.3
-    session ticket arriving during the write lost the request about once in 2,600 calls, and the caller hung."""
+def pipe(a, b, a_to_b=bytes):
+    """Copy bytes both ways until either side closes, from this one thread; what `a` sends goes through a_to_b. A TLS
+    socket must never be read by one thread while another writes it (OpenSSL objects are not thread-safe): with a
+    thread per direction, a TLS 1.3 session ticket arriving during the write lost the request about once in 2,600
+    calls, and the caller hung."""
     peer = {a: b, b: a}
     sel = selectors.DefaultSelector()
     try:
@@ -392,6 +477,8 @@ def pipe(a, b):
                     continue  # TLS records that carry no data, such as a session ticket
                 if not data:
                     return
+                if src is a:
+                    data = a_to_b(data)
                 send_all(peer[src], data)
     except OSError:
         pass
@@ -419,18 +506,31 @@ def send_all(s, data):
 class Forward(socketserver.BaseRequestHandler):
     def handle(self):
         uid = peer_uid(self.client_address[1])
-        ctx = client_ctx(uid) if uid is not None else None
-        if not ctx:
+        who = ENV["VM_SPIFFE_ID"] if uid == 0 else principals[uid]["spiffe_id"] if uid in principals else None
+        if not who:
             body = json.dumps({"error": f"uid {uid} is not a principal"}).encode()
             self.request.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: %d\r\n"
                                  b"Connection: close\r\n\r\n%s" % (len(body), body))
+            return
+        # The first request is read (and counted) before the gateway is dialled: if the host cannot be reached, the
+        # attempt still exists here and shows up missing there.
+        stamp, first = Stamper(who), b""
+        self.request.settimeout(30)
+        while not first:
+            data = self.request.recv(65536)
+            if not data:
+                return
+            first = stamp.feed(data)
+        ctx = client_ctx(uid)
+        if not ctx:
             return
         with ctx.wrap_socket(socket.create_connection((ENV["SPIRE_SERVER"], 8443), timeout=10)) as up:
             san = dict(up.getpeercert().get("subjectAltName", ()))
             if san.get("URI") != GATEWAY_ID:
                 return
             up.settimeout(None)
-            pipe(self.request, up)
+            send_all(up, first)
+            pipe(self.request, up, stamp.feed)
 
 
 def serve_forwarder():
@@ -459,7 +559,10 @@ class Health(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            body = {"vm": VM, "status": "alive", "uptime_s": round(time.time() - START, 1), "model": MODEL, **state}
+            with attempts_lock:
+                counts = dict(attempts)
+            body = {"vm": VM, "status": "alive", "uptime_s": round(time.time() - START, 1), "model": MODEL, **state,
+                    "attempts": counts, "restarted": RESTARTED}
             self.reply(200, json.dumps(body).encode())
         elif self.path == "/result" and "job" in state:
             if state["job"] == "running":
@@ -482,6 +585,9 @@ class Health(BaseHTTPRequestHandler):
 
 
 os.makedirs("/run/avos", exist_ok=True)
+# /run is per boot: if the marker exists, this process is a restart and its counters miss what came before.
+RESTARTED = os.path.exists("/run/avos/agent.started")
+open("/run/avos/agent.started", "a").close()
 private_dir("/run/avos/vm", VM_UID)
 start_spire_agent()
 threading.Thread(target=vm_svid, daemon=True).start()

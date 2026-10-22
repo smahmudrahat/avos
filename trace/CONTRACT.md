@@ -44,7 +44,7 @@ Common fields, all required:
 | `vm_id` | string | `vm-NN-xxxxxx`. |
 | `prev`, `hash` | 64 hex | Chain, §6. |
 
-Optional, with fixed meaning when present: `run` (`run_<task>_<trial>`), `guest_ts` (a clock inside the VM; never
+Unknown extra fields are allowed and must be preserved (they are part of the hash). Optional, with fixed meaning when present: `run` (`run_<task>_<trial>`), `guest_ts` (a clock inside the VM; never
 used for ordering), `receipt` (`hr_[0-9a-f]{4}`), `role` (`assistant`|`user` for harness-derived model calls),
 `price` (`{"prompt_per_mtok","completion_per_mtok","currency"}`), `cost_usd`, `agent_id` (`ag_xxxx`),
 `call_id` (harness tool-call id), content fields (§5), `*_sha256`.
@@ -159,6 +159,13 @@ exactly once, in order, with the original ids, arguments and usage (the fixed op
 - `validate` ≥ 50,000 events/s and `verify` ≥ 40,000 events/s on one core of a laptop.
 - `query audit` over 1,000,000 events: first call ≤ 20 s (may build a side index), repeat call ≤ 1.0 s and
   ≤ 3× the same query over 100,000 events. The answer must be derivable per principal without a global scan.
+- Any side index or cache is the tool's own risk: it must be bound to the file's **content** (not only its path,
+  size, inode or mtime; those are all forged by the tests), and an index that does not match the file must
+  never yield a wrong or empty answer. Rebuild, or refuse with exit 1 and an `error`; never answer from a
+  foreign or stale index. Two different files with the same basename under one `$TMPDIR` must not share state.
+  A damaged index (truncated, bit-flipped, deleted, or exchanged with another file's) must likewise lead to a
+  rebuild or a refusal, never to a wrong or empty answer. The tests point `TMPDIR`, `HOME` and `XDG_*_HOME` at a
+  private directory and tamper with everything the tool writes there or next to the input.
 - Clock: `ts` is always the host's clock. Guest clocks (harness message timestamps) go to `guest_ts` only.
   Harness-derived events (in-harness `tool.call`/`tool.result`, the merged content of a model call) are anchored
   to host time by the gateway rows of the same run: a merged `llm.call` keeps the gateway's `ts`; a tool event's

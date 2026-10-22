@@ -2,8 +2,9 @@
 """Identity registrar (POC 3). Runs on the host as root, next to the host's SPIRE Server.
 
 Nothing is registered in advance: the spawner shim inside a VM asks for an entry when it starts a principal, and the
-entry is deleted when the principal dies. SPIRE keeps no lineage, so this file also keeps the birth/death ledger
-(rows in /var/lib/avos/events.jsonl, next to vm.boot): agent.spawn, agent.exit, vm.exit.
+entry is deleted when the principal dies. SPIRE keeps no lineage, so this file also writes the births and deaths to
+the trace store (collect/store.py, the VM's registrar stream): agent.spawn, agent.exit, vm.exit. vm.exit carries the
+guest forwarder's final per-principal request counters, read by `infra/vm destroy` before the VM is killed.
 
   registrar.py serve                       HTTPS on :8082 for the shims; the caller is its VM's own SVID (mTLS),
                                            which only the guest's root can read, and must match its source IP
@@ -13,7 +14,7 @@ entry is deleted when the principal dies. SPIRE keeps no lineage, so this file a
   registrar.py stats [VM_ID]              M3 identity_coverage, M4 identity_issue_ms over exited principals
   registrar.py reindex                     rebuild the index below from the ledger (once, or after a restore)
 
-The ledger is the record; the hot paths (VM boot, spawn, exit, and every control in supervisor/ctl.py) never read it.
+The store is the record; the hot paths (VM boot, spawn, exit, and every control in supervisor/ctl.py) never read it.
 They use a per-host index under /var/lib/avos/index: one file per principal (by SPIFFE ID, O(1)), one per display
 ID, one marker per issued VM ID, and per VM a directory of markers for its live principals (O(live)). Its cost does
 not grow with the host's history; reading the ledger did (147 ms per lookup at 38,000 rows, on every control).
@@ -31,11 +32,12 @@ import sys
 import threading
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "collect"))
+import store  # noqa: E402
+
 ROOT = "/var/lib/avos"
-EVENTS = f"{ROOT}/events.jsonl"
 JAIL = f"{ROOT}/jail/firecracker"
 TD = "spiffe://avoslab.com"
 SPIRE = "/opt/spire/bin/spire-server"
@@ -48,26 +50,19 @@ INDEX = f"{ROOT}/index"
 lock = threading.Lock()  # spawns and exits are serialized (IDs must stay unique); TLS handshakes are not
 
 
-def now():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-
-
 def spire(*args, check=True):
     return subprocess.run([SPIRE, *args, "-socketPath", SOCK], check=check, capture_output=True, text=True).stdout
 
 
-def emit(kind, **fields):
-    row = {"kind": kind, "ts": now(), **fields}
-    with open(EVENTS, "a") as f:
-        f.write(json.dumps(row) + "\n")
-    return row
+def emit(kind, principal, vm_id, **fields):
+    """Count, then write one event to the VM's registrar stream; returns it as a ledger row (what the index keeps)."""
+    if kind in ("agent.spawn", "agent.exit"):
+        store.count(vm_id, "s" if kind == "agent.spawn" else "e")
+    return store.T.legacy(store.emit("registrar", kind, principal, vm_id, **fields))
 
 
 def ledger():
-    try:
-        return [json.loads(line) for line in open(EVENTS)]
-    except FileNotFoundError:
-        return []
+    return list(store.ledger())
 
 
 def principals():
@@ -150,6 +145,7 @@ def vm_up(slot, gw, out):
     while os.path.exists(f"{INDEX}/vm/{(vm_id := f'{slot}-{secrets.token_hex(3)}')}"):
         pass
     put(f"{INDEX}/vm/{vm_id}", {})
+    store.count(vm_id, "")  # the VM's counters exist from its birth: none counted yet is 0, not unknown
     vm_spiffe = f"{TD}/vm/{vm_id}"
     # The token's -spiffeID makes the VM's SPIRE agent known by the VM's own name; workload entries hang off it.
     token = spire("token", "generate", "-spiffeID", vm_spiffe, "-ttl", "600").split()[-1]
@@ -163,15 +159,27 @@ def vm_up(slot, gw, out):
     print(vm_id)
 
 
-def end(p, reason, svid_ms=None):
+def end(p, reason, svid_ms=None, attempts=None):
     spire("entry", "delete", "-entryID", p["entry_id"], check=False)
-    row = emit("agent.exit", id=p["id"], spiffe_id=p["spiffe_id"], vm_id=p["vm_id"], exit_reason=reason, svid_ms=svid_ms)
+    extra = {"attempts": attempts} if type(attempts) is int else {}  # the guest forwarder's count for it
+    row = emit("agent.exit", p["spiffe_id"], p["vm_id"], spiffe_id=p["spiffe_id"], agent_id=p["id"], exit_reason=reason,
+               svid_ms=svid_ms, **extra)
     index_exit(p, row)
     return row
 
 
+def final_counters(slot):
+    """What `infra/vm destroy` read from the guest's /health just before the kill, or None (unreachable)."""
+    try:
+        h = json.load(open(f"{JAIL}/{slot}/health.json"))
+        return {"attempts": {k: int(v) for k, v in h["attempts"].items()}, "restarted": bool(h.get("restarted"))}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
 def vm_down(slot):
     ident = identity(slot)
+    guest = final_counters(slot)
     for p in live(ident["VM_ID"]):
         end(p, "vm destroyed")
     shutil.rmtree(f"{INDEX}/live/{ident['VM_ID']}", ignore_errors=True)
@@ -182,7 +190,8 @@ def vm_down(slot):
     for e in alias.get("entries") or []:
         spire("entry", "delete", "-entryID", e["id"], check=False)
     spire("agent", "evict", "-spiffeID", agent, check=False)
-    emit("vm.exit", vm=slot, vm_id=ident["VM_ID"], spiffe_id=ident["VM_SPIFFE_ID"])
+    if os.path.exists(f"{store.vm_dir(ident['VM_ID'])}/vm.jsonl"):  # a VM that never booted has no life to end
+        emit("vm.exit", ident["VM_SPIFFE_ID"], ident["VM_ID"], vm=slot, guest=guest)
 
 
 def spawn(vm, body):
@@ -203,8 +212,8 @@ def spawn(vm, body):
     entry_id = json.loads(out)["results"][0]["entry"]["id"]
     while by_id(pid := f"ag_{secrets.token_hex(2)}"):  # short display ID, unique among live principals
         pass
-    row = emit("agent.spawn", id=pid, spiffe_id=spiffe_id, parent=parent or vm["VM_SPIFFE_ID"], name=name,
-               vm_id=vm["VM_ID"], uid=uid, entry_id=entry_id)
+    row = emit("agent.spawn", spiffe_id, vm["VM_ID"], spiffe_id=spiffe_id, parent=parent or vm["VM_SPIFFE_ID"],
+               name=name, agent_id=pid, uid=uid, entry_id=entry_id)
     index_spawn(row)
     return row
 
@@ -213,7 +222,7 @@ def exit_(vm, body):
     p = get(body["spiffe_id"])
     if not p or p["vm_id"] != vm["VM_ID"] or p["exited_at"]:
         raise PermissionError(f"{body['spiffe_id']} is not live in {vm['VM_ID']}")
-    return end(p, body["reason"], body.get("svid_ms"))
+    return end(p, body["reason"], body.get("svid_ms"), body.get("attempts"))
 
 
 class Handler(BaseHTTPRequestHandler):

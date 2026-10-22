@@ -1,0 +1,7 @@
+{"k": "meta", "t": 1790000000.000, "uid": 20004, "pid": 812}
+{"k": "call", "n": 1, "kind": "llm", "args": {"model": "Qwen/Qwen3-30B-A3B-Instruct-2507", "max_tokens": 8}, "t0": 1790000001.000, "t1": 1790000001.620, "st": 200, "b": "{\"choices\":[{\"message\":{\"content\":\"Hi!\"}}]}", "t": 1790000001.620}
+{"k": "phase", "p": "idle_start", "t": 1790000001.700}
+{"k": "phase", "p": "idle_end", "t": 1790000009.700}
+{"k": "call", "n": 2, "kind": "tool", "args": {"order_id": "#W2", "amount_cents": 48000}, "t0": 1790000009.710, "t1": 1790000009.726, "st": 403, "b": "{\"error\": \"denied\", \"principal\": \"spiffe://avoslab.com/vm/vm-01-abc123/agent/support/sub/B2\", \"policy_ids\": [\"default-deny\"], \"args\": {\"order_id\": \"#W2\", \"amount_cents\": 48000}}", "t": 1790000009.726}
+{"k": "call", "n": 3, "kind": "llm", "args": {"model": "Qwen/Qwen3-30B-A3B-Instruct-2507", "max_tokens": 8}, "t0": 1790000009.730, "t1": 1790000010.410, "st": 200, "b": "{\"choices\":[{\"message\":{\"content\":\"Hello.\"}}]}", "t": 1790000010.410}
+{"k": "exit", "t": 1790000010.420}

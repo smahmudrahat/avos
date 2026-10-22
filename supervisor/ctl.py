@@ -10,8 +10,9 @@ without touching its siblings. The name is resolved on this host; nothing centra
   ctl.py stats TICKS.jsonl [--tick S]   M6 over halt rows, M7 over the siblings' ticks
 
 NAME is an ag_xxxx id, a SPIFFE ID, a vm_id (vm-01-abc123) or a slot (vm-01). Every command writes one `halt` or
-`resume` row (receipt hr_xxxx, who, when, nodes under it, ms) to events.jsonl, and the branch to cut.json, which the
-gateway reads before it forwards a request and before it returns a response.
+`resume` event (receipt hr_xxxx, who, when, nodes under it, ms) to the target VM's ctl stream in the trace store
+(collect/store.py), and the branch to cut.json, which the gateway reads before it forwards a request and before it
+returns a response. The command is counted (M8) before it acts, so a control that acted but left no event shows.
 """
 import getpass
 import http.client
@@ -24,8 +25,10 @@ import statistics
 import sys
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "identity"))
-import registrar  # noqa: E402  (the ledger, emit() and the per-host index of principals live there)
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path[:0] = [os.path.join(HERE, "..", "identity"), os.path.join(HERE, "..", "collect")]
+import registrar  # noqa: E402  (the per-host index of principals lives there)
+import store  # noqa: E402
 
 CUT = f"{registrar.ROOT}/cut.json"
 
@@ -99,8 +102,8 @@ def nodes_under(t):
 
 def receipt(kind, t, action, ms, nodes, **extra):
     r = f"hr_{secrets.token_hex(2)}"
-    registrar.emit(kind, receipt=r, action=action, by=os.environ.get("SUDO_USER") or getpass.getuser(),
-                   target=t["spiffe_id"], vm_id=t["vm_id"], nodes=nodes, ms=ms, **extra)
+    store.emit("ctl", kind, t["spiffe_id"], t["vm_id"], receipt=r, action=action,
+               by=os.environ.get("SUDO_USER") or getpass.getuser(), target=t["spiffe_id"], nodes=nodes, ms=ms, **extra)
     return r
 
 
@@ -111,6 +114,7 @@ def live_count(exclude):
 def control(cmd, name):
     t0 = time.time()  # M6 counts from the command, name resolution included
     t = resolve(name)
+    store.count(t["vm_id"], "r" if cmd in ("resume", "uncut") else "h")  # issued; its event follows the act
     table = cut_table()
     if cmd == "halt":
         if t["kind"] == "vm":
@@ -185,7 +189,7 @@ def stats(ticks_path, tick_s):
         if t.get("msg") == "tick":
             ticks.setdefault(t["spiffe_id"], []).append(t)
     vm_ids = {re.search(r"/vm/([^/]+)", sid)[1] for sid in ticks}
-    rows = [r for r in registrar.ledger() if r["kind"] in ("halt", "resume") and r.get("vm_id") in vm_ids]
+    rows = [r for r in (store.ledger(vm_ids) if vm_ids else ()) if r["kind"] in ("halt", "resume")]
     stops = [r["ms"] for r in rows if r["action"] in ("freeze", "vm-pause")]
     if stops:
         print(f"M6 stop_latency_ms: median {statistics.median(stops):.0f}, worst {max(stops):.0f} (n={len(stops)})")

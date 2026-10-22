@@ -1,0 +1,418 @@
+[
+ {
+  "name": "clean_complete",
+  "ok": true,
+  "lost": 0,
+  "clean": true,
+  "mine": {
+   "authz.decision": 30,
+   "tool.call": 10,
+   "llm.call": 6,
+   "agent.spawn": 4,
+   "agent.exit": 4,
+   "halt": 1,
+   "resume": 1
+  },
+  "rec": {
+   "run": "vm-01-abc123",
+   "vm_id": "vm-01-abc123",
+   "status": "complete",
+   "ratio": 1.0,
+   "stored": {
+    "authz.decision": 30,
+    "llm.call": 6,
+    "tool.call": 10,
+    "agent.spawn": 4,
+    "agent.exit": 4,
+    "halt": 1,
+    "resume": 1
+   },
+   "happened": {
+    "authz.decision": 30,
+    "llm.call": 6,
+    "tool.call": 10,
+    "agent.spawn": 4,
+    "agent.exit": 4,
+    "halt": 1,
+    "resume": 1,
+    "guest_requests": 30
+   },
+   "gaps": [],
+   "sources": {
+    "authz.decision": "gateway accept counter"
+   }
+  }
+ },
+ {
+  "name": "clean_but_reads_incomplete",
+  "ok": false,
+  "lost": 0,
+  "clean": true,
+  "mine": null,
+  "rec": {
+   "run": "vm-01-abc123",
+   "status": "incomplete",
+   "ratio": 0.982142857,
+   "stored": {
+    "authz.decision": 29,
+    "llm.call": 6,
+    "tool.call": 10,
+    "agent.spawn": 4,
+    "agent.exit": 4,
+    "halt": 1,
+    "resume": 1
+   },
+   "happened": {
+    "authz.decision": 30,
+    "llm.call": 6,
+    "tool.call": 10,
+    "agent.spawn": 4,
+    "agent.exit": 4,
+    "halt": 1,
+    "resume": 1,
+    "guest_requests": 30
+   },
+   "gaps": [],
+   "sources": {}
+  }
+ },
+ {
+  "name": "silent_loss_reads_complete",
+  "ok": false,
+  "lost": 3,
+  "clean": false,
+  "mine": null,
+  "rec": {
+   "run": "vm-01-abc123",
+   "status": "complete",
+   "ratio": 1.0,
+   "stored": {
+    "authz.decision": 27,
+    "llm.call": 0,
+    "tool.call": 9,
+    "agent.spawn": 2,
+    "agent.exit": 2,
+    "halt": 0,
+    "resume": 0
+   },
+   "happened": {
+    "authz.decision": 27,
+    "llm.call": 0,
+    "tool.call": 9,
+    "agent.spawn": 2,
+    "agent.exit": 2,
+    "halt": 0,
+    "resume": 0,
+    "guest_requests": 27
+   },
+   "gaps": [],
+   "sources": {}
+  }
+ },
+ {
+  "name": "loss_reported_incomplete",
+  "ok": true,
+  "lost": 3,
+  "clean": false,
+  "mine": null,
+  "rec": {
+   "run": "vm-01-abc123",
+   "status": "incomplete",
+   "ratio": 0.930232558,
+   "stored": {
+    "authz.decision": 27,
+    "llm.call": 0,
+    "tool.call": 9,
+    "agent.spawn": 2,
+    "agent.exit": 2,
+    "halt": 0,
+    "resume": 0
+   },
+   "happened": {
+    "authz.decision": 30,
+    "llm.call": 0,
+    "tool.call": 9,
+    "agent.spawn": 2,
+    "agent.exit": 2,
+    "halt": 0,
+    "resume": 0,
+    "guest_requests": 30
+   },
+   "gaps": [],
+   "sources": {}
+  }
+ },
+ {
+  "name": "loss_reported_unverified",
+  "ok": true,
+  "lost": 3,
+  "clean": false,
+  "mine": null,
+  "rec": {
+   "run": "vm-01-abc123",
+   "status": "unverified",
+   "ratio": null,
+   "stored": {
+    "authz.decision": 27,
+    "llm.call": 0,
+    "tool.call": 9,
+    "agent.spawn": 2,
+    "agent.exit": 2,
+    "halt": 0,
+    "resume": 0
+   },
+   "happened": {
+    "authz.decision": null,
+    "llm.call": null,
+    "tool.call": null,
+    "agent.spawn": 2,
+    "agent.exit": 2,
+    "halt": 0,
+    "resume": 0,
+    "guest_requests": 30
+   },
+   "gaps": [],
+   "sources": {
+    "authz.decision": "gateway restarted: counter lost"
+   }
+  }
+ },
+ {
+  "name": "unverified_with_ratio",
+  "ok": false,
+  "lost": 0,
+  "clean": false,
+  "mine": null,
+  "rec": {
+   "run": "vm-01-abc123",
+   "status": "unverified",
+   "ratio": 1.0,
+   "stored": {
+    "authz.decision": 27,
+    "llm.call": 0,
+    "tool.call": 9,
+    "agent.spawn": 2,
+    "agent.exit": 2,
+    "halt": 0,
+    "resume": 0
+   },
+   "happened": {
+    "authz.decision": null,
+    "llm.call": 0,
+    "tool.call": 9,
+    "agent.spawn": 2,
+    "agent.exit": 2,
+    "halt": 0,
+    "resume": 0,
+    "guest_requests": null
+   },
+   "gaps": [],
+   "sources": {}
+  }
+ },
+ {
+  "name": "complete_with_null_counter",
+  "ok": false,
+  "lost": 0,
+  "clean": false,
+  "mine": null,
+  "rec": {
+   "run": "vm-01-abc123",
+   "status": "complete",
+   "ratio": 1.0,
+   "stored": {
+    "authz.decision": 27,
+    "llm.call": 0,
+    "tool.call": 9,
+    "agent.spawn": 2,
+    "agent.exit": 2,
+    "halt": 0,
+    "resume": 0
+   },
+   "happened": {
+    "authz.decision": 27,
+    "llm.call": 0,
+    "tool.call": 9,
+    "agent.spawn": 2,
+    "agent.exit": 2,
+    "halt": 0,
+    "resume": 0,
+    "guest_requests": null
+   },
+   "gaps": [],
+   "sources": {}
+  }
+ },
+ {
+  "name": "guest_counter_sees_more_but_reads_complete",
+  "ok": false,
+  "lost": 0,
+  "clean": false,
+  "mine": null,
+  "rec": {
+   "run": "vm-01-abc123",
+   "status": "complete",
+   "ratio": 1.0,
+   "stored": {
+    "authz.decision": 27,
+    "llm.call": 0,
+    "tool.call": 9,
+    "agent.spawn": 2,
+    "agent.exit": 2,
+    "halt": 0,
+    "resume": 0
+   },
+   "happened": {
+    "authz.decision": 27,
+    "llm.call": 0,
+    "tool.call": 9,
+    "agent.spawn": 2,
+    "agent.exit": 2,
+    "halt": 0,
+    "resume": 0,
+    "guest_requests": 31
+   },
+   "gaps": [],
+   "sources": {}
+  }
+ },
+ {
+  "name": "complete_but_stored_differs_from_observed",
+  "ok": false,
+  "lost": 0,
+  "clean": true,
+  "mine": {
+   "authz.decision": 30,
+   "tool.call": 10
+  },
+  "rec": {
+   "run": "vm-01-abc123",
+   "status": "complete",
+   "ratio": 1.0,
+   "stored": {
+    "authz.decision": 28,
+    "llm.call": 6,
+    "tool.call": 10,
+    "agent.spawn": 4,
+    "agent.exit": 4,
+    "halt": 1,
+    "resume": 1
+   },
+   "happened": {
+    "authz.decision": 28,
+    "llm.call": 6,
+    "tool.call": 10,
+    "agent.spawn": 4,
+    "agent.exit": 4,
+    "halt": 1,
+    "resume": 1,
+    "guest_requests": 28
+   },
+   "gaps": [],
+   "sources": {}
+  }
+ },
+ {
+  "name": "missing_guest_requests_key",
+  "ok": false,
+  "lost": 0,
+  "clean": false,
+  "mine": null,
+  "rec": {
+   "run": "vm-01-abc123",
+   "status": "complete",
+   "ratio": 1.0,
+   "stored": {
+    "authz.decision": 28,
+    "llm.call": 6,
+    "tool.call": 10,
+    "agent.spawn": 4,
+    "agent.exit": 4,
+    "halt": 1,
+    "resume": 1
+   },
+   "happened": {
+    "authz.decision": 28,
+    "llm.call": 6,
+    "tool.call": 10,
+    "agent.spawn": 4,
+    "agent.exit": 4,
+    "halt": 1,
+    "resume": 1
+   },
+   "gaps": [],
+   "sources": {}
+  }
+ },
+ {
+  "name": "complete_with_seq_gap",
+  "ok": false,
+  "lost": 0,
+  "clean": false,
+  "mine": null,
+  "rec": {
+   "run": "vm-01-abc123",
+   "status": "complete",
+   "ratio": 1.0,
+   "stored": {
+    "authz.decision": 28,
+    "llm.call": 6,
+    "tool.call": 10,
+    "agent.spawn": 4,
+    "agent.exit": 4,
+    "halt": 1,
+    "resume": 1
+   },
+   "happened": {
+    "authz.decision": 28,
+    "llm.call": 6,
+    "tool.call": 10,
+    "agent.spawn": 4,
+    "agent.exit": 4,
+    "halt": 1,
+    "resume": 1,
+    "guest_requests": 28
+   },
+   "gaps": [
+    {
+     "writer": "h/gateway",
+     "seq": 77
+    }
+   ],
+   "sources": {}
+  }
+ },
+ {
+  "name": "incomplete_with_flattering_ratio",
+  "ok": false,
+  "lost": 3,
+  "clean": false,
+  "mine": null,
+  "rec": {
+   "run": "vm-01-abc123",
+   "status": "incomplete",
+   "ratio": 0.99,
+   "stored": {
+    "authz.decision": 27,
+    "llm.call": 0,
+    "tool.call": 9,
+    "agent.spawn": 2,
+    "agent.exit": 2,
+    "halt": 0,
+    "resume": 0
+   },
+   "happened": {
+    "authz.decision": 30,
+    "llm.call": 0,
+    "tool.call": 9,
+    "agent.spawn": 2,
+    "agent.exit": 2,
+    "halt": 0,
+    "resume": 0,
+    "guest_requests": 30
+   },
+   "gaps": [],
+   "sources": {}
+  }
+ }
+]

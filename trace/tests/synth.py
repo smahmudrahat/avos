@@ -392,6 +392,100 @@ def economics_fixture(path):
             "prompt_tokens": pt_sum, "completion_tokens": ct_sum, "cost_usd": round(exp_cost, 9), "wall_ms": 7200}
 
 
+# ----------------------------------------------------------------------------- cache-staleness fixtures
+
+def serialized_size(rows):
+    return sum(len(json.dumps(r, separators=(",", ":")).encode()) + 1 for r in rows)
+
+
+def same_size(rows_a, rows_b, pad_key="pad"):
+    """Pad the smaller trace (an extra string field on its first event; unknown fields are allowed by the
+    contract) so both serialize to the same byte count. Both are re-chained. Returns (rows_a, rows_b)."""
+    for rows in (rows_a, rows_b):  # both carry the field, so growing the string grows the file byte for byte
+        rows[0][pad_key] = "x" * 16
+        lib.chain(rows)
+    a, b = serialized_size(rows_a), serialized_size(rows_b)
+    small = rows_a if a < b else rows_b
+    small[0][pad_key] += "x" * abs(a - b)
+    lib.chain(small)
+    assert serialized_size(rows_a) == serialized_size(rows_b), (serialized_size(rows_a), serialized_size(rows_b))
+    return rows_a, rows_b
+
+
+def rewrite_in_place(path, rows):
+    """Overwrite the file's content keeping path, inode, byte size and mtime (and atime)."""
+    st = os.stat(path)
+    with open(path, "r+") as f:  # same inode
+        f.truncate(0)
+        for r in rows:
+            f.write(json.dumps(r, separators=(",", ":")) + "\n")
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert os.stat(path).st_size == st.st_size, (os.stat(path).st_size, st.st_size)
+    assert os.stat(path).st_mtime_ns == st.st_mtime_ns
+
+
+def swap_principals_text(rows, a, b):
+    """A consistent renaming a<->b over the whole trace (same lengths), re-chained: a valid, different trace of
+    identical byte size in which principal a now owns what b owned."""
+    assert len(a) == len(b)
+    txt = json.dumps(rows)
+    txt = txt.replace(a, "\u0000").replace(b, a).replace("\u0000", b)
+    return lib.chain(json.loads(txt))
+
+
+def move_pair(rows, src, dst, nth=3):
+    """Move the nth (authz.decision, llm.call) pair of principal src to principal dst (same-length ids and
+    vm_ids), keeping validity; re-chained. Returns the moved event ids."""
+    src_vm = next(r["vm_id"] for r in rows if r["principal"] == src)
+    dst_vm = next(r["vm_id"] for r in rows if r["principal"] == dst)
+    assert len(src_vm) == len(dst_vm)
+    k, moved = 0, []
+    for i, r in enumerate(rows):
+        if r["principal"] == src and r["kind"] == "authz.decision" and r["action"] == "llm.call":
+            k += 1
+            if k == nth:
+                call = next(x for x in rows[i + 1:] if x.get("authz_ref") == r["event_id"])
+                for x in (r, call):
+                    x["principal"], x["vm_id"] = dst, dst_vm
+                    moved.append(x["event_id"])
+                break
+    assert len(moved) == 2
+    return lib.chain(rows)
+
+
+def economics_variant(path, shift):
+    """Economics fixture with every token count changed (same run, same shape); expected cost returned."""
+    S = Stream("h9")
+    vm_id, run = "vm-03-ec0ec0", "run_retail-3_2"
+    vm = f"{TD}/vm/{vm_id}"
+    ag = f"{vm}/agent/tau2"
+    t = 1_792_300_000_000
+    S.ev("vm.boot", t, "vm", vm, vm_id, vm="vm-03", boot_ms=5000, disk_ms=1000, runtime="firecracker", mem_mib=2048)
+    S.ev("session.open", t + 10, "job", vm, vm_id, run=run, harness="tau2", task="retail/3")
+    S.ev("agent.spawn", t + 300, "registrar", ag, vm_id, spiffe_id=ag, parent=vm, name="tau2", agent_id="ag_ec00", uid=20001)
+    exp = 0.0
+    pts = cts = 0
+    for i, (pt, ct) in enumerate(((428, 86), (4981, 24), (546, 43), (1209, 11))):
+        pt, ct = pt + shift, ct + shift
+        base = t + 1000 + i * 1000
+        d = S.ev("authz.decision", base, "gateway", ag, vm_id, action="llm.call", resource=f'Model::"{MODEL}"', args={},
+                 decision="allow", policy_ids=["llm-all"], errors=[])
+        S.ev("llm.call", base + 500, "gateway", ag, vm_id, run=run, authz_ref=d["event_id"], model=MODEL, status=200, ms=500,
+             prompt_tokens=pt, completion_tokens=ct, dropped=False, price=PRICE, cost_usd=cost(pt, ct))
+        exp += cost(pt, ct)
+        pts += pt
+        cts += ct
+    S.ev("agent.exit", t + 7100, "registrar", ag, vm_id, spiffe_id=ag, exit_reason="exit 0", agent_id="ag_ec00")
+    S.ev("session.close", t + 7200, "job", vm, vm_id, run=run, status="done", wall_ms=7200)
+    S.ev("vm.exit", t + 7300, "vm", vm, vm_id, vm="vm-03")
+    rows = S.done()
+    want = {"run": run, "vm_id": vm_id, "host": "h9", "llm_calls": 4, "priced_calls": 4, "prompt_tokens": pts,
+            "completion_tokens": cts, "cost_usd": round(exp, 9), "wall_ms": 7200}
+    if path:
+        lib.write_jsonl(path, rows)
+    return rows, want
+
+
 # ----------------------------------------------------------------------------- scale: mimic the real distribution
 
 def big_fixture(path, n, hosts=4, seed=11):

@@ -4,27 +4,34 @@
 # Teardown waits for the copy-out; the VM is destroyed on every exit path.
 # Output: /var/lib/avos/results/run_<domain>-<task>_<trial>/{result.json | error.log, job.json}.
 # Records name the VM by its per-boot identity (vm_id, vm_spiffe_id) and the harness by its own SPIFFE ID (agent_spiffe_id);
-# `vm` is only the reused network/jail slot.
+# `vm` is only the reused network/jail slot. session.open/close go to the VM's job stream in the trace store; the
+# run's events (`avos trace --run`) are copied next to the result for `trace/bin/ingest --run-dir`.
 set -euo pipefail
 ROOT=/var/lib/avos
 VM=$(dirname "$0")/vm
+COLLECT=$(dirname "$0")/../collect
 TIMEOUT_S=${TIMEOUT_S:-1200}
 
 ms() { echo $(($(date +%s%N) / 1000000)); }
-event() { printf '{"kind":"%s","ts":"%s",%s}\n' "$1" "$(date -u +%FT%T.%3NZ)" "$2" >> $ROOT/events.jsonl; }
+event() { python3 "$COLLECT/store.py" emit job "$1" "$vm_id" "spiffe://avoslab.com/vm/$vm_id" "{$2}"; }
+# Killed or failed before the end: destroy (vm.exit with the guest's counters) and close the session if it was open.
+abort() {
+  "$VM" destroy "$name" > /dev/null || true
+  [ -z "${opened:-}" ] || event session.close "\"run\":\"$run\",\"vm\":\"$name\",\"status\":\"aborted\",\"wall_ms\":$(($(ms) - t0))"
+}
 
 run() {
-  local harness=$1 task=$2 t0 n trial run out created ip vm_id ids code status agent # $name stays global for the EXIT trap
+  local harness=$1 task=$2 n trial out created ip ids code status agent # name, t0, run, vm_id stay global for the EXIT trap
   t0=$(ms)
   for n in $(seq 1 254); do name=vm-$(printf %02d "$n"); [ -e $ROOT/jail/firecracker/$name ] || break; done
   for trial in $(seq 0 9999); do run=run_${task/\//-}_$trial; [ -e $ROOT/results/$run ] || break; done
   out=$ROOT/results/$run && mkdir -p "$out"
-  trap '"$VM" destroy "$name" > /dev/null' EXIT
+  trap abort EXIT
 
   created=$("$VM" create "$name" "HARNESS=$harness" "TASK=$task")
   ip=$(grep -oP 'ip=\K\S+' <<< "$created") vm_id=$(grep -oP 'vm_id=\K\S+' <<< "$created")
-  ids="\"vm\":\"$name\",\"vm_id\":\"$vm_id\",\"vm_spiffe_id\":\"spiffe://avoslab.com/vm/$vm_id\""
-  event session.open "\"run\":\"$run\",$ids,\"harness\":\"$harness\",\"task\":\"$task\""
+  ids="\"vm\":\"$name\""
+  event session.open "\"run\":\"$run\",$ids,\"harness\":\"$harness\",\"task\":\"$task\"" && opened=1
 
   while code=$(curl -s -m 10 -o "$out/body" -w '%{http_code}' "http://$ip/result"); [ "$code" = 202 ]; do
     (($(ms) - t0 < TIMEOUT_S * 1000)) || { code=timeout; break; }
@@ -35,12 +42,14 @@ run() {
   "$VM" destroy "$name" > /dev/null && trap - EXIT
 
   local wall=$(($(ms) - t0))
-  python3 - "$out" "$run" "$name" "$vm_id" "$harness" "$task" "$status" "$code" "$wall" $ROOT/images/harness.versions.json <<'EOF'
+  python3 - "$out" "$run" "$name" "$vm_id" "$harness" "$task" "$status" "$code" "$wall" $ROOT/images/harness.versions.json "$COLLECT" <<'EOF'
 import json, os, sys
-out, run, vm, vm_id, harness, task, status, http, wall, versions = sys.argv[1:]
+out, run, vm, vm_id, harness, task, status, http, wall, versions, collect = sys.argv[1:]
+sys.path.insert(0, collect)
+import store
 vm_spiffe_id = f"spiffe://avoslab.com/vm/{vm_id}"
-agent = [r["spiffe_id"] for r in map(json.loads, open("/var/lib/avos/events.jsonl"))  # the harness's birth row
-         if r["kind"] == "agent.spawn" and r.get("parent") == vm_spiffe_id and r.get("name") == harness]
+agent = [e["principal"] for e in store.vm_events(vm_id)  # the harness's birth, in this VM's own streams only
+         if e["kind"] == "agent.spawn" and e.get("parent") == vm_spiffe_id and e.get("name") == harness]
 job = {"run": run, "vm": vm, "vm_id": vm_id, "vm_spiffe_id": vm_spiffe_id, "agent_spiffe_id": agent[0] if agent else None,
        "harness": harness, "task": task, "status": status, "http": http,
        "wall_ms": int(wall), "harness_version": json.load(open(versions))[harness]}
@@ -58,7 +67,8 @@ print(json.dumps(job))
 EOF
   read -r status agent < <(python3 -c 'import json, sys; j = json.load(open(sys.argv[1])); print(j["status"], j["agent_spiffe_id"])' "$out/job.json")
   # The harness's own birth/death rows come from the registrar (agent.spawn / agent.exit); this closes the run.
-  event session.close "\"run\":\"$run\",$ids,\"agent_spiffe_id\":\"$agent\",\"status\":\"$status\",\"wall_ms\":$wall"
+  event session.close "\"run\":\"$run\",$ids,\"agent_spiffe_id\":\"$agent\",\"status\":\"$status\",\"wall_ms\":$wall" && opened=
+  python3 "$COLLECT/bin/avos" trace --run "$run" > "$out/events.jsonl" || echo "$run: events not copied" >&2
   [ "$status" = done ]
 }
 

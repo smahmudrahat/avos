@@ -7,8 +7,10 @@ in a form that can be audited per principal, priced per run and turned back into
 
 ## 1. Envelope
 Every event is one JSON line with: `event_id`, `kind`, `ts`, `writer`, `seq`, `host`, `principal`, `vm_id`, `prev`,
-`hash`. A **writer** is one emitting stream on one host (`<host>/gateway`, `<host>/registrar`, `<host>/ctl`,
-`<host>/vm`, `<host>/job`, `<host>/harness/<run>`); `seq` counts its events from 1 with no gaps. The **principal**
+`hash`. A **writer** is one emitting stream on one host; `seq` counts its events from 1 with no gaps. Since POC 7 the
+emitters write these events themselves, one stream per VM (`<host>/gateway/<vm_id>`, `<host>/registrar/<vm_id>`,
+`<host>/ctl/<vm_id>`, `<host>/vm/<vm_id>`, `<host>/job/<vm_id>`; `docs/architecture.md` §7). `ingest` still converts
+POC 1–5 ledger rows, under the per-host writers `<host>/gateway`, `<host>/registrar`, ... and `<host>/harness/<run>`. The **principal**
 is who the event is about (a VM, an agent or a sub-agent, by SPIFFE ID) and is the partition key.
 
 **Event id** = 12 hex of the host-clock milliseconds, 12 hex of SHA-256 of the writer name, 10 hex of `seq`
@@ -31,9 +33,12 @@ and cannot collide: `seq` never repeats within a writer, and the writer name sta
 
 **Authority is always a stamped reference.** A gated event (`llm.call`, `net.connect`, gateway `tool.call`) names
 the `authz.decision` that allowed it in `authz_ref`; a dropped answer names the halt or cut in `receipt`. Nothing is
-inferred from parents or timestamps. Today's ledger has no ids, so `ingest` stamps the links once, from the ledger
-itself: the earliest unused `allow` for the same principal and model (or tool and arguments), and for a dropped answer
-the `hr_` receipt in the deny the gateway logged when it refused delivery.
+inferred from parents or timestamps. The gateway stamps `authz_ref` with the decision's own id when it writes the call,
+and a dropped answer's `receipt` from the kill switch it just read (since POC 7 it writes no second, delivery-time
+deny: one request, one decision). For POC 1–5 ledger rows, which have no ids, `ingest` stamps the links once, from
+the ledger itself: the earliest unused `allow` for the same principal and model (or tool and arguments), and for a
+dropped answer the `hr_` receipt in the deny the gateway logged when it refused delivery. Every decision and call
+written since POC 7 also carries `attempt`, the forwarder's per-principal request number (M8, `docs/architecture.md` §7).
 
 ## 3. Lifecycle
 A principal is **born** at `vm.boot.ts − boot_ms` (the create request; the gateway can see the VM before boot
@@ -66,7 +71,8 @@ and in a process the agent controls. `ingest --run-dir` merges the witness into 
 ## 5. Projections
 - **Audit** (`query audit --principal P`): every event of P plus each halt/resume whose `nodes` include P, in
   `(ts, writer, seq)` order, each with its `authority` (decision and policy ids, receipt, or `via: harness`). The
-  first query writes a side index under `$TMPDIR`: per principal, the byte offsets of its lines, in 256 hash buckets.
+  first query writes a side index under `$TMPDIR`: per principal, the byte offsets of its lines, in 256 hash buckets
+  (checked against the file on every use, §9).
   A repeat query reads one bucket and P's lines, so its cost follows P's size, not the file's.
 - **Chat** (`project chat --run R`): the run as OpenAI Chat Completions messages with the original tool call ids,
   arguments and per-message usage, plus reward and termination reason from the `label`. Requires content capture.
@@ -101,10 +107,12 @@ call, one `label`. A writer that loses its tail cannot be seen by `seq` alone; i
   global index or sequencer to be correct; an index is a derived cache that can always be rebuilt from the file.
 
 ## 9. Known limits
-- **Seq and links are stamped at ingest, not at emission.** The emitters still write today's rows; `ingest` assigns
-  `seq`, ids and the chain from the order of the ledger file. Two conversions of overlapping slices of one ledger
-  (a run directory and the whole host ledger) number the same writer differently and must not be concatenated.
-  Moving id, `seq` and chain into the emitters closes this.
+- **Seq and links of POC 1–5 rows are stamped at ingest.** For those rows `ingest` assigns `seq`, ids and the chain
+  from the order of the ledger file, so two conversions of overlapping slices number the same writer differently and
+  must not be concatenated. Events collected since POC 7 carry id, `seq` and chain from emission; `ingest --run-dir`
+  on a run copied from the store (`infra/job` writes `events.jsonl` with `avos trace --run`) still re-chains them,
+  because merging the witness's content changes the model calls: its output is a derived training file, the store
+  remains the record.
 - **No model input is recorded.** The gateway does not log prompts and τ² does not store them, so `llm.call.input`
   holds only the messages no other event carries; the full prompt is the projection up to that call.
 - **The user simulator shares the agent's identity.** τ² runs the simulated user in the same process, so the
@@ -114,5 +122,9 @@ call, one `label`. A writer that loses its tail cannot be seen by `seq` alone; i
   principal (POC 3 gives one for free), so authority and cost separate without the witness.
 - **VM pauses:** the POC 5 emitter omitted a VM target from its own `nodes` until 2026-10-21; `ingest` adds it to
   those legacy rows.
-- **The side index trusts file size and mtime** to detect a changed file; an in-place edit that keeps both would be
-  served from a stale index (`verify` still sees it).
+- **The side index is a cache that is checked, not trusted.** It is valid only while the file's device, inode, size,
+  mtime and first/last 64 KB match what it was built from, and every line it points at must be an event of the
+  principal asked for; otherwise it is rebuilt, and a query never answers from an index that disagrees with the file.
+  (Until 2026-10-22 it trusted size and mtime alone, and a stale index for a different file at the same path once
+  answered an audit with nothing.) An edit in the middle of a file that keeps its size, mtime, inode and both ends
+  still slips past the fingerprint, though not past the per-line check or `verify`.
