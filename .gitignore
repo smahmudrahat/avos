@@ -10,5 +10,7 @@ data/raw/
 # Local working files, never published
 /notes/
 /scratch/
+/graphify-out/
+/CLAUDE.md
 .serena/
 .claude/
