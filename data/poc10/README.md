@@ -16,6 +16,27 @@ virtualization) $2.54016/h; policy GPU g6e.xlarge (L40S 48 GB) $1.861/h. Roles: 
 vLLM 0.32.0, served as `policy-qwen3.5-9b`), user simulator `google/gemma-3-27b-it`, τ² NL-assertion judge
 `deepseek-ai/DeepSeek-V4-Flash-0731`, label judge `openai/gpt-oss-120b` (both hosted). `docs/versions.md` has the flags.
 
+## Claim 2 fails on this setup
+
+Claim 2 says running the workload on Avos costs at least 20 % less per completed trial (infrastructure only, model
+tokens excluded) than every baseline: one VM per job, and managed serverless sandboxes. On this setup it costs
+more than two of the three baselines measured and is 5.0× the cheapest:
+
+| | USD per completed trial | Avos ÷ baseline |
+|---|---|---|
+| Avos, m8i.12xlarge at concurrency 32 | 0.00508 | — |
+| AWS t3.small, one VM per job (boot measured 29.8 s, 60 s minimum) | 0.00102 | 5.0× |
+| Google Cloud Run | 0.00323 | 1.6× |
+| AWS AgentCore Runtime v2 | 0.00659 | 0.77× (Avos 23 % cheaper) |
+
+Avos would need to be at least 20 % below every baseline; it is 5.0× the cheapest. The one comparison it wins
+(AgentCore) does not make the claim. The cause is measured: a single L40S serves the policy for all 32 VMs, so a
+trial spends a median 135 s waiting on the model and holds its slot of a $2.54/h host for 147 s; a one-VM-per-job
+baseline pays only for its own small VM over the same time. More VMs per host do not rescue it here: M17 is 16 on
+this host type, and model time rises faster than host-side time at every level. This is a result, not a defect to
+work around, and it stays in the write-up. It does not show the claim fails on every setup: a host where the model
+is not the bottleneck, or a cheaper host, is untested.
+
 ## Done tests
 
 | Done test | Result |
@@ -87,9 +108,11 @@ simulations counted as passes in the first run; one rerun cannot separate the tw
 - **Sample size.** 65 tasks × 4 trials: the pass^4 interval (0.06–0.23) is too wide to detect a 10-point change.
   Same-config reruns differ (0.505 vs 0.432 above). These are shakedown numbers, not a model comparison.
 - **The model pick** rests on 80 trials per candidate and two candidates; Llama-3.1-8B was not tried.
-- **Claim 2 is not met at this configuration.** M16 is 5× the per-VM baseline because one GPU sets the trial
-  length; the result says nothing yet about a host where the model is not the bottleneck. M17 = 16 is for this
-  host type, this GPU and this workload.
+- **Claim 2 fails on the only setup measured** (section above). The failure is shown for one host type,
+  one policy GPU and this workload; it does not show the claim fails on a host where the model is not the
+  bottleneck, which is untested. M17 = 16 holds for this setup only. The baseline prices are list prices read on the
+  run day (the t3.small rate confirmed with the AWS Pricing API); Cloud Run and AgentCore are priced from their rate
+  cards, not run.
 - **Judge spend outside the gateway.** The label judge's cost comes from its own rows, not from gateway records.
 - **The NL-judge fix is shown on replays, not at scale.** The `witness_mismatch` trial is DeepSeek's verdict cut by
   `finish_reason: length` (2 of 444 judge calls, both task 67, at concurrency 32) → τ² `infrastructure_error`. After
