@@ -1,0 +1,11 @@
+{"read_on": "2026-10-23",
+ "hosts": {"fleet": {"name": "m8i.12xlarge", "usd_per_h": 2.54016}, "gpu": {"name": "g6e.xlarge", "usd_per_h": 1.861}},
+ "models": {
+  "policy-qwen3.5-9b": {"prompt_per_mtok": 0.10, "completion_per_mtok": 0.15, "currency": "USD"},
+  "google/gemma-3-27b-it": {"prompt_per_mtok": 0.10, "completion_per_mtok": 0.30, "currency": "USD"},
+  "deepseek-ai/DeepSeek-V4-Flash-0731": {"prompt_per_mtok": 0.14, "completion_per_mtok": 0.28, "currency": "USD"},
+  "openai/gpt-oss-120b": {"prompt_per_mtok": 0.15, "completion_per_mtok": 0.60, "currency": "USD"}},
+ "baselines": {
+  "aws_t3_small_per_vm": {"kind": "vm", "usd_per_h": 0.0208, "min_s": 60, "boot_s": 29.8},
+  "aws_agentcore_v2": {"kind": "serverless", "usd_per_vcpu_h": 0.1276, "usd_per_gb_h": 0.0169, "vcpu": 1, "gb": 2, "min_s": 0},
+  "gcp_cloud_run": {"kind": "serverless", "usd_per_vcpu_h": 0.0648, "usd_per_gb_h": 0.0072, "vcpu": 1, "gb": 2, "min_s": 60}}}

@@ -26,3 +26,8 @@ Frozen 2026-10-18. Every POC's done test names the metrics it touches.
 labelled manifest adds `labels.m14_after_veto`: train-split runs kept by the POC 9 rule (reward passed, structurally
 sound, not vetoed by the judge unless the user settled it, τ² #384 tasks only with a human pass) ÷ train-split runs.
 POC 11 reports both.
+
+**M17 on host-side time (2026-10-22, POC 10).** "Trial latency" in M17 is the host-side trial time: trial wall minus
+the sum of `llm.call.ms` of that trial (the gateway records it per call). Reason: in the POC 9 dry run the trial wall is
+almost all model time, so a raw-wall knee would measure the model server's saturation, not microVM density. No earlier
+POC measured M17, so nothing is recomputed. M13 stays raw wall.

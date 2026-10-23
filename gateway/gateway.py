@@ -6,9 +6,11 @@ principal's own X.509 SVID. The gateway names the caller from the certificate (a
 connection comes from), decides with Cedar (policies/*.cedar), attaches upstream credentials only to allowed calls,
 and writes one authz.decision event per request to the trace store (collect/store.py), in the stream of the caller's
 VM. Calls name the decision that allowed them (authz_ref); every row carries the forwarder's X-Avos-Attempt number.
-A model call also records hashes of what the model was shown and answered, never the text (seen(), docs/trace.md §5).
+A model call also records hashes of what the model was shown and answered, never the text (seen(), docs/trace.md §5),
+the upstream's own status (null when none answered), the gateway's error (gateway_timeout: its 600 s read timeout;
+upstream_unreachable: <reason>; upstream_bad_body) and the reply's finish_reason.
 
-  POST /v1/...            llm.call     Model::<model>      forwarded to the upstream model API with its key
+  POST /v1/...            llm.call     Model::<model>      forwarded to the model's upstream with its key
   POST /tools/<name>      tool.call    Tool::<name>        demo tools served here (issue_refund)
   CONNECT host:port       net.connect  Host::<host:port>   tunnelled if allowed (no host is, by default)
 
@@ -16,6 +18,11 @@ Kill switch (POC 5): supervisor/ctl.py writes the halted, killed or cut branches
 ({spiffe prefix: {receipt, state}}). A request from such a branch is denied before Cedar, and a response for a
 branch that was halted or cut while its call was in flight is dropped instead of delivered; the call's event
 carries the receipt that dropped it.
+
+Routes (POC 10): /var/lib/avos/gateway.routes.json, {model: {"base_url": url, "key": name of a gateway.env variable
+or null}}, sends each model to its own upstream (self-hosted policy, hosted simulator and judge). A model with no
+route is denied (policy_ids ["no-route"]), never forwarded. Without the file every model goes to gateway.env's
+OPENAI_BASE_URL with OPENAI_API_KEY.
 
   gateway.py serve        mTLS on :8443
   gateway.py check        assert the policy's expected decisions (no host needed)
@@ -62,6 +69,7 @@ def load_policies():
 
 POLICIES, POLICY_IDS = load_policies()
 CUT = f"{ROOT}/cut.json"
+ROUTES = f"{ROOT}/gateway.routes.json"
 cut = {"mtime": None, "table": {}}
 
 
@@ -99,6 +107,19 @@ def decide(spiffe_id, action, resource, args):
 
 def env_file(path):
     return dict(line.split("=", 1) for line in open(path).read().splitlines() if "=" in line)
+
+
+def load_routes(env, path):
+    """{model: (base_url, key or None)}, or None (every model to the one upstream) when there is no route table."""
+    if not os.path.exists(path):
+        return None
+    return {m: (r["base_url"].rstrip("/"), env[r["key"]] if r.get("key") else None) for m, r in json.load(open(path)).items()}
+
+
+def route(model):
+    if ROUTE_TABLE is None:
+        return UPSTREAM["OPENAI_BASE_URL"].rstrip("/"), UPSTREAM["OPENAI_API_KEY"]
+    return ROUTE_TABLE.get(model)
 
 
 def mint():
@@ -214,7 +235,7 @@ class Handler(BaseHTTPRequestHandler):
             fields["attempt"] = self.attempt
         return store.emit("gateway", kind, self.spiffe_id, self.home, **fields)
 
-    def allowed(self, action, resource, args):
+    def allowed(self, action, resource, args, unrouted=False):
         """The allow decision event (calls name it in authz_ref), or None once a deny has been answered."""
         try:
             vm_id, _ = principal(self.spiffe_id)
@@ -227,6 +248,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.emit("authz.decision", action=action, resource=resource, args=args, decision="deny",
                           policy_ids=ids, errors=[])
                 return self.deny(f"{c['state']} by {c['receipt']}", ids, args)
+            if unrouted:
+                self.emit("authz.decision", action=action, resource=resource, args=args, decision="deny",
+                          policy_ids=["no-route"], errors=[])
+                return self.deny(f"no upstream routes {resource}", ["no-route"], args)
             ok, ids, errors = decide(self.spiffe_id, action, resource, args)
             d = self.emit("authz.decision", action=action, resource=resource, args=args,
                           decision="allow" if ok else "deny", policy_ids=ids, errors=errors)
@@ -280,28 +305,41 @@ class Handler(BaseHTTPRequestHandler):
             model = sent["model"]
         except (ValueError, KeyError, TypeError):
             return self.refuse(400, "llm.call", "body must be JSON with a model", {})
-        if not (d := self.allowed("llm.call", f"Model::{json.dumps(model)}", {})):
+        up = route(model) if isinstance(model, str) else None
+        if not (d := self.allowed("llm.call", f"Model::{json.dumps(model)}", {}, unrouted=up is None)):
             return
         t0 = time.time()
-        req = urllib.request.Request(UPSTREAM["OPENAI_BASE_URL"].rstrip("/") + self.path[3:], data=body, method="POST",
+        base, key = up
+        req = urllib.request.Request(base + self.path[3:], data=body, method="POST",
                                      headers={"Content-Type": "application/json",
-                                              "Authorization": f"Bearer {UPSTREAM['OPENAI_API_KEY']}"})
+                                              **({"Authorization": f"Bearer {key}"} if key else {})})
+        error = None
         try:
             with urllib.request.urlopen(req, timeout=600) as r:
                 code, out, ctype = r.status, r.read(), r.headers.get("Content-Type", "application/json")
         except urllib.error.HTTPError as e:
             code, out, ctype = e.code, e.read(), "application/json"
+        except TimeoutError:
+            code, error = 504, "gateway_timeout"
         except OSError as e:
-            code, out, ctype = 502, json.dumps({"error": f"upstream: {e}"}).encode(), "application/json"
+            code, error = 502, f"upstream_unreachable: {getattr(e, 'reason', e)}"
+        upstream = None if error else code
+        if error:
+            out, ctype = json.dumps({"error": error}).encode(), "application/json"
         try:
             answer = json.loads(out)
         except ValueError:
-            answer = None
+            answer, error = None, error or "upstream_bad_body"
         usage = (answer.get("usage") if isinstance(answer, dict) else None) or {}
+        try:
+            finish = answer["choices"][0].get("finish_reason")
+        except (KeyError, IndexError, TypeError, AttributeError):
+            finish = None
         c = cut_for(self.spiffe_id)
         store.count(self.home, "l")
         self.emit("llm.call", authz_ref=d["event_id"], model=model, status=code, ms=round((time.time() - t0) * 1000),
                   prompt_tokens=usage.get("prompt_tokens"), completion_tokens=usage.get("completion_tokens"),
+                  upstream_status=upstream, error=error, finish_reason=finish,
                   dropped=bool(c), **({"receipt": c["receipt"]} if c else {}), **seen(sent, answer))
         if c:
             return self.deny(f"{c['state']} by {c['receipt']}", [c["state"], c["receipt"]], {})
@@ -345,6 +383,7 @@ class Handler(BaseHTTPRequestHandler):
 
 class Server(ThreadingHTTPServer):
     daemon_threads = True
+    request_queue_size = 128
 
     def get_request(self):
         s, addr = self.socket.accept()
@@ -395,13 +434,20 @@ def check():
     json.dump({f"{vm}/agent/support": {"receipt": "hr_test", "state": "cut"}}, open(CUT, "w"))
     assert cut_for(f"{vm}/agent/support/sub/x")["receipt"] == "hr_test" and cut_for(f"{vm}/agent/supporter") is None
     os.remove(CUT)
-    print(f"policy check: {len(cases)} decisions as expected; kill switch matches by path prefix")
+    routes = f"/tmp/avos-routes-check-{os.getpid()}.json"
+    json.dump({"p/9b": {"base_url": "http://10.0.0.9:8000/v1/", "key": None}, "s/27b": {"base_url": "https://h/v1", "key": "K"}},
+              open(routes, "w"))
+    assert load_routes({"K": "k"}, routes) == {"p/9b": ("http://10.0.0.9:8000/v1", None), "s/27b": ("https://h/v1", "k")}
+    assert load_routes({}, routes + ".none") is None
+    os.remove(routes)
+    print(f"policy check: {len(cases)} decisions as expected; kill switch matches by path prefix; routes load")
 
 
 if __name__ == "__main__":
     cmd, args = (sys.argv[1], sys.argv[2:]) if len(sys.argv) > 1 else ("", [])
     if cmd == "serve":
         UPSTREAM = env_file(f"{ROOT}/gateway.env")
+        ROUTE_TABLE = load_routes(UPSTREAM, ROUTES)
         CTX = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         CTX.verify_mode = ssl.CERT_REQUIRED
         mint()

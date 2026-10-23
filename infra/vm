@@ -13,6 +13,9 @@ net() {
   GW=172.16.$N.1 IP=172.16.$N.2 TAP=tap-$1
 }
 
+iptables() { command iptables -w "$@"; }
+lock() { exec 9> $ROOT/vm.lock; flock 9; }
+
 host_net() {
   iptables -C FORWARD -s 172.16.0.0/16 -j REJECT 2>/dev/null || iptables -I FORWARD -s 172.16.0.0/16 -j REJECT
   if ! iptables -n -L AVOS-IN > /dev/null 2>&1; then
@@ -30,11 +33,13 @@ create() {
   local name=$1 t0; t0=$(ms); shift
   net "$name"
   local jail=$ROOT/jail/firecracker/$name dir=$ROOT/jail/firecracker/$name/root uid=$((10000 + N))
-  [ -e "$jail" ] && { echo "$name exists; run: vm destroy $name" >&2; exit 1; }
+  lock
+  [ -e "$jail" ] && { echo "$name exists; run: vm destroy $name" >&2; exit 3; }
   [ -f $ROOT/agent.env ] || { echo "missing $ROOT/agent.env (MODEL=...); run just push" >&2; exit 1; }
   ! grep -q _KEY= $ROOT/agent.env || { echo "$ROOT/agent.env holds a key; keys belong in gateway.env" >&2; exit 1; }
   mkdir -p "$dir"
   local vm_id; vm_id=$("$ID" vm-up "$name" "$GW" "$jail/identity.json")
+  flock -u 9
 
   cp --sparse=always $IMG/rootfs.ext4 "$dir/rootfs.ext4"
   ln $IMG/vmlinux "$dir/vmlinux"
@@ -47,11 +52,13 @@ print(json.dumps({"avos": {**env, **json.load(open(sys.argv[3])), "VM_NAME": sys
   chown "$uid:$uid" "$dir/rootfs.ext4" "$dir/metadata.json"
   local t_disk; t_disk=$(ms)
 
+  lock
   host_net
   ip tuntap add "$TAP" mode tap user "$uid"
   ip addr add "$GW/30" dev "$TAP"
   ip link set "$TAP" up
   iptables -I INPUT -i "$TAP" ! -s "$IP" -j DROP
+  flock -u 9
 
   cat > "$dir/config.json" <<EOF
 {
@@ -95,7 +102,9 @@ destroy() {
   fi
   ip link del "$TAP" 2>/dev/null || true
   iptables -D INPUT -i "$TAP" ! -s "$IP" -j DROP 2>/dev/null || true
+  lock
   [ -f "$jail/identity.json" ] && { "$ID" vm-down "$name" || echo "$name: identity cleanup failed" >&2; }
+  flock -u 9
   rm -rf "$jail"
   echo "$name destroyed"
 }

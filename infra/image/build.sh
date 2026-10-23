@@ -29,6 +29,38 @@ rm -rf harness/tau2-bench/.git harness/tau2-bench/data/tau2/results
 cfg=harness/tau2-bench/src/tau2/config.py
 grep -q '^DEFAULT_LLM_NL_ASSERTIONS = "gpt-4.1-2025-04-14"$' $cfg || { echo "τ² judge line changed; update the patch" >&2; exit 1; }
 sed -i 's/^DEFAULT_LLM_NL_ASSERTIONS = .*/import os\nDEFAULT_LLM_NL_ASSERTIONS = os.environ.get("TAU2_NL_JUDGE", "gpt-4.1-2025-04-14")/' $cfg
+grep -q '^DEFAULT_LLM_NL_ASSERTIONS_ARGS = {"temperature": DEFAULT_LLM_NL_ASSERTIONS_TEMPERATURE}$' $cfg || { echo "τ² judge args changed; update the patch" >&2; exit 1; }
+sed -i 's/^DEFAULT_LLM_NL_ASSERTIONS_ARGS = .*/DEFAULT_LLM_NL_ASSERTIONS_ARGS = {"temperature": DEFAULT_LLM_NL_ASSERTIONS_TEMPERATURE, "max_tokens": 4096}/' $cfg
+nl=harness/tau2-bench/src/tau2/evaluator/evaluator_nl_assertions.py
+python3 - "$nl" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = """        assistant_message = generate(
+            model=DEFAULT_LLM_NL_ASSERTIONS,
+            messages=messages,
+            call_name="nl_assertions_eval",
+            **DEFAULT_LLM_NL_ASSERTIONS_ARGS,
+        )
+        result_data = json.loads(assistant_message.content)
+"""
+new = """        for attempt in range(2):
+            assistant_message = generate(
+                model=DEFAULT_LLM_NL_ASSERTIONS,
+                messages=messages,
+                call_name="nl_assertions_eval",
+                **DEFAULT_LLM_NL_ASSERTIONS_ARGS,
+            )
+            try:
+                result_data = json.loads(assistant_message.content)
+                break
+            except (TypeError, ValueError):
+                if attempt:
+                    raise
+"""
+if s.count(old) != 1:
+    sys.exit("τ² NL judge call changed; update the patch")
+open(p, "w").write(s.replace(old, new))
+PY
 curl -LsSf https://astral.sh/uv/0.13.1/install.sh | env UV_INSTALL_DIR="$IMG/harness/bin" UV_NO_MODIFY_PATH=1 sh -s -- -q
 mount --bind harness rootfs/opt/harness
 mount --bind /dev rootfs/dev

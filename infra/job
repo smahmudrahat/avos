@@ -4,27 +4,39 @@ ROOT=/var/lib/avos
 VM=$(dirname "$0")/vm
 COLLECT=$(dirname "$0")/../collect
 TIMEOUT_S=${TIMEOUT_S:-1200}
+RESULTS=${AVOS_RESULTS:-$ROOT/results}
 
 ms() { echo $(($(date +%s%N) / 1000000)); }
 event() { python3 "$COLLECT/store.py" emit job "$1" "$vm_id" "spiffe://avoslab.com/vm/$vm_id" "{$2}"; }
 abort() {
-  "$VM" destroy "$name" > /dev/null || true
+  local rc=$?
+  [ -z "${mine:-}" ] || "$VM" destroy "$name" > /dev/null || true
+  [ -e "$out/job.json" ] || printf '{"run": "%s", "vm": "%s", "vm_id": "%s", "harness": "%s", "task": "%s", "status": "aborted", "stage": "%s", "exit_code": %d, "wall_ms": %d}\n' \
+    "$run" "$name" "${vm_id:-}" "$harness" "$task" "${stage:-create}" "$rc" $(($(ms) - t0)) > "$out/job.json"
   [ -z "${opened:-}" ] || event session.close "\"run\":\"$run\",\"vm\":\"$name\",\"status\":\"aborted\",\"wall_ms\":$(($(ms) - t0))"
+  [ -z "${vm_id:-}" ] || python3 "$COLLECT/bin/avos" trace --run "$vm_id" > "$out/events.jsonl" || true
 }
 
 run() {
-  local harness=$1 task=$2 n trial out created ip ids code status agent
+  local n trial created ip ids code status agent
+  harness=$1 task=$2
   t0=$(ms)
-  for n in $(seq 1 254); do name=vm-$(printf %02d "$n"); [ -e $ROOT/jail/firecracker/$name ] || break; done
-  for trial in $(seq 0 9999); do run=run_${task/\//-}_$trial; [ -e $ROOT/results/$run ] || break; done
-  out=$ROOT/results/$run && mkdir -p "$out"
+  name=${SLOT:-}
+  [ -n "$name" ] || for n in $(seq 1 254); do name=vm-$(printf %02d "$n"); [ -e $ROOT/jail/firecracker/$name ] || break; done
+  for trial in $(seq 0 9999); do run=run_${task/\//-}_$trial; mkdir "$RESULTS/$run" 2> /dev/null && break; done
+  out=$RESULTS/$run
   trap abort EXIT
+  trap 'exit 143' TERM INT
+  stage=create mine=1
 
-  created=$("$VM" create "$name" "HARNESS=$harness" "TASK=$task")
+  created=$("$VM" create "$name" "HARNESS=$harness" "TASK=$task" ${MODEL:+"MODEL=$MODEL"} ${USER_MODEL:+"USER_MODEL=$USER_MODEL"} \
+    ${JUDGE_MODEL:+"JUDGE_MODEL=$JUDGE_MODEL"}) || { rc=$?; [ $rc != 3 ] || mine=; exit $rc; }
   ip=$(grep -oP 'ip=\K\S+' <<< "$created") vm_id=$(grep -oP 'vm_id=\K\S+' <<< "$created")
   ids="\"vm\":\"$name\""
+  stage=session
   event session.open "\"run\":\"$run\",$ids,\"harness\":\"$harness\",\"task\":\"$task\"" && opened=1
 
+  stage=harness
   while code=$(curl -s -m 10 -o "$out/body" -w '%{http_code}' "http://$ip/result"); [ "$code" = 202 ]; do
     (($(ms) - t0 < TIMEOUT_S * 1000)) || { code=timeout; break; }
     sleep 2

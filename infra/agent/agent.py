@@ -289,7 +289,8 @@ def tau2_job():
         os.symlink(f"{HARNESS_DIR}/tau2-bench/data/tau2", f"{data}/tau2")
     llm_args = json.dumps({"api_base": BASE, "temperature": 0})
     cmd = [f"{HARNESS_DIR}/tau2-bench/.venv/bin/tau2", "run", "--domain", domain, "--task-ids", task,
-           "--num-trials", "1", "--max-concurrency", "1", "--seed", ENV.get("SEED", "300"), "--save-to", "job",
+           "--num-trials", "1", "--max-concurrency", "1", "--max-retries", "0", "--seed", ENV.get("SEED", "300"),
+           "--save-to", "job",
            "--agent-llm", f"openai/{MODEL}", "--agent-llm-args", llm_args,
            "--user-llm", f"openai/{ENV.get('USER_MODEL', MODEL)}", "--user-llm-args", llm_args]
     env = {**HARNESS_ENV, "HOME": WORK, "TAU2_DATA_DIR": data, "TAU2_NL_JUDGE": f"openai/{ENV['JUDGE_MODEL']}"}

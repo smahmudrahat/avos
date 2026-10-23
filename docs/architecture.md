@@ -240,6 +240,43 @@ against the human, with an interval, or `unverified`) are derived from the expor
 on re-run. Design: `docs/trace.md` §11; interface and acceptance suite: `label/CONTRACT.md`, `label/tests/`; results:
 `data/poc9/README.md`.
 
-## 10. Planned
+## 10. Fleet runner (`fleet/`)
+One host runs many trials at a stated concurrency with no service: `fleet run` is a process that starts at most C
+`infra/job run tau2 retail/<task>` children, each with its own `SLOT=vm-NN` from the fleet's `--slots` range
+(slot = jail, tap, /30 network; disjoint ranges let claim 1 or a second runner share the host), and
+exports the three roles as `MODEL`, `USER_MODEL`, `JUDGE_MODEL`. One trial is one VM is one run directory; trials are
+never packed. `infra/job` claims the run id itself (lowest free `mkdir`); the runner never assigns or scans for ids
+while jobs run, it reads the id back from the `job.json` that names its slot when the job exits, then snapshots
+`avos completeness` into `<run>/completeness.json` and appends one line to `DIR/trials.jsonl`. Only tasks of the
+split's chosen part can run (`--part train` by default; held-out only with `--part held_out`).
+
+**Stop and resume.** SIGTERM/SIGINT: no new trial, SIGTERM to every job's process group (the job's EXIT trap destroys
+its VM and writes `job.json` `aborted` with its stage), journal them `interrupted` (not part of the plan, re-run
+later). Resume = the same command: it re-runs exactly what the journal lacks. The run ids that existed when the fleet
+was created are kept in `DIR/preexisting.json`; any other run directory of the fleet's tasks with no journal line
+(a SIGKILLed runner's orphans) is adopted as it is, or, without `job.json`, recorded `aborted`/`unknown` and re-run.
+The runner holds a `flock` on `DIR/.lock` that its jobs inherit, so a resume cannot start while a killed runner's
+jobs are still alive. With no coordinator, the same runner runs one instance per host over that host's share of
+tasks.
+
+**Matrix** (`fleet matrix`): computed outside τ² from DIR, the run directories and a prices file alone, recomputed on
+every call (no cache), deterministic (sorted JSON). One cause per non-done trial from evidence, in the order gateway
+(no-route, deny; a 5xx is infra only when the upstream itself answered ≥ 500 or was unreachable, while the
+gateway's own 600 s timeout or an unattributed 5xx stays an agent failure in `n`; 4xx) > roles (`role_mismatch`: a 200 from a model outside the fleet's three roles, or none
+from the policy; the only cause a `done` trial can carry) > witness (`witness_mismatch`: `result.json` is not exactly one simulation whose messages match the gateway's
+calls) > `job.json` stage > `finish_reason: length` (`agent_length`) > τ² termination reason; infra causes leave pass^k's `n`, M2 keeps every
+trial. Only evidence of the fleet's own trials counts (label rows of other runs are ignored and
+warned). M12 per role from the gateway's `llm.call` tokens × listed prices (policy: GPU $/h × fleet wall, token price as
+a ceiling; label judge from its own rows, outside the gateway); a missing part or price reads `unverified`. M17
+(`fleet sweep`, `fleet m17`) uses host-side time: trial wall − Σ `llm.call.ms`.
+
+**Routes.** `/var/lib/avos/gateway.routes.json` maps model name → upstream (base URL, name of the gateway.env
+variable that holds its key, or none for a self-hosted vLLM). A model with no route gets one `authz.decision` deny
+with `no-route` and a 403; nothing is forwarded. Every `llm.call` also carries `upstream_status` (null when nothing
+answered), `error` (`gateway_timeout`, `upstream_unreachable: …`, `upstream_bad_body`) and the reply's `finish_reason`.
+A trial is exactly one τ² simulation: the agent runs τ² with `--max-retries 0` (`docs/versions.md`). Without the file the gateway keeps POC 4's single upstream.
+Interface and acceptance suite: `fleet/CONTRACT.md`, `fleet/tests/`; results: `data/poc10/README.md`.
+
+## 11. Planned
 - **Training:** LoRA retraining on the runs the labels keep.
 - **Evaluation:** full held-out runs with pass^k, cost and latency, compared with frontier-model baselines.

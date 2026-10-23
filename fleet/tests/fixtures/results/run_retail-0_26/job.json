@@ -1,0 +1,1 @@
+{"run": "run_retail-0_26", "vm": "vm-999", "vm_id": "", "harness": "tau2", "task": "retail/0", "status": "aborted", "stage": "create", "exit_code": 2, "wall_ms": 54}

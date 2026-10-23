@@ -3,12 +3,19 @@ host := "avos-dev"
 base_url := "https://api.tokenfactory.nebius.com/v1"
 model := "Qwen/Qwen3-30B-A3B-Instruct-2507"
 judge := "deepseek-ai/DeepSeek-V4-Flash-0731"
+sim := "google/gemma-3-27b-it"
+policy := model
+policy_url := base_url
+policy_key := "OPENAI_API_KEY"
 
 push:
     rsync -az --delete --exclude .git --exclude .env --exclude .venv --exclude .serena --exclude notes ./ {{host}}:poc/
     { grep '^nebulus_API_KEY=' .env | sed 's/^nebulus_API_KEY=/OPENAI_API_KEY=/'; echo "OPENAI_BASE_URL={{base_url}}"; } \
       | ssh {{host}} 'sudo install -D -m 600 /dev/stdin /var/lib/avos/gateway.env'
     { echo "MODEL={{model}}"; echo "JUDGE_MODEL={{judge}}"; } | ssh {{host}} 'sudo install -D -m 600 /dev/stdin /var/lib/avos/agent.env'
+    python3 -c 'import json, sys; b, p, pu, pk, *ms = sys.argv[1:]; print(json.dumps({**{m: {"base_url": b, "key": "OPENAI_API_KEY"} for m in ms}, p: {"base_url": pu, "key": pk or None}}))' \
+      "{{base_url}}" "{{policy}}" "{{policy_url}}" "{{policy_key}}" "{{model}}" "{{sim}}" "{{judge}}" \
+      | ssh {{host}} 'sudo install -D -m 644 /dev/stdin /var/lib/avos/gateway.routes.json'
     grep '^jev_api_key=' .env | sed 's/^jev_api_key=/TYPESAFE_API_KEY=/' | ssh {{host}} 'sudo install -D -m 600 /dev/stdin /var/lib/avos/checklist.env'
 
 image:
@@ -252,6 +259,15 @@ poc6:
     print("messages", len(j["messages"]), "tool calls", sum(len(m.get("tool_calls", [])) for m in j["messages"]), "reward", j["reward"], j["termination_reason"], "usage", j["usage"])'
     echo "== acceptance suite (full)"
     python3 trace/tests/run.py
+
+fleet *args:
+    sudo python3 fleet/bin/fleet {{args}}
+
+poc10 concurrency="32" out="/var/lib/avos/fleet/poc10" prices="/var/lib/avos/fleet/prices.json":
+    sudo mkdir -p {{out}}
+    sudo python3 fleet/bin/fleet run --out {{out}} --part train --trials 4 --concurrency {{concurrency}} \
+      --policy {{policy}} --simulator {{sim}} --judge {{judge}} --json
+    sudo python3 fleet/bin/fleet matrix --fleet {{out}} --prices {{prices}} --labels /var/lib/avos/labels --out {{out}}/matrix.json
 
 claim1 *args:
     sudo python3 supervisor/tests/claim1.py {{args}}

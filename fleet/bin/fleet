@@ -1,0 +1,894 @@
+#!/usr/bin/env python3
+"""fleet: run τ² trials at a stated concurrency, one microVM per trial, and compute the matrix from what they left
+(POC 10, fleet/CONTRACT.md).
+
+  fleet run --out DIR (--tasks T,... | --part train) --trials N --concurrency C   resumable; SIGTERM stops cleanly
+  fleet matrix --fleet DIR --prices PRICES.json [--labels PATH] [--json] [--out FILE]   M2 M8 M11 M12 M13 M16
+  fleet sweep --out DIR --levels 1,2,... --tasks ... --trials N                   one fleet per level, then m17
+  fleet m17 DIR [--json]                                                          M17 from DIR/level_*/
+
+Every trial is one `infra/job run tau2 retail/<task>` with its own SLOT; infra/job claims the run id, the runner
+finds it afterwards by the job.json naming the slot. DIR holds fleet.json, the journal (trials.jsonl, one line per
+trial end) and the run ids that predate it (preexisting.json); the matrix reads DIR, the run directories and the
+prices file only. No cache: every number is recomputed from the files on each call.
+"""
+import argparse
+import calendar
+import fcntl
+import hashlib
+import json
+import math
+import os
+import random
+import re
+import signal
+import statistics
+import subprocess
+import sys
+import time
+from collections import Counter
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
+AVOS = os.path.join(REPO, "collect", "bin", "avos")
+JAIL = "/var/lib/avos/jail/firecracker"
+SPLIT = "data/splits/retail_user_disjoint_v1.json"
+ROLES = {"policy": "Qwen/Qwen3-30B-A3B-Instruct-2507", "simulator": "google/gemma-3-27b-it",
+         "nl_judge": "deepseek-ai/DeepSeek-V4-Flash-0731"}
+INFRA_REASONS = ("user_error", "timeout", "infrastructure_error", "unexpected_error")
+AGENT_REASONS = ("agent_error", "too_many_errors", "context_window_exceeded", "max_steps", "agent_stop", "user_stop")
+AGENT_CLASS = {"unknown", "gateway_timeout", "gateway_5xx_unattributed"}
+U = "unverified"
+RULE = "median host-side trial time ≤ 1.05 × lowest level"
+
+
+class Fail(Exception):
+    def __init__(self, msg, code=2):
+        super().__init__(msg)
+        self.code = code
+
+
+# ---------------------------------------------------------------- files
+
+def ts(t=None):
+    t = time.time() if t is None else t
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + f".{int(t * 1000) % 1000:03d}Z"
+
+
+def parse_ts(s):
+    return calendar.timegm(time.strptime(s[:19], "%Y-%m-%dT%H:%M:%S")) * 1000 + int(s[20:23])
+
+
+def sha_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def load(path, what):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError) as e:
+        raise Fail(f"{what} unreadable: {path}: {e}")
+
+
+def jsonl(path, what):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return [json.loads(l) for l in f if l.strip()]
+    except (OSError, ValueError) as e:
+        raise Fail(f"{what} unreadable: {path}: {e}")
+
+
+def write_atomic(path, obj):
+    tmp = f"{path}.tmp.{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=1)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def read_job(d):
+    try:
+        with open(os.path.join(d, "job.json"), encoding="utf-8") as f:
+            j = json.load(f)
+        return j if isinstance(j, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def task_of(run):
+    """run_retail-<task>_<trial> -> task, else None."""
+    if not run.startswith("run_retail-") or "_" not in run[11:]:
+        return None
+    return run[11:].rsplit("_", 1)[0]
+
+
+# ---------------------------------------------------------------- run
+
+def split_tasks(path, part, tasks):
+    p = path if os.path.exists(path) else os.path.join(REPO, path)
+    split = load(p, "split")
+    allowed = [str(t) for t in split.get(part, [])]
+    want = allowed if tasks is None else [t.strip() for t in tasks.split(",")]
+    bad = [t for t in want if t not in allowed]
+    if bad:
+        raise Fail(f"tasks not in the {part} part of {path}: {','.join(bad)} (refused; nothing run)")
+    if len(set(want)) != len(want) or not want:
+        raise Fail(f"--tasks must name distinct tasks: {tasks}")
+    return want, sha_file(p)
+
+
+class Runner:
+    def __init__(self, a, out, concurrency, name):
+        self.a, self.out, self.conc = a, os.path.abspath(out), concurrency
+        self.tasks, sha = split_tasks(a.split, a.part, a.tasks)
+        roles = {"policy": a.policy, "simulator": a.simulator, "nl_judge": a.judge}
+        if len(set(roles.values())) != 3:
+            raise Fail(f"roles must be three distinct models: {roles}")
+        if a.trials < 1 or concurrency < 1 or concurrency > 254:
+            raise Fail("--trials ≥ 1 and 1 ≤ --concurrency ≤ 254")
+        m = re.fullmatch(r"vm-(\d{2,3})-vm-(\d{2,3})", a.slots or f"vm-01-vm-{concurrency:02d}")
+        lo, hi = (int(m[1]), int(m[2])) if m else (0, -1)
+        if not 1 <= lo <= hi <= 254 or hi - lo + 1 < concurrency:
+            raise Fail(f"--slots {a.slots} must be vm-NN-vm-MM within vm-01…vm-254 holding ≥ {concurrency} slots")
+        slots = [f"vm-{n:02d}" for n in range(lo, hi + 1)]
+        self.results = os.path.abspath(a.results or os.environ.get("AVOS_FLEET_RESULTS") or "/var/lib/avos/results")
+        self.job = os.path.abspath(a.job or os.path.join(REPO, "infra", "job"))
+        self.meta_path = os.path.join(self.out, "fleet.json")
+        self.plan = {"fleet": name or os.path.basename(self.out), "harness": "tau2", "domain": "retail",
+                     "tasks": self.tasks, "trials_per_task": a.trials, "concurrency": concurrency, "mem_mib": a.mem_mib, "slots": slots,
+                     "split": {"path": a.split, "sha256": sha, "part": a.part}, "roles": roles,
+                     "results_root": self.results}
+        self.stopping = None
+
+    def check_resume(self, meta):
+        for k in ("tasks", "trials_per_task", "concurrency", "slots", "split", "roles", "results_root"):
+            if meta.get(k) != self.plan[k]:
+                raise Fail(f"{self.out} is a fleet with {k}={json.dumps(meta.get(k))}, not {json.dumps(self.plan[k])}")
+
+    def task_dirs(self):
+        want = set(self.tasks)
+        try:
+            return {n for n in os.listdir(self.results) if task_of(n) in want}
+        except OSError as e:
+            raise Fail(f"results root unreadable: {e}", 1)
+
+    def save(self):
+        write_atomic(self.meta_path, self.meta)
+
+    def journal(self, run, task, slot, status, interrupted, started, ended):
+        line = {"task": task, "run": run, "slot": slot, "status": status, "interrupted": interrupted,
+                "started": started, "ended": ended}
+        with open(os.path.join(self.out, "trials.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(line, sort_keys=True) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        self.lines.append(line)
+        self.known.add(run)
+        print(f"{ended} {run} {slot} {status}{' (interrupted)' if interrupted else ''}", file=sys.stderr, flush=True)
+
+    def completeness(self, run):
+        d = os.path.join(self.results, run)
+        try:
+            p = subprocess.run([sys.executable, AVOS, "completeness", "--run", run], capture_output=True, text=True,
+                               timeout=300)
+            rec = json.loads(p.stdout) if p.returncode == 0 else None
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            rec = None
+        if not isinstance(rec, dict) or "status" not in rec:
+            rec = {"run": run, "status": U, "ratio": None, "error": "avos completeness gave no record"}
+        write_atomic(os.path.join(d, "completeness.json"), rec)
+
+    def record(self, run, task, slot, started, signaled):
+        """Journal one ended trial from its job.json (writing an aborted one when the job left none)."""
+        d = os.path.join(self.results, run)
+        job = read_job(d)
+        if job is None or job.get("status") not in ("done", "failed", "aborted"):
+            job = {"run": run, "task": f"retail/{task}", "status": "aborted", "stage": "unknown", "exit_code": -1}
+            write_atomic(os.path.join(d, "job.json"), job)
+            signaled = True
+        interrupted = signaled and job["status"] == "aborted"
+        if not interrupted:
+            self.completeness(run)
+        self.journal(run, task, slot or job.get("vm"), job["status"], interrupted, started or ts(), ts())
+
+    def adopt(self):
+        """Every run directory of the fleet's tasks that is neither preexisting nor journaled: journal it as it is."""
+        for run in sorted(self.task_dirs() - self.pre - self.known):
+            self.record(run, task_of(run), None, None, False)
+
+    def remaining(self):
+        have = Counter(l["task"] for l in self.lines if not l["interrupted"])
+        left = {t: self.plan["trials_per_task"] - have[t] for t in self.tasks}
+        queue = []
+        for i in range(max(left.values(), default=0)):
+            queue += [t for t in self.tasks if left[t] > i]
+        return queue
+
+    def summary(self, t0):
+        live = [l for l in self.lines if not l["interrupted"]]
+        c = Counter(l["status"] for l in live)
+        return {"fleet": self.meta["fleet"], "planned": len(self.tasks) * self.plan["trials_per_task"],
+                "done": c["done"], "failed": c["failed"], "aborted": c["aborted"],
+                "interrupted": len(self.lines) - len(live), "status": self.meta["status"],
+                "wall_s": round(time.time() - t0, 1)}
+
+    def complete(self):
+        live = [l for l in self.lines if not l["interrupted"]]
+        per = Counter(l["task"] for l in live)
+        return (all(per[t] == self.plan["trials_per_task"] for t in self.tasks) and len({l["run"] for l in live}) == len(live)
+                and all(os.path.exists(os.path.join(self.results, l["run"], "job.json")) for l in live))
+
+    def run(self):
+        t0 = time.time()
+        os.makedirs(self.out, exist_ok=True)
+        self.lockf = open(os.path.join(self.out, ".lock"), "w")
+        try:
+            fcntl.flock(self.lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Fail(f"{self.out} is in use (a runner or the jobs of a killed one are still running)", 1)
+        jpath = os.path.join(self.out, "trials.jsonl")
+        if os.path.exists(self.meta_path):
+            self.meta = load(self.meta_path, "fleet.json")
+            self.check_resume(self.meta)
+            self.lines = jsonl(jpath, "journal") if os.path.exists(jpath) else []
+            self.pre = set(load(os.path.join(self.out, "preexisting.json"), "preexisting.json"))
+        else:
+            if not os.path.isdir(self.results):
+                raise Fail(f"results root {self.results} does not exist")
+            self.pre, self.lines = self.task_dirs(), []
+            write_atomic(os.path.join(self.out, "preexisting.json"), sorted(self.pre))
+            open(jpath, "a").close()
+            self.meta = {**self.plan, "sessions": [], "status": "running", "peak_guest_mem_mib": None}
+        self.known = {l["run"] for l in self.lines}
+        if self.meta["status"] == "done" and self.complete():
+            return self.summary(t0)
+        s = self.meta["sessions"]
+        if s and s[-1]["ended"] is None:
+            ends = [l["ended"] for l in self.lines]
+            s[-1]["ended"] = max(ends) if ends else s[-1]["started"]
+        s.append({"started": ts(t0), "ended": None, "pid": os.getpid()})
+        self.meta["status"] = "running"
+        self.save()
+        self.adopt()
+        self.loop()
+        if not self.stopping and not STOP:
+            self.adopt()
+        self.meta["status"] = "done" if self.complete() else "stopped"
+        s[-1]["ended"] = ts()
+        self.save()
+        if self.stopping and self.stopping != "signal":
+            print(f"fleet: stopped: {self.stopping}", file=sys.stderr)
+        return self.summary(t0)
+
+    def launch(self, slot, task):
+        env = {**os.environ, "SLOT": slot, "MEM_MIB": str(self.plan["mem_mib"]), "MODEL": self.plan["roles"]["policy"],
+               "USER_MODEL": self.plan["roles"]["simulator"], "JUDGE_MODEL": self.plan["roles"]["nl_judge"],
+               "AVOS_RESULTS": self.results, "AVOS_FLEET_RESULTS": self.results}
+        with open(os.path.join(self.out, "jobs.log"), "ab") as log:
+            p = subprocess.Popen([self.job, "run", "tau2", f"retail/{task}"], env=env, stdin=subprocess.DEVNULL,
+                                 stdout=log, stderr=log, start_new_session=True, pass_fds=(self.lockf.fileno(),))
+        return {"p": p, "task": task, "started": ts(), "signaled": None}
+
+    def finish(self, slot, j):
+        mine = [r for r in sorted(self.task_dirs() - self.pre - self.known)
+                if task_of(r) == j["task"] and (read_job(os.path.join(self.results, r)) or {}).get("vm") == slot]
+        if len(mine) != 1:
+            self.stopping = self.stopping or f"the job of task {j['task']} on {slot} left no job.json naming its slot; resume adopts its directory"
+            return
+        self.record(mine[0], j["task"], slot, j["started"], j["signaled"] is not None)
+
+    def peak(self, slots):
+        total = 0
+        for s in slots:
+            try:
+                pid = open(f"{JAIL}/{s}/pid").read().strip()
+                total += next(int(l.split()[1]) for l in open(f"/proc/{pid}/status") if l.startswith("VmRSS:")) / 1024
+            except (OSError, ValueError, StopIteration):
+                pass
+        if total:
+            self.meta["peak_guest_mem_mib"] = max(self.meta["peak_guest_mem_mib"] or 0, round(total, 1))
+
+    def loop(self):
+        queue = self.remaining()
+        free = self.plan["slots"][::-1]
+        live = {}
+        while (queue and not self.stopping) or live:
+            if STOP and not self.stopping:
+                self.stopping = "signal"
+            while queue and free and len(live) < self.conc and not self.stopping:
+                slot = free.pop()
+                live[slot] = self.launch(slot, queue.pop(0))
+            self.peak(live)
+            for slot, j in list(live.items()):
+                if j["p"].poll() is not None:
+                    del live[slot]
+                    self.finish(slot, j)
+                    free.append(slot)
+                    free.sort(reverse=True)
+            if self.stopping:
+                for slot, j in live.items():
+                    if j["signaled"] is None:
+                        j["signaled"] = time.time()
+                        killpg(j["p"].pid, signal.SIGTERM)
+                    elif time.time() - j["signaled"] > 45 and j["p"].poll() is None:
+                        killpg(j["p"].pid, signal.SIGKILL)  # a job deaf to SIGTERM: kill it, destroy its VM here
+                        j["p"].wait()
+                        vm = os.path.join(os.path.dirname(self.job), "vm")
+                        if os.path.exists(vm):
+                            subprocess.run([vm, "destroy", slot], capture_output=True, timeout=60)
+            time.sleep(0.2)
+
+
+STOP = []
+
+
+def killpg(pgid, sig):
+    try:
+        os.killpg(pgid, sig)
+    except ProcessLookupError:
+        pass
+
+
+def do_run(a, out=None, concurrency=None, name=None):
+    signal.signal(signal.SIGTERM, lambda *_: STOP.append(1))
+    signal.signal(signal.SIGINT, lambda *_: STOP.append(1))
+    return Runner(a, out or a.out, concurrency or a.concurrency, name or a.name).run()
+
+
+def cmd_run(a):
+    summ = do_run(a)
+    print(json.dumps(summ, sort_keys=True) if a.json else
+          f"{summ['fleet']}: {summ['done']} done, {summ['failed']} failed, {summ['aborted']} aborted of {summ['planned']} "
+          f"({summ['interrupted']} interrupted), {summ['status']}, {summ['wall_s']} s")
+    return 0 if summ["status"] == "done" else 1
+
+
+def cmd_sweep(a):
+    try:
+        levels = sorted({int(x) for x in a.levels.split(",")})
+    except ValueError:
+        raise Fail(f"--levels must be integers: {a.levels}")
+    os.makedirs(a.out, exist_ok=True)
+    for L in levels:
+        summ = do_run(a, os.path.join(a.out, f"level_{L}"), L, f"level_{L}")
+        print(f"level {L}: {summ['done']}/{summ['planned']} done, {summ['status']}", file=sys.stderr, flush=True)
+        if summ["status"] != "done" or STOP:
+            return 1
+    return emit_m17(a.out, a.json)
+
+
+# ---------------------------------------------------------------- per-trial facts (§4, §5)
+
+def read_events(path):
+    """-> rows, or None when missing or a line is not a JSON object."""
+    rows = []
+    try:
+        with open(path, "rb") as f:
+            for raw in f:
+                if raw.strip():
+                    ev = json.loads(raw)
+                    if not isinstance(ev, dict):
+                        return None
+                    rows.append(ev)
+    except (OSError, ValueError):
+        return None
+    return rows
+
+
+def role_mismatch(rows, roles):
+    """The VM's model calls are not the fleet's roles: a 200 from another model, or none from the policy."""
+    if not any(e.get("kind") == "llm.call" for e in rows):
+        return False
+    ok = {str(e.get("model")) for e in rows if e.get("kind") == "llm.call" and e.get("status") == 200}
+    return bool(ok - set(roles.values())) or roles["policy"] not in ok
+
+
+def witness_mismatch(d, rows, roles):
+    """result.json is not one simulation whose usage-bearing messages are, in order and in tokens, the trial's
+    status-200 policy and simulator calls: τ² retried the simulation, or the witness was edited."""
+    try:
+        with open(os.path.join(d, "result.json"), encoding="utf-8") as f:
+            sims = json.load(f).get("simulations")
+    except (OSError, ValueError, AttributeError):
+        return False
+    if not isinstance(sims, list):
+        return False
+    if len(sims) != 1:
+        return True
+    msgs = sims[0].get("messages") if isinstance(sims[0], dict) else None
+    if not isinstance(msgs, list) or rows is None:
+        return False
+    w = [(m["usage"].get("prompt_tokens"), m["usage"].get("completion_tokens")) for m in msgs
+         if isinstance(m, dict) and isinstance(m.get("usage"), dict)]
+    g = [(e.get("prompt_tokens"), e.get("completion_tokens")) for e in rows
+         if e.get("kind") == "llm.call" and e.get("status") == 200 and e.get("model") != roles.get("nl_judge")]
+    return w != g
+
+
+def cause_of(status, job, rows, roles, d):
+    if status == "missing":
+        return "no_job_json"
+    if rows is not None and status != "done":
+        denies = [e for e in rows if e.get("kind") == "authz.decision" and e.get("decision") == "deny"]
+        if any("no-route" in (e.get("policy_ids") or []) for e in denies):
+            return "model_unrouted"
+        if denies:
+            return "authz_denied"
+        calls = [e for e in rows if e.get("kind") == "llm.call" and isinstance(e.get("status"), int)]
+        five = [e for e in calls if e["status"] >= 500]
+        if any(isinstance(e.get("upstream_status"), int) and e["upstream_status"] >= 500 for e in five):
+            return "upstream_5xx"
+        if any(e.get("upstream_status") is None and str(e.get("error") or "").startswith("upstream_unreachable") for e in five):
+            return "upstream_unreachable"
+        if any(e.get("error") == "gateway_timeout" for e in five):
+            return "gateway_timeout"
+        if five:
+            return "gateway_5xx_unattributed"
+        if any(400 <= e["status"] < 500 for e in calls):
+            return "upstream_4xx"
+    if rows is not None and role_mismatch(rows, roles):
+        return "role_mismatch"
+    if witness_mismatch(d, rows, roles):
+        return "witness_mismatch"
+    if status == "done":
+        return None
+    if rows is not None and any(e.get("kind") == "llm.call" and e.get("status") == 200 and e.get("finish_reason") == "length"
+                                for e in rows):
+        return "agent_length"
+    if status == "aborted":
+        return {"create": "vm_create_failed", "session": "session_open_failed"}.get(job.get("stage"), "harness_aborted")
+    http = job.get("http")
+    if http == "timeout":
+        return "harness_timeout"
+    if http is not None and str(http) != "200":
+        return "harness_http_error"
+    tr = job.get("termination_reason")
+    if tr in INFRA_REASONS:
+        return f"sim_{tr}"
+    if tr in AGENT_REASONS:
+        return f"agent_{tr}"
+    return "unknown"
+
+
+def trial(results, run, task, slot, roles):
+    d = os.path.join(results, run)
+    job = read_job(d)
+    status = job["status"] if job and job.get("status") in ("done", "failed", "aborted") else "missing"
+    rows = read_events(os.path.join(d, "events.jsonl"))
+    llm = U
+    if rows is not None:
+        by, total, calls = {}, 0, 0
+        for e in rows:
+            if e.get("kind") != "llm.call":
+                continue
+            b = by.setdefault(str(e.get("model")), {"calls": 0, "ok": 0, "prompt_tokens": 0, "completion_tokens": 0, "ms": 0})
+            ms = e.get("ms") if isinstance(e.get("ms"), (int, float)) else 0
+            b["calls"] += 1
+            b["ms"] += ms
+            calls += 1
+            total += ms
+            if e.get("status") == 200:
+                b["ok"] += 1
+                b["prompt_tokens"] += e.get("prompt_tokens") or 0
+                b["completion_tokens"] += e.get("completion_tokens") or 0
+        llm = {"calls": calls, "ms": total, "by_model": by}
+    cause = cause_of(status, job, rows, roles, d)
+    cls = None if cause is None else ("agent" if cause.startswith("agent_") or cause in AGENT_CLASS else "infra")
+    wall = job.get("wall_ms") if job and isinstance(job.get("wall_ms"), int) else None
+    reward = job.get("reward") if job and isinstance(job.get("reward"), (int, float)) else None
+    m8 = U
+    try:
+        with open(os.path.join(d, "completeness.json"), encoding="utf-8") as f:
+            c = json.load(f)
+        if c.get("status") in ("complete", "incomplete") and isinstance(c.get("ratio"), (int, float)):
+            m8 = {"status": "witness_mismatch" if cause == "witness_mismatch" else c["status"], "ratio": float(c["ratio"])}
+    except (OSError, ValueError, AttributeError):
+        pass
+    return {"run": run, "task": task, "slot": slot, "status": status, "reward": reward,
+            "termination_reason": job.get("termination_reason") if job else None, "wall_ms": wall,
+            "cause": cause, "cause_class": cls, "valid": cause is None or cls == "agent",
+            "passed": (reward == 1.0) if status == "done" and cause is None else None, "llm": llm,
+            "host_side_ms": wall - llm["ms"] if wall is not None and llm != U else U, "m8": m8}
+
+
+def fleet_meta(fdir):
+    meta = load(os.path.join(fdir, "fleet.json"), "fleet.json")
+    lines = jsonl(os.path.join(fdir, "trials.jsonl"), "journal")
+    if not isinstance(meta, dict) or not all(isinstance(l, dict) for l in lines):
+        raise Fail(f"{fdir}: fleet.json or trials.jsonl is not the contract's shape")
+    roles = meta.get("roles")
+    if not isinstance(roles, dict) or len({roles.get(r) for r in ("policy", "simulator", "nl_judge")}) != 3 or \
+            not all(isinstance(roles.get(r), str) for r in ("policy", "simulator", "nl_judge")):
+        raise Fail(f"{fdir}: roles are not three distinct model names: {roles}")
+    return meta, lines
+
+
+# ---------------------------------------------------------------- matrix (§4)
+
+def num(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def pass_k(c, n, k):
+    return None if n < k else math.comb(c, k) / math.comb(n, k)
+
+
+def ci95(vals):
+    T = len(vals)
+    if T < 2:
+        return U
+    rng = random.Random(300)
+    means = sorted(statistics.fmean([vals[rng.randrange(T)] for _ in range(T)]) for _ in range(2000))
+    return [means[50], means[1949]]
+
+
+def wall_h(meta, lines):
+    ends = [parse_ts(l["ended"]) for l in lines if l.get("ended")]
+    total = 0
+    for s in meta.get("sessions") or []:
+        b = parse_ts(s["ended"]) if s.get("ended") else (max(ends) if ends else None)
+        if b is not None:
+            total += max(0, b - parse_ts(s["started"]))
+    return total / 3_600_000 if meta.get("sessions") else None
+
+
+def matrix(fdir, prices_path, labels=None):
+    meta, lines = fleet_meta(fdir)
+    prices = load(prices_path, "prices")
+    if not isinstance(prices, dict):
+        raise Fail(f"prices file is not a JSON object: {prices_path}")
+    roles = meta["roles"]
+    seen, trials, warnings = set(), [], []
+    for ln in lines:
+        if ln.get("interrupted"):
+            continue
+        if ln["run"] in seen:
+            warnings.append(f"duplicate journal line for {ln['run']}")
+            continue
+        seen.add(ln["run"])
+        trials.append(trial(meta["results_root"], ln["run"], str(ln["task"]), ln.get("slot"), roles))
+        if trials[-1]["status"] == "missing":
+            warnings.append(f"{ln['run']}: no job.json (counted as a trial, cause no_job_json)")
+    trials.sort(key=lambda t: t["run"])
+    ntr = len(trials)
+    done = [t for t in trials if t["status"] == "done"]
+    m2 = {"done": len(done), "trials": ntr, "value": len(done) / ntr if ntr else U}
+    ver = [t["m8"] for t in trials if t["m8"] != U]
+    m8 = {"complete": sum(v["status"] == "complete" for v in ver), "incomplete": sum(v["status"] != "complete" for v in ver),
+          "unverified": ntr - len(ver), "mean_ratio": statistics.fmean(v["ratio"] for v in ver) if ver else U}
+
+    per_task = []
+    for task in meta["tasks"]:
+        ts_ = [t for t in trials if t["task"] == str(task)]
+        valid = [t for t in ts_ if t["valid"]]
+        n, c = len(valid), sum(1 for t in valid if t["passed"])
+        per_task.append({"task": str(task), "n": n, "c": c, "infra": sum(t["cause_class"] == "infra" for t in ts_),
+                         "trials": len(ts_), "pass1": pass_k(c, n, 1), "pass4": pass_k(c, n, 4),
+                         "avg4": statistics.fmean((t["reward"] or 0.0) for t in valid) if n else None})
+    m11 = {"tasks": per_task, "infra_excluded": sum(p["infra"] for p in per_task),
+           "tasks_short_4": [p["task"] for p in per_task if p["pass4"] is None and p["trials"]],
+           "tasks_all_infra": [p["task"] for p in per_task if p["n"] == 0 and p["trials"]]}
+    for key in ("pass1", "pass4", "avg4"):
+        vals = [p[key] for p in per_task if p[key] is not None]
+        m11[key] = statistics.fmean(vals) if vals else U
+        m11[key + "_ci95"] = ci95(vals) if vals else U
+    m11["causes"] = dict(sorted(Counter(t["cause"] for t in trials if t["cause"]).items()))
+    m11["by_class"] = {k: sum(t["cause_class"] == k for t in trials) for k in ("agent", "infra")}
+
+    models = prices.get("models") if isinstance(prices.get("models"), dict) else {}
+    hosts = prices.get("hosts") if isinstance(prices.get("hosts"), dict) else {}
+    wh = wall_h(meta, lines)
+    pass1 = m11["pass1"]
+    agg = {}
+    for t in trials:
+        if t["llm"] != U:
+            for m, b in t["llm"]["by_model"].items():
+                a = agg.setdefault(m, {"calls": 0, "ok": 0, "prompt_tokens": 0, "completion_tokens": 0})
+                for k in a:
+                    a[k] += b[k]
+
+    def price(m, pt, ct, calls=None):
+        if calls == 0:
+            return 0.0
+        p = models.get(m)
+        if not isinstance(p, dict) or not all(num(p.get(k)) for k in ("prompt_per_mtok", "completion_per_mtok")):
+            return U
+        return (pt * p["prompt_per_mtok"] + ct * p["completion_per_mtok"]) / 1e6
+
+    def per_task_cost(total):
+        if total == U or not ntr:
+            return U, U
+        pt = total / ntr
+        return pt, (pt / pass1 if pass1 != U and pass1 > 0 else U)
+
+    m12 = {}
+    zero = {"calls": 0, "ok": 0, "prompt_tokens": 0, "completion_tokens": 0}
+    for role in ("policy", "simulator", "nl_judge"):
+        m = roles[role]
+        a = agg.get(m, zero)
+        tok = price(m, a["prompt_tokens"], a["completion_tokens"], a["calls"])
+        if role == "policy":
+            g = hosts.get("gpu") if isinstance(hosts.get("gpu"), dict) else {}
+            total = g["usd_per_h"] * wh if num(g.get("usd_per_h")) and wh is not None else U
+            basis, ceiling = "gpu_hours", tok / ntr if tok != U and ntr else U
+        else:
+            total, basis, ceiling = tok, "tokens", U
+        pt, succ = per_task_cost(total)
+        m12[role] = {"model": m, "source": "gateway", "outside_gateway": False, **a, "usd_total": total,
+                     "usd_per_task": pt, "usd_per_successful_task": succ, "basis": basis,
+                     "token_ceiling_usd_per_task": ceiling}
+    lj = {"model": U, "source": "label rows", "outside_gateway": True, "calls": U, "ok": U, "prompt_tokens": U,
+          "completion_tokens": U, "usd_total": U, "usd_per_task": U, "usd_per_successful_task": U, "basis": "tokens",
+          "token_ceiling_usd_per_task": U}
+    if labels:
+        if os.path.isdir(labels):
+            files = sorted(os.path.join(d, n) for d, _, fs in os.walk(labels) for n in fs)
+        elif os.path.exists(labels):
+            files = [labels]
+        else:
+            raise Fail(f"--labels {labels} does not exist")
+        rows = [r for p in files if p.endswith(".jsonl") for r in jsonl(p, "label rows")
+                if isinstance(r, dict) and r.get("level") == 1 and isinstance(r.get("usage"), dict)]
+        foreign = [r for r in rows if r.get("run") not in seen]
+        rows = [r for r in rows if r.get("run") in seen]
+        if foreign:
+            warnings.append(f"{len(foreign)} label rows for runs outside this fleet ignored")
+        ms = {str(r.get("model")) for r in rows}
+        if not rows:
+            lj.update({"calls": 0, "ok": 0, "prompt_tokens": 0, "completion_tokens": 0, "usd_total": 0.0, "usd_per_task": 0.0,
+                       "usd_per_successful_task": 0.0 if pass1 != U and pass1 > 0 else U})
+        elif len(ms) == 1:
+            m = ms.pop()
+            ptk = sum(r["usage"].get("prompt_tokens") or 0 for r in rows)
+            ctk = sum(r["usage"].get("completion_tokens") or 0 for r in rows)
+            total = price(m, ptk, ctk)
+            pt, succ = per_task_cost(total)
+            lj.update({"model": m, "calls": len(rows), "ok": len(rows), "prompt_tokens": ptk, "completion_tokens": ctk,
+                       "usd_total": total, "usd_per_task": pt, "usd_per_successful_task": succ})
+        else:
+            warnings.append("label rows name more than one model: " + ", ".join(sorted(ms)))
+    m12["label_judge"] = lj
+    un_models = sorted(m for m in agg if m not in roles.values())
+    un = {k: sum(agg[m][k] for m in un_models) for k in zero}
+    tot = 0.0
+    for m in un_models:
+        pr = price(m, agg[m]["prompt_tokens"], agg[m]["completion_tokens"], agg[m]["calls"])
+        tot = U if U in (pr, tot) else tot + pr
+    m12["unattributed"] = {"models": un_models, **un, "usd_total": tot}
+    if un_models:
+        warnings.append("unattributed models: " + ", ".join(un_models))
+
+    walls = [t["wall_ms"] / 1000 for t in done if t["wall_ms"] is not None]
+    m13 = {"n": len(walls), "median_s": statistics.median(walls) if walls else U,
+           "p90_s": sorted(walls)[math.ceil(0.9 * len(walls)) - 1] if walls else U,
+           "worst_s": max(walls) if walls else U, "concurrency": meta.get("concurrency")}
+    f = hosts.get("fleet") if isinstance(hosts.get("fleet"), dict) else {}
+    rate = f.get("usd_per_h") if num(f.get("usd_per_h")) else U
+    m16 = {"host_usd_per_h": rate, "fleet_wall_h": wh if wh is not None else U, "completed": len(done),
+           "value": rate * wh / len(done) if rate != U and wh is not None and done else U}
+    bl = {}
+    base = prices.get("baselines") if isinstance(prices.get("baselines"), dict) else {}
+    med = m13["median_s"]
+    for name, b in sorted(base.items()):
+        try:
+            if med == U:
+                raise KeyError("median")
+            if b["kind"] == "vm":
+                bl[name] = b["usd_per_h"] * max(b["min_s"], med + b["boot_s"]) / 3600
+            elif b["kind"] == "serverless":
+                bl[name] = (b["vcpu"] * b["usd_per_vcpu_h"] + b["gb"] * b["usd_per_gb_h"]) * max(b["min_s"], med) / 3600
+            else:
+                bl[name] = U
+        except (KeyError, TypeError):
+            bl[name] = U
+    m16["baselines"] = bl
+    nums = [v for v in bl.values() if v != U]
+    m16["ratio_to_best_baseline"] = m16["value"] / min(nums) if nums and m16["value"] != U and min(nums) > 0 else U
+
+    out = {"m2": m2, "m8": m8, "m11": m11, "m12": m12, "m13": m13, "m16": m16, "trials": trials,
+           "warnings": sorted(warnings),
+           "inputs": {"fleet": meta.get("fleet"), "trials_per_task": meta.get("trials_per_task"),
+                      "concurrency": meta.get("concurrency"), "roles": roles, "prices_sha256": sha_file(prices_path),
+                      "split": meta.get("split")}}
+    paths = []
+
+    def walk(o, p):
+        if o == U:
+            paths.append(p)
+        elif isinstance(o, dict):
+            for k, v in o.items():
+                walk(v, f"{p}.{k}")
+    for k in ("m2", "m8", "m11", "m12", "m13", "m16"):
+        walk(out[k], k)
+    for t in trials:
+        for k in ("llm", "host_side_ms", "m8"):
+            walk(t[k], f"trials.{t['run']}.{k}")
+    out["unverified"] = sorted(paths)
+    return out
+
+
+def fmt(v, pct=False):
+    if v is None:
+        return "n/a"
+    if isinstance(v, str) or isinstance(v, bool):
+        return str(v)
+    if isinstance(v, float):
+        return f"{100 * v:.1f}%" if pct else f"{v:.6g}"
+    if isinstance(v, list):
+        return "[" + ", ".join(fmt(x, pct) for x in v) + "]"
+    return str(v)
+
+
+def matrix_text(g):
+    m2, m8, m11, m12, m13, m16 = (g[k] for k in ("m2", "m8", "m11", "m12", "m13", "m16"))
+    i = g["inputs"]
+    out = [f"fleet {i['fleet']}: {i['trials_per_task']} trials/task at concurrency {i['concurrency']}, "
+           f"split {i['split'].get('part') if isinstance(i['split'], dict) else 'n/a'}, prices sha256 {i['prices_sha256'][:12]}",
+           "", f"M2 harness_e2e_pass  {m2['done']}/{m2['trials']} done = {fmt(m2['value'], True)}",
+           "", f"M8 trace_completeness  complete {m8['complete']}, incomplete {m8['incomplete']}, unverified {m8['unverified']}; "
+               f"mean ratio {fmt(m8['mean_ratio'])}",
+           "", f"M11 pass^1 {fmt(m11['pass1'])} ci95 {fmt(m11['pass1_ci95'])}   pass^4 {fmt(m11['pass4'])} ci95 "
+               f"{fmt(m11['pass4_ci95'])}   Avg@4 {fmt(m11['avg4'])} ci95 {fmt(m11['avg4_ci95'])}",
+           f"    infra-excluded trials {m11['infra_excluded']}; tasks short of 4 valid: {','.join(m11['tasks_short_4']) or '-'}; "
+           f"all-infra tasks: {','.join(m11['tasks_all_infra']) or '-'}",
+           f"    causes ({m11['by_class']['agent']} agent, {m11['by_class']['infra']} infra): "
+           + (", ".join(f"{k} {v}" for k, v in m11["causes"].items()) or "-"),
+           "    task  trials  n  c  infra  pass^1  pass^4  Avg@4"]
+    out += [f"    {p['task']:>4}  {p['trials']:>6}  {p['n']}  {p['c']}  {p['infra']:>5}  {fmt(p['pass1'])}  {fmt(p['pass4'])}  "
+            f"{fmt(p['avg4'])}" for p in m11["tasks"]]
+    out += ["", "M12 cost per role (USD)  role: model [source] calls/ok, prompt+completion tokens -> total, per task, "
+                "per successful task (basis; token ceiling per task)"]
+    for r in ("policy", "simulator", "nl_judge", "label_judge"):
+        x = m12[r]
+        out.append(f"    {r}: {x['model']} [{x['source']}{', outside the gateway' if x['outside_gateway'] else ''}] "
+                   f"{fmt(x['calls'])}/{fmt(x['ok'])}, {fmt(x['prompt_tokens'])}+{fmt(x['completion_tokens'])} -> "
+                   f"{fmt(x['usd_total'])}, {fmt(x['usd_per_task'])}, {fmt(x['usd_per_successful_task'])} "
+                   f"({x['basis']}; ceiling {fmt(x['token_ceiling_usd_per_task'])})")
+    u = m12["unattributed"]
+    out.append(f"    unattributed: {', '.join(u['models']) or '-'} {u['calls']}/{u['ok']}, "
+               f"{u['prompt_tokens']}+{u['completion_tokens']} -> {fmt(u['usd_total'])}")
+    out += ["", f"M13 latency_per_task  n {m13['n']}, median {fmt(m13['median_s'])} s, p90 {fmt(m13['p90_s'])} s, "
+                f"worst {fmt(m13['worst_s'])} s at concurrency {m13['concurrency']}",
+            "", f"M16 infra_cost_per_trial  {fmt(m16['host_usd_per_h'])} $/h × {fmt(m16['fleet_wall_h'])} h / "
+                f"{m16['completed']} done = {fmt(m16['value'])} USD; ratio to best baseline {fmt(m16['ratio_to_best_baseline'])}"]
+    out += [f"    baseline {k}: {fmt(v)} USD/trial" for k, v in m16["baselines"].items()]
+    out += ["", f"unverified: {', '.join(p for p in g['unverified'] if not p.startswith('trials.')) or '-'} "
+                f"(+{sum(p.startswith('trials.') for p in g['unverified'])} per-trial parts)"]
+    out += [f"warning: {w}" for w in g["warnings"]]
+    return "\n".join(out) + "\n"
+
+
+def cmd_matrix(a):
+    g = matrix(a.fleet, a.prices, a.labels)
+    js = json.dumps(g, sort_keys=True)
+    if a.out:
+        with open(a.out, "w", encoding="utf-8") as f:
+            f.write(js + "\n")
+    sys.stdout.write(js + "\n" if a.json else matrix_text(g))
+    return 0
+
+
+# ---------------------------------------------------------------- m17 (§7)
+
+def m17(sweep):
+    try:
+        names = [n for n in os.listdir(sweep) if n.startswith("level_") and os.path.isdir(os.path.join(sweep, n))]
+    except OSError as e:
+        raise Fail(f"{sweep} unreadable: {e}")
+    if not names:
+        raise Fail(f"{sweep} has no level_* directories")
+    levels = []
+    for n in names:
+        meta, lines = fleet_meta(os.path.join(sweep, n))
+        lines = [l for l in lines if not l.get("interrupted")]
+        hs, walls, llms, skipped = [], [], [], 0
+        for ln in lines:
+            t = trial(meta["results_root"], ln["run"], str(ln["task"]), ln.get("slot"), meta["roles"])
+            if t["status"] != "done":
+                continue
+            if t["llm"] == U or t["wall_ms"] is None:
+                skipped += 1
+                continue
+            hs.append(t["host_side_ms"])
+            walls.append(t["wall_ms"])
+            llms.append(t["llm"]["ms"])
+        peak = meta.get("peak_guest_mem_mib")
+        levels.append({"concurrency": meta["concurrency"], "trials": len(lines), "skipped": skipped,
+                       "host_side_ms": {"median": statistics.median(hs), "n": len(hs)} if hs else U,
+                       "wall_ms_median": statistics.median(walls) if walls else U,
+                       "llm_ms_median": statistics.median(llms) if llms else U,
+                       "peak_guest_mem_mib": peak if num(peak) else U})
+    levels.sort(key=lambda l: l["concurrency"])
+    out = {"levels": levels, "rule": RULE, "baseline_concurrency": levels[0]["concurrency"]}
+    if levels[0]["host_side_ms"] == U:
+        return {**out, "baseline_host_side_ms": U, "m17": U, "ceiling_reached": False}
+    base = levels[0]["host_side_ms"]["median"]
+    best, reached = levels[0]["concurrency"], False
+    for l in levels[1:]:
+        if l["host_side_ms"] == U or l["host_side_ms"]["median"] > 1.05 * base:
+            reached = l["host_side_ms"] != U
+            break
+        best = l["concurrency"]
+    return {**out, "baseline_host_side_ms": base, "m17": best, "ceiling_reached": reached}
+
+
+def emit_m17(d, as_json):
+    g = m17(d)
+    if as_json:
+        print(json.dumps(g, sort_keys=True))
+        return 0
+    print("level  trials  skipped  host-side median ms (n)  wall median ms  llm median ms  peak guest MiB")
+    for l in g["levels"]:
+        h = l["host_side_ms"]
+        hs = U if h == U else f"{fmt(h['median'])} ({h['n']})"
+        print(f"{l['concurrency']:>5}  {l['trials']:>6}  {l['skipped']:>7}  {hs:>24}  {fmt(l['wall_ms_median']):>14}  "
+              f"{fmt(l['llm_ms_median']):>13}  {fmt(l['peak_guest_mem_mib'])}")
+    print(f"M17 density: {g['m17']} (baseline level {g['baseline_concurrency']}, {fmt(g['baseline_host_side_ms'])} ms; "
+          f"ceiling {'reached' if g['ceiling_reached'] else 'not reached'}; rule: {g['rule']})")
+    return 0
+
+
+# ---------------------------------------------------------------- cli
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        print(f"fleet: {message}", file=sys.stderr)
+        sys.exit(2)
+
+
+def run_options(p):
+    p.add_argument("--out", required=True)
+    p.add_argument("--tasks")
+    p.add_argument("--part", choices=("train", "held_out"), default="train")
+    p.add_argument("--trials", type=int, required=True)
+    p.add_argument("--split", default=SPLIT)
+    p.add_argument("--results")
+    p.add_argument("--mem-mib", type=int, default=int(os.environ.get("MEM_MIB") or 2048))
+    p.add_argument("--policy", default=ROLES["policy"])
+    p.add_argument("--simulator", default=ROLES["simulator"])
+    p.add_argument("--judge", default=ROLES["nl_judge"])
+    p.add_argument("--slots")
+    p.add_argument("--job")
+    p.add_argument("--name")
+    p.add_argument("--json", action="store_true")
+
+
+def main():
+    ap = Parser(prog="fleet", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True, parser_class=Parser)
+    r = sub.add_parser("run")
+    run_options(r)
+    r.add_argument("--concurrency", type=int, required=True)
+    s = sub.add_parser("sweep")
+    run_options(s)
+    s.add_argument("--levels", required=True)
+    m = sub.add_parser("matrix")
+    m.add_argument("--fleet", required=True)
+    m.add_argument("--prices", required=True)
+    m.add_argument("--labels")
+    m.add_argument("--json", action="store_true")
+    m.add_argument("--out")
+    k = sub.add_parser("m17")
+    k.add_argument("dir")
+    k.add_argument("--json", action="store_true")
+    a = ap.parse_args()
+    try:
+        if a.cmd == "m17":
+            return emit_m17(a.dir, a.json)
+        return {"run": cmd_run, "sweep": cmd_sweep, "matrix": cmd_matrix}[a.cmd](a)
+    except Fail as e:
+        print(f"fleet: {e}", file=sys.stderr)
+        return e.code
+    except Exception as e:
+        print(f"fleet: error: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
