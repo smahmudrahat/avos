@@ -9,5 +9,6 @@ data/raw/
 
 # Local working files, never published
 /notes/
+/scratch/
 .serena/
 .claude/
