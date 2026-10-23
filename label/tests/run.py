@@ -190,6 +190,22 @@ class Ctx:
         if self.judge:
             self.judge.stop()
             self.judge = None
+        if getattr(self, "checker", None):
+            self.checker.stop()
+            self.checker = None
+
+    # -- the checklist layer: a stub system-one endpoint and roots that point at it
+    def check_stub(self):
+        if getattr(self, "checker", None) is None:
+            self.checker = lib.Checklist().start()
+        return self.checker
+
+    def check_roots(self, name, key=lib.CHECK_KEY):
+        r = self.roots(name)
+        r.check_env = os.path.join(r.dir, "checklist.env")
+        with open(r.check_env, "w") as f:
+            f.write(f"TYPESAFE_API_KEY={key}\nTYPESAFE_BASE_URL={self.check_stub().base_url}\n")
+        return r
 
 
 def row_by_run(d):
@@ -1188,6 +1204,188 @@ def sc1(ctx):
 
 
 # =============================================================================== Z: roots
+
+
+# =============================================================================== the checklist layer (advisory)
+
+CHECKLIST_FILE = os.path.join(lib.ROOT, "label", "checklist.json")
+
+
+def _checklist_oracle(ctx, it, served_by_state):
+    """Expected checklist block of one run from what the stub served for its conversation (YES ≥ 0.7, NO ≤ 0.3)."""
+    qs = json.load(open(CHECKLIST_FILE))["questions"]
+    strings = lib.content_strings(it) + [m["event_id"] for m in it["messages"] if m.get("event_id")]  # clones share text, not events
+    hits = [p for st, p in served_by_state.items()
+            if json.loads(st).get("task") == it["task"] and all(x in json.loads(st).get("conversation", "") for x in strings)]
+    if not hits:
+        return None
+    p = hits[0]
+    ans = {q: "YES" if p[q] >= 0.7 else "NO" if p[q] <= 0.3 else "UNSURE" for q in qs}
+    bad = any(ans[q] == ("NO" if qs[q]["good"] == "yes" else "YES") for q in qs)
+    return {"p": p, "answers": ans, "verdict": "fail" if bad else "unsure" if "UNSURE" in ans.values() else "pass"}
+
+
+def _checks(d):
+    """run -> checklist block, from OUT/checklist.jsonl (missing run = not eligible)."""
+    p = os.path.join(d["dir"], "checklist.jsonl")
+    return {x["run"]: x for x in lib.read_jsonl(p)} if os.path.exists(p) else {}
+
+
+def _checklist_run(ctx, name, *args, expect_rc=(0, 1)):
+    j = ctx.stub()
+    j.reset(verdict={}, inconsistent=[], always_invalid=[], delay={}, faults=False, drift=False, quote_reasons=False,
+            keep_bodies=False, must_contain=[], status=None, default="hash")
+    r = ctx.check_roots(name)
+    d = ctx.run(r, ctx.base, "--checklist", *args, env_extra={"AVOS_CHECKLIST_ENV": r.check_env}, expect_rc=expect_rc)
+    return r, d
+
+
+@check("C1_checklist_rows_and_replay", "checklist layer: seven yes/no answers per eligible run with p(yes), answer and confidence; labels unchanged; recorded once, replayed with 0 requests")
+def c1(ctx):
+    c = ctx.check_stub()
+    c.reset()
+    qs = json.load(open(CHECKLIST_FILE))["questions"]
+    r, d = _checklist_run(ctx, "c1")
+    probs = []
+    rows, cl = row_by_run(d), _checks(d)
+    items = {run: ctx.item(run) for run in lib.runs_of(ctx.base["items"])}
+    eligible = {run for run, it in items.items() if lib.judged_oracle(it)}
+    if set(cl) != eligible:
+        probs.append(f"checklist.jsonl runs {sorted(set(cl) ^ eligible)[:3]} differ from the eligible set")
+    for run, row in rows.items():
+        got = cl.get(run)
+        if run not in eligible:
+            continue
+        if got and got.get("content_sha256") != row["content_sha256"]:
+            probs.append(f"{run}: checklist content_sha256 is not the label row's")
+        want = _checklist_oracle(ctx, items[run], c.served)
+        if not got or got.get("status") != "answered" or want is None:
+            probs.append(f"{run}: checklist {str(got)[:60]} (stub served {'something' if want else 'nothing'})")
+            continue
+        for q in qs:
+            a = got["answers"].get(q) or {}
+            if a.get("p") != want["p"][q] or a.get("answer") != want["answers"][q] or abs(a.get("confidence", -1) - abs(2 * want["p"][q] - 1)) > 1e-3:
+                probs.append(f"{run}.{q}: got {a} want p {want['p'][q]} {want['answers'][q]}")
+                break
+        if got.get("verdict") != want["verdict"]:
+            probs.append(f"{run}: verdict {got.get('verdict')} want {want['verdict']}")
+    # the protocol: key, model, the seven questions as nouls with the checklist's own text
+    for call in c.calls:
+        if call["auth"] != f"Bearer {lib.CHECK_KEY}" or call["model"] != "jev-latest":
+            probs.append(f"request auth/model {str(call['auth'])[:12]}… {call['model']}")
+            break
+        if {q: v.get("instructions") for q, v in call["questions"].items()} != {q: v["text"] for q, v in qs.items()} \
+                or any(v.get("type") != "noul" for v in call["questions"].values()):
+            probs.append("questions are not the checklist's seven nouls")
+            break
+    if len({json.dumps(x["state"], sort_keys=True) for x in c.calls}) > len(eligible):
+        probs.append(f"{c.n_calls} requests for {len(eligible)} eligible runs")
+    # an advisory layer: every label, the gold set and the manifest are what they are without it
+    base = ctx.run(r, ctx.base, out=r.out("plain"), expect_rc=(0, 1))
+    for f in ("labels.jsonl", "gold.json", "manifest.json"):
+        if open(os.path.join(d["dir"], f), "rb").read() != open(os.path.join(base["dir"], f), "rb").read():
+            probs.append(f"{f} differs from the run without --checklist")
+    s = (d["summary"] or {}).get("checklist") or {}
+    if s.get("answered") != len(eligible) or s.get("eligible") != len(eligible) or s.get("unanswered") != 0:
+        probs.append(f"summary.checklist answered {s.get('answered')} eligible {s.get('eligible')} want {len(eligible)}")
+    if "Checklist (advisory" not in (d["card"] or ""):
+        probs.append("CARD.md has no checklist line")
+    # replay
+    n0 = c.n_calls
+    r.clear_caches()
+    d2 = ctx.run(r, ctx.base, "--checklist", out=d["dir"] + "-again", env_extra={"AVOS_CHECKLIST_ENV": r.check_env}, expect_rc=(0, 1))
+    if c.n_calls != n0:
+        probs.append(f"re-run asked the checklist {c.n_calls - n0} times")
+    for f in ("labels.jsonl", "checklist.jsonl"):
+        if open(os.path.join(d2["dir"], f), "rb").read() != open(os.path.join(d["dir"], f), "rb").read():
+            probs.append(f"re-run {f} differs")
+    if ((d2["summary"] or {}).get("checklist") or {}).get("calls_reused") != len(eligible):
+        probs.append("re-run summary.checklist.calls_reused is not the eligible count")
+    return not probs, "; ".join(probs[:4]) or f"{len(eligible)} runs answered as served, labels/gold/manifest unchanged, re-run 0 requests and identical"
+
+
+@check("C2_checklist_failure_is_advisory", "checklist layer: an endpoint that fails leaves runs unanswered (nothing stored, labels and exit code unchanged) and is asked again later; 401 stops with exit 2")
+def c2(ctx):
+    c = ctx.check_stub()
+    probs = []
+    c.reset(status=503)
+    r, d = _checklist_run(ctx, "c2")
+    base = ctx.run(r, ctx.base, out=r.out("plain"), expect_rc=(0, 1))
+    if d["res"]["rc"] != base["res"]["rc"]:
+        probs.append(f"rc {d['res']['rc']} with a failing checklist, {base['res']['rc']} without it")
+    if not _checks(d) or any(x.get("status") != "unanswered" or x.get("reason") != "HTTP 503" for x in _checks(d).values()):
+        probs.append("a run is answered although every request failed, or its reason is not HTTP 503 (or no checklist.jsonl)")
+    if any((row or {}).get("level") == 3 for _, _, row, _ in lib.root_rows(r.root)):
+        probs.append("a checklist row was stored for a failed request")
+    if open(os.path.join(d["dir"], "labels.jsonl"), "rb").read() != open(os.path.join(base["dir"], "labels.jsonl"), "rb").read():
+        probs.append("labels differ when the checklist fails")
+    # transient overload: retried within the run; then the next run answers what the failed one did not
+    c.reset(fail_first=2)
+    d2 = ctx.run(r, ctx.base, "--checklist", out=r.out("ok"), env_extra={"AVOS_CHECKLIST_ENV": r.check_env}, expect_rc=(0, 1))
+    s = (d2["summary"] or {}).get("checklist") or {}
+    if s.get("unanswered") != 0 or not s.get("answered"):
+        probs.append(f"after the endpoint recovered: answered {s.get('answered')} unanswered {s.get('unanswered')}")
+    c.reset(status=401)
+    r3 = ctx.check_roots("c2b")
+    d3 = ctx.run(r3, ctx.base, "--checklist", env_extra={"AVOS_CHECKLIST_ENV": r3.check_env}, expect_rc=2)
+    if lib.root_rows(r3.root) and any((row or {}).get("level") == 3 for _, _, row, _ in lib.root_rows(r3.root)):
+        probs.append("rows stored after a 401")
+    if "checklist" not in d3["res"]["err"]:
+        probs.append(f"401 message does not name the checklist: {lib.short(d3['res']['err'], 80)}")
+    c.reset()
+    return not probs, "; ".join(probs) or "503: unanswered, nothing stored, labels and rc unchanged; 529×2: retried and answered; 401: exit 2 naming the checklist"
+
+
+@check("C3_checklist_blind_guard", "checklist layer: `label checklist` shows every layer of a run, but not for a gold run before its blind human label")
+def c3(ctx):
+    c = ctx.check_stub()
+    c.reset()
+    r, d = _checklist_run(ctx, "c3")
+    env = r.env(AVOS_CHECKLIST_ENV=r.check_env)
+    gold = d["gold"]["runs"]
+    cl = _checks(d)
+    answered = [run for run, x in cl.items() if x.get("status") == "answered"]
+    probs = []
+    target = next((run for run in gold if run in answered), None)
+    if target is None:
+        return False, "no gold run with an answered checklist in the fixture"
+    res = ctx.label("checklist", "--out", d["dir"], "--run", target, env=env)
+    if res["rc"] != 1 or res["out"].strip():
+        probs.append(f"gold run before its human label: rc {res['rc']}, stdout {lib.short(res['out'], 60)!r}")
+    ctx.label("human", "--dataset", ctx.base["dir"], "--run", target, "--verdict", "pass", "--labeller", "tester", env=env, expect_rc=0)
+    res = ctx.label("checklist", "--out", d["dir"], "--run", target, env=env, expect_rc=0)
+    labels = [v["label"] for v in json.load(open(CHECKLIST_FILE))["questions"].values()]
+    for needle in labels + ["reward", "judge", "human", "final", "tester"]:
+        if needle not in res["out"]:
+            probs.append(f"output lacks {needle!r}")
+    js = ctx.label("checklist", "--out", d["dir"], "--run", target, "--json", env=env, expect_rc=0)
+    if json.loads(js["out"]) != cl[target]:
+        probs.append("--json is not the run's checklist block")
+    not_gold = next((run for run in answered if run not in gold), None)
+    if not_gold:
+        ctx.label("checklist", "--out", d["dir"], "--run", not_gold, env=env, expect_rc=0)
+    ineligible = next((run for run in row_by_run(d) if run not in cl), None)
+    if ineligible:
+        ctx.label("checklist", "--out", d["dir"], "--run", ineligible, env=env, expect_rc=1)
+    return not probs, "; ".join(probs[:4]) or "gold run refused (rc 1, no output) until labelled, then all seven questions and every layer; --json matches; ineligible rc 1"
+
+
+@check("C4_checklist_key_hygiene", "checklist layer: the checklist key appears in no stored row, cache, output or console line")
+def c4(ctx):
+    for name in ("c1", "c2", "c2b", "c3"):
+        if not os.path.isdir(os.path.join(ctx.tmp, "roots", name)):
+            return False, f"run C1–C3 first (scenario {name} missing)"
+    hits = []
+    for name in ("c1", "c2", "c2b", "c3"):
+        d = os.path.join(ctx.tmp, "roots", name)
+        for p in lib.files_under(d):
+            if p.endswith("checklist.env"):
+                continue
+            if lib.CHECK_KEY.encode() in open(p, "rb").read():
+                hits.append(os.path.relpath(p, ctx.tmp))
+    hits += [where for text, where in ctx.transcripts if lib.CHECK_KEY in text]
+    return not hits, f"key found in {hits[:4]}" if hits else "no copy of the key outside its env file"
+
 
 @check("Z_roots_untouched", "collect §2 / retrain §2: after every check the store, results, ledger and dataset are byte-identical to the start")
 def z(ctx):

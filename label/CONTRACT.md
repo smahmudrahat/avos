@@ -34,6 +34,7 @@ files are still written completely; `2` usage, an unreadable root/dataset/env fi
 | `human --dataset DIR --run R --verdict pass\|fail --labeller NAME [--note TEXT]` | appends one level-2 row (§4); prints it as JSON |
 | `gold --out OUT (--next \| --status)` | `--next`: the first run of `OUT/gold.json` without a current human label, one id on stdout (empty + exit 0 when none left); `--status`: JSON `{"selected", "labelled", "left", "strata": {...}}` |
 | `merge --from ROOT [--from ROOT ...]` | appends every row of the given roots whose `label_id` is not yet in `AVOS_LABEL_ROOT`; JSON `{"added", "skipped", "invalid"}` |
+| `checklist --out OUT --run R [--json]` | the run's checklist (§14) with its reward, judge, current human label and final label; exit 1 for a gold run without a current human label (nothing on stdout), a run with no checklist, or a run not in `OUT/labels.jsonl` |
 
 `--level` is a comma list of `0` and `1` (`1` implies `0`). `--run` restricts labelling to the named runs (repeatable);
 default: every run in the dataset. `--gold-n` (default 60, clamped to 50–100) and `--seed` (default 0) drive §8.
@@ -50,6 +51,8 @@ default: every run in the dataset. `--gold-n` (default 60, clamped to 50–100) 
 | `AVOS_JUDGE_BASE_URL` | unset | Overrides `OPENAI_BASE_URL` from the env file. |
 | `AVOS_JUDGE_MODEL` | `openai/gpt-oss-120b` | The judge model name sent as `model`. |
 | `AVOS_LABEL_DATASET` | unset | Default for `--dataset` (so the user's loop reads `label view --run R`). |
+| `AVOS_CHECKLIST_ENV` | `/var/lib/avos/checklist.env` | `KEY=value` file holding `TYPESAFE_API_KEY` and optionally `TYPESAFE_BASE_URL` (default `https://api.typesafe.ai/v1`) for the checklist (§14). Read only with `--checklist`. |
+| `AVOS_CHECKLIST_MODEL` | `jev-latest` | The checklist model name sent as `model`; part of the checklist key. |
 
 The tests point `TMPDIR`, `HOME`, `XDG_*_HOME`, `AVOS_LABEL_ROOT`, `AVOS_LABEL_CACHE` at private directories and
 tamper with everything written there. **Nothing may be written under the dataset directory, `AVOS_TRACE_ROOT`,
@@ -308,3 +311,37 @@ asked concurrently.
 `python3 retrain/tests/run.py --quick` still passes; `retrain export` output for unchanged inputs is byte-identical
 to before POC 9 (the tests freeze the base export's `dataset_sha256`); `python3 trace/tests/run.py --quick` and
 `python3 collect/tests/run.py --selftest` still pass; nothing is written under the dataset, store, results or ledger.
+
+## 14. The checklist layer (advisory)
+
+`run --checklist` asks a fast classifier seven yes/no questions (`label/checklist.json`: task completed, correct
+result, grounded in tool evidence, followed instructions, used correct tools, introduced unsupported claim,
+unnecessary/destructive actions) about every run the judge is eligible for (§3), whatever `--level`. One request
+per run: `POST <base>/systemone` with `Authorization: Bearer <TYPESAFE_API_KEY>`, `{"model", "state": {"task",
+"tools", "conversation"}, "questions": {<id>: {"type": "noul", "instructions": <text>}}}`; the answer is
+`p(yes)` per question. The conversation is the blind view's rendering (§7): no reward, verdict or label is sent.
+
+It is **advisory**: it never changes `labels.jsonl`, `final`, `stratum`, `gold.json`, M10 or `manifest.json` (all
+byte-identical to the same run without `--checklist`). Its output is a separate file and a summary block:
+
+- **Storage.** One level-3 row per answered run, appended to the label root (`model_<model>.jsonl`):
+  `{"label_id", "level": 3, "content_sha256", "item_id", "run", "labeller": "model:<model>", "ts", "model",
+  "model_version", "checklist_sha256", "answers": {<id>: p}, "attempts", "usage"}`. Keyed by `(run,
+  content_sha256, model, checklist_sha256)`; recorded once and replayed, like the judge (§11). A request that fails
+  (transport, 408/429/5xx after ≤ 4 attempts, or a refused 4xx) stores nothing and the run reads `unanswered`; the
+  next `run --checklist` asks again. 401/403: exit 2 naming the checklist, nothing stored. A failing checklist never
+  changes the exit code.
+- **`OUT/checklist.jsonl`**, one line per eligible run, sorted by run: `{"run", "content_sha256", "status":
+  "answered"|"unanswered", "model", "model_version", "label_id", "verdict", "answers": {<id>: {"answer":
+  "YES"|"NO"|"UNSURE", "p", "confidence"}}}` (when unanswered: only `run`, `content_sha256`, `status` and `reason`:
+  `refused: <error_type>` for a refused request, e.g. a conversation longer than the model's context, else
+  `HTTP <code>` or `unavailable`). `YES` when
+  p ≥ 0.7, `NO` when p ≤ 0.3, else `UNSURE`; `confidence` = |2p − 1| (4 decimals). `verdict`: `fail` when any answer
+  is the bad one (`good` in the checklist file), else `unsure` when any is `UNSURE`, else `pass`.
+- **`summary.json` → `checklist`**: model, model versions seen, checklist hash, `calls_made`, `calls_reused`,
+  `eligible`, `answered`, `unanswered`, `unanswered_reasons`, `verdicts`, `unsure` per question, `kappa_checklist_human` (§9's formula
+  over gold runs with a current human label and a pass/fail checklist verdict) and `agreement_with_judge` (per
+  question that has a rubric twin: pairs where the checklist is not `UNSURE` and both judge framings give the same
+  answer). `CARD.md` gains two lines (model and verdict counts; the kappa line).
+- **Blindness.** `label checklist` refuses a gold run until it has a current human label, so the checklist cannot
+  bias the blind label.

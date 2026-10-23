@@ -11,6 +11,7 @@ push:
     { grep '^nebulus_API_KEY=' .env | sed 's/^nebulus_API_KEY=/OPENAI_API_KEY=/'; echo "OPENAI_BASE_URL={{base_url}}"; } \
       | ssh {{host}} 'sudo install -D -m 600 /dev/stdin /var/lib/avos/gateway.env'
     { echo "MODEL={{model}}"; echo "JUDGE_MODEL={{judge}}"; } | ssh {{host}} 'sudo install -D -m 600 /dev/stdin /var/lib/avos/agent.env'
+    grep '^jev_api_key=' .env | sed 's/^jev_api_key=/TYPESAFE_API_KEY=/' | ssh {{host}} 'sudo install -D -m 600 /dev/stdin /var/lib/avos/checklist.env'
 
 # Host: build kernel + rootfs with the agent baked in
 image:
@@ -305,8 +306,9 @@ poc8:
 # poc9 0,1` asks the judge for every run without a recorded answer and records the answers in /var/lib/avos/labels),
 # the dataset card, the gold set. Label blind only after `0,1` (the judge's answers decide the gold set's disagreement
 # stratum): `label view --run R`, `label human --run R --verdict pass|fail --labeller NAME`, `label gold --out
-# /tmp/poc9/out --next` (AVOS_LABEL_DATASET=/tmp/poc9/ds). Suite: `python3 label/tests/run.py [--quick] [--host]`.
-poc9 level="0":
+# /tmp/poc9/out --next` (AVOS_LABEL_DATASET=/tmp/poc9/ds). `just poc9 0,1 --checklist` adds the advisory checklist
+# (`label checklist --out /tmp/poc9/out --run R`). Suite: `python3 label/tests/run.py [--quick] [--host]`.
+poc9 level="0" *flags="":
     #!/usr/bin/env bash
     set -uo pipefail
     t=/tmp/poc9; sudo rm -rf $t; mkdir -p $t
@@ -314,8 +316,8 @@ poc9 level="0":
     echo "== export $(wc -l < $t/runs.txt) dry-run runs"
     sudo python3 retrain/bin/retrain export --out $t/ds --runs-file $t/runs.txt > /dev/null || echo "export exit $? (see $t/ds/manifest.json skipped)"
     lb() { sudo env AVOS_LABEL_DATASET=$t/ds python3 label/bin/label "$@"; }
-    echo "== label run --level {{level}}"
-    lb run --out $t/out --level {{level}}; echo "exit $?"
+    echo "== label run --level {{level}} {{flags}}"
+    lb run --out $t/out --level {{level}} {{flags}}; echo "exit $?"
     sudo cat $t/out/CARD.md
     echo "== gold set"; lb gold --out $t/out --status
     echo "next to label blind: $(lb gold --out $t/out --next)"

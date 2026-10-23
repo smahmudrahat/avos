@@ -2,13 +2,17 @@
 """label: a POC 8 dataset labelled in three levels (POC 9, label/CONTRACT.md).
 
   label run --dataset DIR --out OUT --level 0[,1] [--run R ...] [--rubric FILE] [--gold-n N] [--seed S] [--retry-unknown]
+            [--checklist]
   label view --dataset DIR --run R [--html]       the blind view of a run (no outcome, verdict or label)
+  label checklist --out OUT --run R [--json]      a run's checklist next to its other layers (not before a blind label)
   label human --dataset DIR --run R --verdict pass|fail --labeller NAME [--note TEXT]
   label gold --out OUT (--next | --status)        the gold set's next unlabelled run, or its progress
   label merge --from ROOT [--from ROOT ...]       rows of other label roots (another host, another labeller)
 
 Level 0 is the reward and POC 8's structural checks, level 1 an open-weight judge asked in two framings, level 2
-the user, blind, on a stratified gold set. Every judge answer and human verdict is a row appended to a JSONL file
+the user, blind, on a stratified gold set. `--checklist` adds an advisory layer: a fast classifier answers seven
+yes/no questions with a probability each; it never changes a label, it is measured against the other layers.
+Every judge answer, checklist answer and human verdict is a row appended to a JSONL file
 under $AVOS_LABEL_ROOT; the set of rows is the state, and `run` derives labels, gold set, M10 and the dataset card
 from the dataset and those rows alone. A recorded judge answer is the label: it is never asked for again unless its
 key (content, model, rubric, framing, prompt) changes. Design: docs/trace.md §11.
@@ -36,6 +40,14 @@ RUBRIC = os.path.join(HERE, "..", "rubric.json")
 ROOT = os.environ.get("AVOS_LABEL_ROOT", "/var/lib/avos/labels")
 JUDGE_ENV = os.environ.get("AVOS_JUDGE_ENV", "/var/lib/avos/gateway.env")
 MODEL = os.environ.get("AVOS_JUDGE_MODEL", "openai/gpt-oss-120b")
+CHECKLIST = os.path.join(HERE, "..", "checklist.json")
+CHECK_ENV = os.environ.get("AVOS_CHECKLIST_ENV", "/var/lib/avos/checklist.env")
+CHECK_MODEL = os.environ.get("AVOS_CHECKLIST_MODEL", "jev-latest")
+CHECK_BASE = "https://api.typesafe.ai/v1"
+YES, NO = 0.7, 0.3  # the checklist model's suggested yes/no cut-offs; between them the answer is UNSURE
+# checklist question -> the judge rubric answer it asks about (same polarity), for agreement between the two layers
+JUDGE_TWIN = {"followed_instructions": "policy_followed", "correct_tools": "right_tools",
+              "unsupported_claim": "hallucinated_facts", "unnecessary_actions": "unsafe_action"}
 
 TAU2_384 = {"10", "12", "25", "50", "57", "65"}  # τ² retail tasks a do-nothing agent passes with reward 1.0
 ANSWERS = ("policy_followed", "right_tools", "hallucinated_facts", "unsafe_action")
@@ -228,6 +240,11 @@ def row_problem(row):
         elif row["level"] == 2:
             ok = ok and str(row["labeller"]).startswith("human:") and row["verdict"] in ("pass", "fail") \
                 and (row["note"] is None or isinstance(row["note"], str))
+        elif row["level"] == 3:
+            a = row["answers"]
+            ok = ok and row["labeller"] == "model:" + str(row["model"]) and HEX64.fullmatch(str(row["checklist_sha256"])) \
+                and isinstance(row["attempts"], int) and isinstance(a, dict) and a \
+                and all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 1 for v in a.values())
         else:
             ok = False
     except (KeyError, TypeError, ValueError, AttributeError):
@@ -296,17 +313,28 @@ def make_row(**fields):
 
 # ----------------------------------------------------------------------------- level 1: the judge
 
-def read_env(path):
+def env_file(path, what):
     try:
         with open(path, encoding="utf-8") as f:
             env = dict(l.strip().split("=", 1) for l in f if "=" in l and not l.lstrip().startswith("#"))
     except OSError:
-        raise Fail(f"judge env file {path} is not readable", 2)
-    env = {k.strip(): v.strip().strip("'\"") for k, v in env.items()}
+        raise Fail(f"{what} env file {path} is not readable", 2)
+    return {k.strip(): v.strip().strip("'\"") for k, v in env.items()}
+
+
+def read_env(path):
+    env = env_file(path, "judge")
     base = os.environ.get("AVOS_JUDGE_BASE_URL") or env.get("OPENAI_BASE_URL")
     if not env.get("OPENAI_API_KEY") or not base:
         raise Fail(f"judge env file {path} lacks OPENAI_API_KEY or OPENAI_BASE_URL", 2)
     return base, env["OPENAI_API_KEY"]
+
+
+def read_check_env(path):
+    env = env_file(path, "checklist")
+    if not env.get("TYPESAFE_API_KEY"):
+        raise Fail(f"checklist env file {path} lacks TYPESAFE_API_KEY", 2)
+    return env.get("TYPESAFE_BASE_URL") or CHECK_BASE, env["TYPESAFE_API_KEY"]
 
 
 def prompt_sha(framing):
@@ -352,14 +380,16 @@ def verdict_of(a):
 
 
 class Judge:
-    """An OpenAI-compatible chat endpoint over one kept-alive connection per worker thread."""
+    """A JSON endpoint (the judge's chat completions, the checklist's system-one) over one kept-alive connection
+    per worker thread."""
 
-    def __init__(self, base, key):
+    def __init__(self, base, key, endpoint="/chat/completions", name="judge"):
         u = urllib.parse.urlsplit(base)
         if u.scheme not in ("http", "https") or not u.hostname:
-            raise Fail("judge base URL is not http(s)", 2)
+            raise Fail(f"{name} base URL is not http(s)", 2)
+        self.name = name
         self.cls = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
-        self.host, self.port, self.path = u.hostname, u.port, u.path.rstrip("/") + "/chat/completions"
+        self.host, self.port, self.path = u.hostname, u.port, u.path.rstrip("/") + endpoint
         self.headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         self.local, self.stop = threading.local(), threading.Event()
         self.lock, self.calls = threading.Lock(), 0
@@ -392,14 +422,14 @@ class Judge:
         content_failures = 0
         for n in range(1, ATTEMPTS + 1):
             if self.stop.is_set():
-                raise Rejected()
+                raise Rejected(self.name)
             try:
                 status, data = self.post(body)
             except (OSError, http.client.HTTPException):
                 status, data = None, b""
             if status in (401, 403):
                 self.stop.set()
-                raise Rejected()
+                raise Rejected(self.name)
             if status is not None and 200 <= status < 300:
                 got = parse_answer(data)
                 if got:
@@ -409,6 +439,64 @@ class Judge:
                 time.sleep(0.5 * 2 ** (n - 1))
         # only an endpoint that answered every time, never validly, gives a stored (reproducible) unknown
         return ("invalid" if content_failures == ATTEMPTS else "unavailable"), None, ATTEMPTS
+
+    def check(self, it, questions, model):
+        """The checklist, ≤ ATTEMPTS attempts: ('ok', (answers, model_version, usage), n) | ('unavailable', reason, n).
+        Advisory, so nothing is stored for a failure: the next run asks again."""
+        tools = "\n".join(f"- {t['function']['name']}: {t['function'].get('description', '')}" for t in it["tools"])
+        body = json.dumps({"model": model, "state": {"task": it["task"], "tools": tools, "conversation": render(it)},
+                           "questions": {q: {"type": "noul", "instructions": v["text"]} for q, v in questions.items()}}).encode()
+        for n in range(1, ATTEMPTS + 1):
+            if self.stop.is_set():
+                raise Rejected(self.name)
+            try:
+                status, data = self.post(body)
+            except (OSError, http.client.HTTPException):
+                status, data = None, b""
+            if status in (401, 403):
+                self.stop.set()
+                raise Rejected(self.name)
+            if status is not None and 200 <= status < 300:
+                try:
+                    d = json.loads(data)
+                    a = {q: d["answers"][q]["noul"] for q in questions}
+                    if all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 1 for v in a.values()):
+                        u = d.get("usage") or {}
+                        usage = {k: u[k] for k in ("input_tokens", "output_tokens") if isinstance(u.get(k), int)} or None
+                        return "ok", (a, d.get("model") if isinstance(d.get("model"), str) else None, usage), n
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    pass
+            elif status is not None and status not in (408, 429) and status < 500:
+                try:  # the request itself is refused (e.g. 400 max_tokens_exceeded): asking again cannot help
+                    why = json.loads(data)["detail"]["error_type"]
+                except (ValueError, KeyError, TypeError):
+                    why = None
+                return "unavailable", f"refused: {why if isinstance(why, str) else f'HTTP {status}'}"[:80], n
+            if n < ATTEMPTS:
+                time.sleep(0.5 * 2 ** (n - 1))
+        return "unavailable", "unavailable" if status is None or 200 <= status < 300 else f"HTTP {status}", n
+
+
+def checklist_view(row, questions):
+    """A stored checklist row as answers (YES / NO / UNSURE, p(yes), confidence |2p − 1|) and one verdict:
+    fail when any answer is the bad one, unsure when any is UNSURE, else pass."""
+    if row is None:
+        return {"status": "unanswered"}
+    answers = {}
+    for q in questions:
+        p = row["answers"][q]
+        answers[q] = {"answer": "YES" if p >= YES else "NO" if p <= NO else "UNSURE", "p": p,
+                      "confidence": round(abs(2 * p - 1), 4)}
+    got = [(answers[q]["answer"], questions[q]["good"].upper()) for q in questions]
+    verdict = "fail" if any(x not in (good, "UNSURE") for x, good in got) else "unsure" if any(x == "UNSURE" for x, _ in got) else "pass"
+    return {"status": "answered", "model": row["model"], "model_version": row["model_version"], "label_id": row["label_id"],
+            "verdict": verdict, "answers": answers}
+
+
+def judge_answer(l1, key):
+    """The judge's answer to one rubric question when its framings agree on it, else None."""
+    vals = {f["answers"][key] for f in (l1 or {}).get("framings", {}).values() if f["answers"]}
+    return vals.pop() if len(vals) == 1 else None
 
 
 # ----------------------------------------------------------------------------- run
@@ -498,6 +586,34 @@ def gold_set(rows, n, seed):
             "left": [r for r in runs if r not in done]}
 
 
+def checklist_summary(rows, views, gold_runs, questions, check_sha, calls_made, calls_reused):
+    """How the checklist answered, and how far each layer agrees with it: kappa against the human on the gold set
+    (its verdict, unsure left out) and, per shared question, agreement with the judge where the judge's framings
+    agree (UNSURE left out). Advisory: none of this feeds a label."""
+    answered = [v for v in views.values() if v["status"] == "answered"]
+    tab = [0, 0, 0, 0]
+    for r in rows:
+        v = views.get(r["run"])
+        if r["run"] in gold_runs and r["level2"] and v and v["status"] == "answered" and v["verdict"] != "unsure":
+            tab[(0 if v["verdict"] == "pass" else 2) + (0 if r["level2"]["verdict"] == "pass" else 1)] += 1
+    twin = {}
+    for q, key in JUDGE_TWIN.items():
+        pairs = [(views[r["run"]]["answers"][q]["answer"] == "YES", judge_answer(r["level1"], key)) for r in rows
+                 if r["run"] in views and views[r["run"]]["status"] == "answered"
+                 and views[r["run"]]["answers"][q]["answer"] != "UNSURE"]
+        pairs = [(c, j) for c, j in pairs if j is not None]
+        agree = sum(1 for c, j in pairs if c == j)
+        twin[q] = {"judge_question": key, "n": len(pairs), "agree": agree, "rate": agree / len(pairs) if pairs else None}
+    return {"model": CHECK_MODEL, "model_versions": sorted({v["model_version"] for v in answered if v["model_version"]}),
+            "checklist_sha256": check_sha, "calls_made": calls_made, "calls_reused": calls_reused,
+            "eligible": len(views), "answered": len(answered), "unanswered": len(views) - len(answered),
+            "unanswered_reasons": dict(sorted(Counter(v.get("reason", "unavailable") for v in views.values()
+                                                      if v["status"] != "answered").items())),
+            "verdicts": dict(sorted(Counter(v["verdict"] for v in answered).items())),
+            "unsure": {q: sum(1 for v in answered if v["answers"][q]["answer"] == "UNSURE") for q in questions},
+            "kappa_checklist_human": kappa(*tab), "agreement_with_judge": twin}
+
+
 def kappa_line(name, k):
     if k["status"] == "measured":
         return f"M10 kappa({name}, human) = {k['value']:.3f} (95% CI {k['ci95'][0]:.3f}–{k['ci95'][1]:.3f}, n={k['n']})"
@@ -519,8 +635,14 @@ def card(summary, manifest, labels):
              f"- Gold set: {s['m10']['gold']['labelled']} of {s['m10']['gold']['selected']} selected runs labelled blind "
              f"({s['m10']['gold']['required']} required for a kappa)",
              f"- M14 after veto: {labels['m14_after_veto']['train_kept']} kept of {labels['m14_after_veto']['train_runs']} train-split runs",
-             f"- Rule: {RULE}", ""]
-    return "\n".join(lines)
+             f"- Rule: {RULE}"]
+    c = s.get("checklist")
+    if c:
+        lines += [f"- Checklist (advisory, never changes a label): `{c['model']}` ({', '.join(c['model_versions']) or 'no answer yet'}), "
+                  f"{c['answered']} of {c['eligible']} runs answered; verdicts "
+                  + (", ".join(f"{k} {v}" for k, v in c["verdicts"].items()) or "none"),
+                  f"- {kappa_line('checklist', c['kappa_checklist_human'])}"]
+    return "\n".join(lines + [""])
 
 
 def write_outputs(out, files):
@@ -548,8 +670,13 @@ def cmd_run(a):
         with open(a.rubric or RUBRIC, "rb") as f:
             raw = f.read()
         rubric, rubric_sha = raw.decode("utf-8"), sha(raw)
+    questions = check_sha = None
+    if a.checklist:
+        with open(CHECKLIST, "rb") as f:
+            raw = f.read()
+        questions, check_sha = json.loads(raw)["questions"], sha(raw)
     stored, invalid = read_root(ROOT)
-    l1_index, l2_by_key, l2_by_run = {}, {}, {}
+    l1_index, l2_by_key, l2_by_run, l3_index = {}, {}, {}, {}
     for r in stored.values():
         if r["level"] == 1 and r["model"] == MODEL and r["rubric_sha256"] == rubric_sha \
                 and r.get("prompt_sha256") == prompt_sha(r["framing"]):
@@ -559,16 +686,40 @@ def cmd_run(a):
         elif r["level"] == 2:
             l2_by_key.setdefault((r["run"], r["content_sha256"]), []).append(r)
             l2_by_run.setdefault(r["run"], []).append(r)
+        elif r["level"] == 3 and r["model"] == CHECK_MODEL and r["checklist_sha256"] == check_sha \
+                and set(r["answers"]) == set(questions):
+            k = (r["run"], r["content_sha256"])
+            if k not in l3_index or (r["ts"], r["label_id"]) > (l3_index[k]["ts"], l3_index[k]["label_id"]):
+                l3_index[k] = r
     want = set(a.run or [])
 
-    rows, framings, store, judge = {}, {}, Store(ROOT), None
-    reused = 0
+    rows, framings, checks, unanswered, store, judge, checker = {}, {}, {}, {}, Store(ROOT), None, None
+    reused = check_reused = 0
     pending, ex = {}, None
+
+    def submit(fn, *args, tag):
+        nonlocal ex
+        if ex is None:
+            ex = concurrent.futures.ThreadPoolExecutor(WORKERS)
+        pending[ex.submit(fn, *args)] = tag
+        if len(pending) >= 4 * WORKERS:
+            settle(concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED).done)
 
     def settle(done):
         for fut in done:
             run, fr, it_sha, item_id, corpus = pending.pop(fut)
             kind, got, n = fut.result()
+            if fr == "checklist":
+                if kind != "ok":
+                    unanswered[run] = got
+                if kind == "ok":
+                    answers, version, usage = got
+                    row = make_row(level=3, content_sha256=it_sha, item_id=item_id, run=run, labeller=f"model:{CHECK_MODEL}",
+                                   ts=now(), model=CHECK_MODEL, model_version=version, checklist_sha256=check_sha,
+                                   answers=answers, attempts=n, usage=usage)
+                    store.append([row])
+                    checks[run] = row
+                continue
             if kind == "unavailable":
                 framings[run][fr] = {"label_id": None, "verdict": "unknown", "answers": None, "reasons": [], "error": "judge_unavailable"}
                 continue
@@ -589,7 +740,19 @@ def cmd_run(a):
             c_sha = content_key(it)
             rows[run] = {"run": run, "item_id": it["item_id"], "content_sha256": c_sha, "task": it["task"],
                          "task_id": it.get("task_id"), "split": it.get("split"), "level0": level0(it)}
-            if not (level1 and judged(it)):
+            if not judged(it):
+                continue
+            if a.checklist:
+                checks[run] = None  # eligible; answered below or left unanswered
+                r = l3_index.get((run, c_sha))
+                if r:
+                    checks[run] = r
+                    check_reused += 1
+                else:
+                    if checker is None:
+                        checker = Judge(*read_check_env(CHECK_ENV), endpoint="/systemone", name="checklist")
+                    submit(checker.check, it, questions, CHECK_MODEL, tag=(run, "checklist", c_sha, it["item_id"], None))
+            if not level1:
                 continue
             framings[run] = {}
             corpus = None
@@ -601,16 +764,13 @@ def cmd_run(a):
                     continue
                 if judge is None:
                     judge = Judge(*read_env(JUDGE_ENV))
-                    ex = concurrent.futures.ThreadPoolExecutor(WORKERS)
                 if corpus is None:
                     corpus = "\x00".join(transcript_strings(it))
-                pending[ex.submit(judge.ask, it, fr, rubric, MODEL)] = (run, fr, c_sha, it["item_id"], corpus)
-                if len(pending) >= 4 * WORKERS:
-                    settle(concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED).done)
+                submit(judge.ask, it, fr, rubric, MODEL, tag=(run, fr, c_sha, it["item_id"], corpus))
         while pending:
             settle(concurrent.futures.wait(pending, return_when=concurrent.futures.FIRST_COMPLETED).done)
-    except Rejected:
-        raise Fail("the judge endpoint rejected the credentials (HTTP 401/403)", 2)
+    except Rejected as e:
+        raise Fail(f"the {e} endpoint rejected the credentials (HTTP 401/403)", 2)
     finally:
         if ex:
             ex.shutdown(wait=False, cancel_futures=True)
@@ -644,6 +804,9 @@ def cmd_run(a):
         label, rule = final(r["level0"], l1, l2)
         out_rows.append({**r, "level1": l1, "level2": l2, "final": {"label": label, "rule": rule, "kept": label == "pass"},
                          "stratum": stratum(r["level0"], l1)})
+    # the advisory layer lives in its own file: labels.jsonl, the label-set hash and the manifest do not depend on it
+    views = {run: {"run": run, "content_sha256": rows[run]["content_sha256"], **checklist_view(checks[run], questions),
+                   **({"reason": unanswered[run]} if run in unanswered else {})} for run in sorted(checks)}
 
     relabelled = {r["run"] for r in out_rows if r["level2"]}
     gold = gold_set(out_rows, gold_n, a.seed)
@@ -674,6 +837,9 @@ def cmd_run(a):
         "tiles": {"labelled": f"{n_rows} / {runs_m} runs labelled",
                   "kept": f"kept {kept} passed runs → training set · dropped {n_rows - kept} failed"},
         "m10": quality, "stale_labels": stale, "invalid_rows": invalid, "exit": rc}
+    if a.checklist:
+        summary["checklist"] = checklist_summary(out_rows, views, gold_runs, questions, check_sha,
+                                                 checker.calls if checker else 0, check_reused)
 
     labels_text = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in out_rows)
     by_run = {r["run"]: r for r in out_rows}
@@ -690,6 +856,8 @@ def cmd_run(a):
     manifest = {**dman, "format": "avos-retrain-manifest/1+labels", "labels": labels, "m10": quality,
                 "judge": {"model": summary["model"], "rubric_sha256": summary["rubric_sha256"],
                           "consistency": summary["judge"]["consistency"]}}
+    if a.checklist:
+        write_outputs(a.out, {"checklist.jsonl": "".join(json.dumps(v, ensure_ascii=False) + "\n" for v in views.values())})
     write_outputs(a.out, {"labels.jsonl": labels_text,
                           "summary.json": json.dumps(summary, indent=1, ensure_ascii=False) + "\n",
                           "manifest.json": json.dumps(manifest, indent=1, ensure_ascii=False) + "\n",
@@ -697,6 +865,8 @@ def cmd_run(a):
                           "CARD.md": card(summary, manifest, labels)})
     print(json.dumps({"out": a.out, "labelled": n_rows, "runs": runs_m, "kept": kept, "dropped": n_rows - kept,
                       "judged": summary["counts"]["judged"], "judge_unknown": unknown, **summary["judge"],
+                      **({"checklist": {k: summary["checklist"][k] for k in ("answered", "unanswered", "calls_made", "calls_reused")}}
+                         if a.checklist else {}),
                       "stale_labels": len(stale), "invalid_rows": len(invalid), "exit": rc}, ensure_ascii=False))
     if rc:
         problems = [f"{unknown} run(s) without a judge verdict" if unknown else "",
@@ -759,6 +929,54 @@ def cmd_gold(a):
     return 0
 
 
+def cmd_checklist(a):
+    lp = os.path.join(a.out, "labels.jsonl")
+    if not os.path.isfile(lp):
+        raise Fail(f"{lp}: no labels (run `label run --checklist` first)", 2)
+    with open(lp, encoding="utf-8") as f:
+        row = next((r for r in map(json.loads, filter(str.strip, f)) if r["run"] == a.run), None)
+    if row is None:
+        raise Fail(f"{a.run}: not in {lp}", 1)
+    cp = os.path.join(a.out, "checklist.jsonl")
+    c = None
+    if os.path.isfile(cp):
+        with open(cp, encoding="utf-8") as f:
+            c = next((x for x in map(json.loads, filter(str.strip, f)) if x["run"] == a.run), None)
+    if not c or c["content_sha256"] != row["content_sha256"]:
+        raise Fail(f"{a.run}: no checklist (not eligible, or the last `label run` was not given --checklist)", 1)
+    stored, _ = read_root(ROOT)
+    human = newest([r for r in stored.values()
+                    if r["level"] == 2 and (r["run"], r["content_sha256"]) == (a.run, row["content_sha256"])])
+    gp = os.path.join(a.out, "gold.json")
+    if os.path.isfile(gp):
+        with open(gp, encoding="utf-8") as f:
+            gold = json.load(f)
+        if a.run in gold["runs"] and not human:
+            raise Fail(f"{a.run} is in the gold set and has no human label yet: label it blind first (`label view`)", 1)
+    if a.json:
+        print(json.dumps(c, ensure_ascii=False))
+        return 0
+    if c["status"] != "answered":
+        print(f"{a.run}  checklist: not answered ({c.get('reason', 'unavailable')}; `label run --checklist` asks again)")
+        return 0
+    with open(CHECKLIST, encoding="utf-8") as f:
+        questions = json.load(f)["questions"]
+    l0, l1, fin = row["level0"], row["level1"], row["final"]
+    out = [f"{a.run}  ({row['task']})", f"checklist  {c['model_version'] or c['model']}  verdict {c['verdict'].upper()}"]
+    for q, x in c["answers"].items():
+        name = questions.get(q, {}).get("label", q)
+        out.append(f"  {name:<34} {x['answer']:<7} p(yes) {x['p']:.2f}  confidence {x['confidence']:.2f}")
+    judge = "not judged" if not l1 else f"{l1['verdict']} (framings " + "/".join(
+        f["verdict"] for f in l1["framings"].values()) + ")"
+    out += ["other layers",
+            f"  reward     {'pass' if l0['passed'] else 'fail'} ({l0['reward']}){'' if l0['status'] == 'clean' else ', not clean: ' + ','.join(l0['reasons'])}",
+            f"  judge      {judge}",
+            f"  human      {human['verdict'] + ' (' + human['labeller'] + ')' if human else 'not labelled'}",
+            f"  final      {fin['label']} (rule {fin['rule']}){', kept' if fin['kept'] else ''} as of the last `label run`"]
+    print("\n".join(out))
+    return 0
+
+
 def cmd_merge(a):
     have, _ = read_root(ROOT)
     added, skipped, invalid = {}, 0, 0
@@ -796,6 +1014,7 @@ def main():
     r.add_argument("--gold-n", type=int, default=60)
     r.add_argument("--seed", type=int, default=0)
     r.add_argument("--retry-unknown", action="store_true")
+    r.add_argument("--checklist", action="store_true")
     v = sub.add_parser("view")
     v.add_argument("--dataset")
     v.add_argument("--run", required=True)
@@ -811,11 +1030,16 @@ def main():
     which = g.add_mutually_exclusive_group(required=True)
     which.add_argument("--next", action="store_true")
     which.add_argument("--status", action="store_true")
+    c = sub.add_parser("checklist")
+    c.add_argument("--out", required=True)
+    c.add_argument("--run", required=True)
+    c.add_argument("--json", action="store_true")
     m = sub.add_parser("merge")
     m.add_argument("--from", dest="sources", action="append", required=True)
     try:
         a = ap.parse_args()
-        return {"run": cmd_run, "view": cmd_view, "human": cmd_human, "gold": cmd_gold, "merge": cmd_merge}[a.cmd](a)
+        return {"run": cmd_run, "view": cmd_view, "human": cmd_human, "gold": cmd_gold, "checklist": cmd_checklist,
+                "merge": cmd_merge}[a.cmd](a)
     except Fail as e:
         print(f"label: {e}", file=sys.stderr)
         return e.rc

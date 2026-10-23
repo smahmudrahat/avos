@@ -237,5 +237,6 @@ and writes only its output directory and the label root.
 - **The labelled dataset.** `OUT/manifest.json` is the POC 8 manifest with `labels` (label, rule and kept flag per
   item, the label set's hash, the rule, M14 after veto), `m10` and `judge`; `CARD.md` carries the tiles, M10, the
   judge, its consistency and the rule. Same dataset, same rows, same arguments: byte-identical files.
+- **Checklist (advisory).** `run --checklist` adds a fast classifier (`jev-latest`) that answers seven yes/no questions per run (`label/checklist.json`) with a probability each, so every run shows how sure each layer is. It never changes a label, the gold set or the manifest; its answers are recorded once like the judge's, written to `OUT/checklist.jsonl`, and measured against the human (kappa on the gold set) and against the judge (per shared question). `label checklist --run R` shows it next to the reward, judge and human label, but not for a gold run before its blind label (`label/CONTRACT.md` §14).
 - **M10** is Cohen's kappa of judge and reward against the human on the gold set, with its 95 % interval. Below 50
   human labels, or with no variation, it reads `unverified` with the reason and its parts, never a number.

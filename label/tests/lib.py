@@ -410,6 +410,78 @@ class Judge:
         return "pass", vs
 
 
+class _CheckHandler(_Handler):
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(n)
+        if not self.path.rstrip("/").endswith("/systemone"):
+            return self._send(404, {"error": f"unknown path {self.path}"})
+        code, obj = self.server.checker.answer(raw, self.headers.get("Authorization"))
+        self._send(code, obj)
+
+
+CHECK_KEY = "ts-p9-stub-checklist-7c1e9a0b3d5f-do-not-leak"
+CHECK_P = (0.95, 0.05, 0.5, 0.82, 0.12)  # YES, NO, UNSURE, YES, NO
+
+
+class Checklist:
+    """Stub system-one endpoint: every noul question gets a p(yes) picked by hash of (question, state), so the
+    same conversation always gets the same answers. ctl: status int (every call answers that code), fail_first
+    int (the first k attempts of each body answer 529)."""
+
+    def __init__(self):
+        self.ctl = {"status": None, "fail_first": 0}
+        self.lock = threading.Lock()
+        self.calls, self.attempts, self.served = [], Counter(), {}
+        self.srv = None
+
+    def start(self):
+        self.srv = _Server(("127.0.0.1", 0), _CheckHandler)
+        self.srv.checker = self
+        threading.Thread(target=self.srv.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True).start()
+        self.base_url = f"http://127.0.0.1:{self.srv.server_address[1]}/v1"
+        return self
+
+    def stop(self):
+        if self.srv:
+            self.srv.shutdown()
+            self.srv.server_close()
+            self.srv = None
+
+    def reset(self, **ctl):
+        with self.lock:
+            self.calls, self.attempts, self.served = [], Counter(), {}
+            self.ctl.update({"status": None, "fail_first": 0}, **ctl)
+
+    @property
+    def n_calls(self):
+        with self.lock:
+            return len(self.calls)
+
+    @staticmethod
+    def p_for(question, state):
+        h = int(hashlib.sha256((question + json.dumps(state, sort_keys=True)).encode()).hexdigest(), 16)
+        return CHECK_P[h % len(CHECK_P)]
+
+    def answer(self, raw, auth):
+        body = json.loads(raw)
+        body_sha = hashlib.sha256(raw).hexdigest()
+        state, qs = body.get("state"), body.get("questions") or {}
+        with self.lock:
+            self.attempts[body_sha] += 1
+            self.calls.append({"auth": auth, "model": body.get("model"), "state": state, "questions": qs,
+                               "attempt": self.attempts[body_sha]})
+            k = self.attempts[body_sha]
+        if self.ctl["status"]:
+            return self.ctl["status"], {"error": "stub status"}
+        if k <= self.ctl["fail_first"]:
+            return 529, {"error": "stub overloaded"}
+        answers = {q: {"type": "noul", "noul": self.p_for(q, state)} for q in qs}
+        with self.lock:
+            self.served[json.dumps(state, sort_keys=True)] = {q: a["noul"] for q, a in answers.items()}
+        return 200, {"model": "jev-stub-1.0.0", "answers": answers, "usage": {"input_tokens": 100, "output_tokens": 7}}
+
+
 # ----------------------------------------------------------------------------- oracles: level 0, final label, strata
 
 def harness_item(items, run):
