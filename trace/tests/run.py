@@ -21,13 +21,12 @@ import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import lib  # noqa: E402
-import synth  # noqa: E402
+import lib
+import synth
 
 CHECKS = []
 VERBOSE = False
 
-# thresholds (justified in README.md)
 TH = {
     "size_max_b": 4096, "size_median_b": 768,
     "validate_evps": 50_000, "verify_evps": 40_000, "completeness_evps": 40_000,
@@ -104,8 +103,6 @@ PRICES = os.path.join(lib.FIX, "prices.json")
 BAD_CASES = json.load(open(os.path.join(lib.FIX, "golden", "bad_cases.json")))
 
 
-# =============================================================================== schema and validator
-
 @check("V01_schema_file", "audit/M8: machine-readable schema")
 def v01(ctx):
     if not os.path.exists(lib.SCHEMA):
@@ -167,8 +164,6 @@ def v23(ctx):
     res = lib.run_cli("validate", ctx.path("does-not-exist.jsonl"))
     return res["rc"] == 2 and "Traceback" not in res["err"], f"rc={res['rc']} (want 2) traceback={'Traceback' in res['err']}"
 
-
-# =============================================================================== linkage on real data
 
 @check("L01_ingest_preserves_rows", "M8: one trace event per real ledger row, per kind")
 def l01(ctx):
@@ -249,7 +244,6 @@ def l05(ctx):
     rows, legacy = ctx.real_rows(), ctx.legacy_rows()
     hr_in = {r["receipt"]: r for r in legacy if r["kind"] in ("halt", "resume")}
     hr_out = {r["receipt"]: r for r in rows if r["kind"] in ("halt", "resume")}
-    # legacy VM-pause rows omit the target from nodes; the contract has ingest add it (CONTRACT.md §11)
     bad = [k for k in hr_in if k not in hr_out or set(hr_out[k]["nodes"]) != set(hr_in[k]["nodes"]) | {hr_in[k]["target"]}
            or hr_out[k]["target"] != hr_in[k]["target"]
            or hr_out[k]["principal"] != hr_in[k]["target"] or hr_out[k]["action"] != hr_in[k]["action"] or hr_out[k]["by"] != hr_in[k]["by"]]
@@ -307,8 +301,6 @@ def l08(ctx):
     return mx <= TH["size_max_b"] and med <= TH["size_median_b"], f"max={mx}B (<= {TH['size_max_b']}) median={med:.0f}B (<= {TH['size_median_b']})"
 
 
-# =============================================================================== completeness (M8)
-
 @check("C01_completeness_intact", "M8: counters report 100% on an intact 10,000-event trace")
 def c01(ctx):
     p = ctx.path("c10k.jsonl")
@@ -345,8 +337,6 @@ def c03(ctx):
     ok = got == want and j.get("gaps") == []
     return ok, f"stored/happened={stored}/{happened} per_kind_mismatch={ {k: (want[k], got[k]) for k in want if want[k] != got[k]} } cli_gaps={j.get('gaps')}"
 
-
-# =============================================================================== projections
 
 def _chat_check(ctx, rundir, tag=None):
     sim = lib.tau2_sim(os.path.join(rundir, "result.json"))
@@ -434,8 +424,6 @@ def p08(ctx):
     return ok, f"labels={len(labels)} got={labels[0]['labels'] if labels else None} (want reward={job['reward']} termination_reason={job['termination_reason']})"
 
 
-# =============================================================================== audit projection
-
 def _audit(ctx, trace, rows, principal):
     res = lib.run_cli("query", "audit", "--principal", principal, trace)
     got = lib.cli_ndjson(res)
@@ -472,8 +460,6 @@ def a03(ctx):
     file_order = [r["event_id"] for r in lib.read_jsonl(p) if r["principal"] == principal]
     return res["rc"] == 0 and got == want, f"events={len(got)}/{len(want)} sorted_ok={got == want} file_order_differs={file_order != want}"
 
-
-# =============================================================================== trust
 
 @check("T01_verify_intact", "trust: verifier accepts an intact chain and reports per-writer heads")
 def t01(ctx):
@@ -539,8 +525,6 @@ def t06(ctx):
     return res["rc"] == 0 and j.get("ok") is True and j.get("events") == len(ctx.real_rows()), f"rc={res['rc']} ok={j.get('ok')} events={j.get('events')}"
 
 
-# =============================================================================== control linkage (claim 1)
-
 @check("K01_dropped_answer_visible", "claim 1/M7: an answer dropped after a halt is marked dropped and joined to the halt receipt")
 def k01(ctx):
     rows = ctx.real_rows()
@@ -569,8 +553,6 @@ def k02(ctx):
     dup = len(hr) - len({r["receipt"] for r in hr})
     return bool(hr) and not bad and dup == 0, f"controls={len(hr)} bad_join={bad[:3]} duplicate_receipts={dup}"
 
-
-# =============================================================================== economics (claim 2)
 
 @check("E01_cost_synthetic_run", "claim 2/M12: per-run cost from the trace alone (tokens x price, wall, host)")
 def e01(ctx):
@@ -620,8 +602,6 @@ def e03(ctx):
     return diff is None, f"diff={diff} cost={got.get('cost_usd')} (want {want['cost_usd']})"
 
 
-# =============================================================================== clock
-
 @check("Q01_guest_clock_skew", "clock: guest clock +1 h; events stay host-anchored, inside the session, in causal order; projection unchanged")
 def q01(ctx):
     d = ctx.path("skewed-run")
@@ -634,7 +614,6 @@ def q01(ctx):
     inside = all(so["ts"] <= r["ts"] <= sc["ts"] for r in rows if r.get("run") == run and r["kind"] not in ("session.open", "session.close"))
     legacy_llm = [r["ts"] for r in lib.read_jsonl(os.path.join(REAL_RUN, "events.jsonl")) if r["kind"] == "llm.call"]
     anchored = [r["ts"] for r in rows if r["kind"] == "llm.call"] == legacy_llm
-    # a tool.call/tool.result sits between the llm.call that issued it and the next llm.call
     causal, last_llm = True, None
     seq = [r for r in rows if r["kind"] in ("llm.call", "tool.call", "tool.result")]
     for i, r in enumerate(seq):
@@ -645,8 +624,6 @@ def q01(ctx):
     valid = lib.cli_json(lib.run_cli("validate", ctx.run_trace(d, 1, tag="skewed"))).get("ok") is True
     return ok_chat and inside and anchored and causal and valid, f"projection_ok={ok_chat} inside_session={inside} llm_ts_host_anchored={anchored} tool_events_causal={causal} validates={valid}"
 
-
-# =============================================================================== cache staleness (M9 correctness)
 
 def _audit_ids(res):
     return [g.get("event_id") for g in lib.cli_ndjson(res)]
@@ -850,8 +827,6 @@ def x05(ctx):
     return all(ok for _, ok, _ in results), f"cache_files={len(cache1)}+{len(cache2)} " + " ; ".join(f"{n}:{'ok' if ok else 'FAIL'}({m})" for n, ok, m in results)
 
 
-# =============================================================================== scale (full run only)
-
 def _big(ctx):
     def mk():
         p = ctx.path("big.jsonl")
@@ -925,8 +900,6 @@ def s05(ctx):
     return ok, f"stored={j.get('avos_trace_events_stored_total')}/{b['n']} gaps={len(j.get('gaps') or [])} {evps:,.0f} ev/s (>= {TH['completeness_evps']:,}) rss={res['maxrss_mib']:.0f} MiB"
 
 
-# =============================================================================== runner
-
 def run(args):
     ctx = Ctx()
     failed = 0
@@ -945,7 +918,7 @@ def run(args):
                 ok, status, measured = False, "FAIL", f"not implemented: {e}"
             except AssertionError as e:
                 ok, status, measured = False, "FAIL", str(e)[:300]
-            except Exception as e:  # noqa: BLE001 - report, never crash the suite
+            except Exception as e:
                 ok, status, measured = False, "FAIL", f"error: {type(e).__name__}: {str(e)[:200]}"
                 if VERBOSE:
                     traceback.print_exc()
@@ -957,8 +930,6 @@ def run(args):
     print(f"# {len(CHECKS)} checks, {failed} failed")
     return 1 if failed else 0
 
-
-# =============================================================================== selftest
 
 def selftest():
     """Prove the suite's oracles catch what they claim, using only the fixtures (no solver needed)."""
@@ -972,7 +943,6 @@ def selftest():
 
     tmp = tempfile.mkdtemp(prefix="poc6-selftest-")
     try:
-        # golden fixtures are reproducible from the generator
         synth.golden(os.path.join(tmp, "g"))
         synth.mini_run(os.path.join(tmp, "g", "mini_run"))
         same = all(open(os.path.join(tmp, "g", f)).read() == open(os.path.join(lib.FIX, "golden", f)).read()
@@ -989,7 +959,6 @@ def selftest():
             else:
                 codes = lib.lint_codes(rows)
                 ok(f"lint_catches_{name}", (case["event_id"], case["code"]) in codes, f"{case['code']}@{case['event_id']}")
-        # chain: deletion and re-hash are caught at the successor
         rows = copy.deepcopy(good)
         del rows[10]
         r = lib.chain_check(rows)
@@ -999,7 +968,6 @@ def selftest():
         rows[10]["hash"] = lib.ev_hash(rows[10])
         r = lib.chain_check(rows)
         ok("chain_catches_rehash", r is not None and r[1] == "prev" and r[0] > 10)
-        # chat oracle: equals the golden expectation; detects drop / swap / usage / argument changes
         sim = lib.tau2_sim(os.path.join(MINI_RUN, "result.json"))
         exp = json.load(open(os.path.join(MINI_RUN, "expected_chat.json")))
         ok("chat_oracle_matches_golden", lib.first_diff(lib.tau2_norm_messages(sim), lib.chat_norm_messages(exp)) is None)
@@ -1014,11 +982,9 @@ def selftest():
         ok("chat_catches_argument_change", mutated(lambda c: c["messages"][2]["tool_calls"][0]["function"].__setitem__("arguments", '{"order_id": "#W8"}')))
         ok("chat_catches_duplicate_call", mutated(lambda c: c["messages"].insert(4, c["messages"][4])))
         ok("chat_catches_tool_id_change", mutated(lambda c: c["messages"][3].__setitem__("tool_call_id", "x")))
-        # real run: harness usage sequence equals the gateway's (so the "exactly once, in order" bar is real)
         rsim = lib.tau2_sim(os.path.join(REAL_RUN, "result.json"))
         gw = [(r["prompt_tokens"], r["completion_tokens"]) for r in lib.read_jsonl(os.path.join(REAL_RUN, "events.jsonl")) if r["kind"] == "llm.call"]
         ok("real_run_usage_joins_gateway", gw == lib.tau2_usage_seq(rsim), f"{len(gw)} calls")
-        # real ledger window is satisfiable under the contract's liveness/linkage rules
         legacy = lib.read_jsonl(os.path.join(lib.FIX, "real_events.jsonl"))
         L = lib.ledger(legacy, legacy=True)
         unknown = dead = 0
@@ -1036,7 +1002,6 @@ def selftest():
         ok("real_ledger_llmcalls_pair", len(lp) == 375 and all(v is not None for v in lp.values()) and len(rc) == 4 and all(rc.values()), f"{len(lp)} paired, {len(rc)} dropped with receipt")
         orphan = [p for p in L if L[p][2] and L[p][2] not in L]
         ok("real_ledger_lineage_closed", not orphan, f"orphans={orphan[:2]}")
-        # completeness oracle: detects exactly the dropped line
         p = os.path.join(tmp, "c.jsonl")
         dropped = synth.completeness_fixture(p, drop=6_543)
         c = lib.completeness_oracle(lib.read_jsonl(p))
@@ -1045,7 +1010,6 @@ def selftest():
         c = lib.completeness_oracle(lib.read_jsonl(p))
         ok("completeness_oracle_intact", c["stored"] == c["expected"] == 10000 and not c["gaps"])
         ok("completeness_fixture_valid", lib.lint(lib.read_jsonl(p)) == [] and lib.chain_check(lib.read_jsonl(p)) is None)
-        # audit oracle: multiwriter expectation differs from file order, equals sorted order, fixture is valid
         p = os.path.join(tmp, "mw.jsonl")
         principal, want = synth.multiwriter_fixture(p)
         rows = lib.read_jsonl(p)
@@ -1054,7 +1018,6 @@ def selftest():
         a = dict(lib.audit_oracle(rows, principal))
         halt_id = next(r["event_id"] for r in rows if r["kind"] == "halt" and r["principal"] == principal)
         ok("audit_oracle_authority", a[halt_id].get("receipt", "").startswith("hr_") and not lib.authority_matches(a[halt_id], {"receipt": "hr_bad"}))
-        # economics oracle: matches generator, moves with the data
         p = os.path.join(tmp, "e.jsonl")
         want = synth.economics_fixture(p)
         rows = lib.read_jsonl(p)
@@ -1065,7 +1028,6 @@ def selftest():
             if r["kind"] == "llm.call" and r.get("prompt_tokens"):
                 r["prompt_tokens"] *= 2
         ok("cost_oracle_moves_with_tokens", lib.cost_matches(want, lib.cost_oracle(rows, want["run"])) is not None)
-        # big fixture (small size) is valid and its audit expectation is non-trivial
         p = os.path.join(tmp, "big.jsonl")
         principal, want = synth.big_fixture(p, 20_000, seed=3)
         rows = lib.read_jsonl(p)
@@ -1073,7 +1035,6 @@ def selftest():
         from collections import Counter
         mix = Counter(r["kind"] for r in rows)
         ok("big_fixture_mimics_real_mix", 0.6 < mix["authz.decision"] / len(rows) < 0.85 and mix["llm.call"] > 0 and mix["halt"] > 0, f"{dict(mix.most_common(4))}")
-        # staleness fixtures: same byte size and mtime, different valid content, different expected answers
         p = os.path.join(tmp, "st.jsonl")
         principal, want = synth.multiwriter_fixture(p)
         st = os.stat(p)
@@ -1096,7 +1057,6 @@ def selftest():
            and lib.cost_matches(wb_, lib.cost_oracle(rb, wb_["run"])) is None and wa_["cost_usd"] != wb_["cost_usd"])
         ok("stale_refusal_detector", _refused({"rc": 1, "out": '{"error":"stale index"}', "err": ""}) and not _refused({"rc": 0, "out": "", "err": ""})
            and not _refused({"rc": 1, "out": "", "err": ""}))
-        # cache-tamper oracle: snapshot diff sees new and changed files; tamper functions do what they claim
         cd = os.path.join(tmp, "cache")
         os.makedirs(os.path.join(cd, "sub"))
         f1, f2, f3 = (os.path.join(cd, n) for n in ("a.idx", "sub/b.idx", "c.idx"))
@@ -1105,7 +1065,7 @@ def selftest():
         snap0 = _snapshot([cd])
         open(f3, "wb").write(b"C" * 300)
         open(f2, "r+b").write(b"Z")
-        os.utime(f2, ns=(snap0[f2][1], snap0[f2][1]))  # same mtime and size: only the content hash differs
+        os.utime(f2, ns=(snap0[f2][1], snap0[f2][1]))
         changed = _new_or_changed(snap0, _snapshot([cd]))
         ok("cache_diff_sees_new_and_changed", changed == sorted([f2, f3]), f"{[os.path.basename(c) for c in changed]}")
         _flip(f1, "middle")
@@ -1113,13 +1073,11 @@ def selftest():
         _swap(f1, f2)
         ok("cache_tamper_functions", os.path.getsize(f3) == 150 and open(f2, "rb").read()[:10] == b"AAAAAAAAAA" and open(f2, "rb").read().count(0xBE) == 64
            and open(f1, "rb").read()[:1] == b"Z", f"sizes={os.path.getsize(f1)},{os.path.getsize(f2)},{os.path.getsize(f3)}")
-        # skew generator shifts guest clocks only
         d = os.path.join(tmp, "skew")
         synth.skewed_run_dir(REAL_RUN, d)
         s2 = lib.tau2_sim(os.path.join(d, "result.json"))
         ok("skew_fixture_shifts_guest_clock", synth.guest_ms(s2["messages"][0]["timestamp"]) - synth.guest_ms(rsim["messages"][0]["timestamp"]) == 3_600_000
            and open(os.path.join(d, "events.jsonl")).read() == open(os.path.join(REAL_RUN, "events.jsonl")).read())
-        # poc2 legacy ledger synthesis yields a valid-looking ledger whose llm.calls match the harness
         d = os.path.join(tmp, "poc2")
         synth.legacy_run_dir(os.path.join(lib.FIX, "run_retail-2_3"), d, "vm-01-0a0a23")
         s3 = lib.tau2_sim(os.path.join(d, "result.json"))

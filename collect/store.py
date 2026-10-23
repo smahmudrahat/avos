@@ -24,13 +24,13 @@ import threading
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "trace"))
-import lib_trace as T  # noqa: E402
+import lib_trace as T
 
 DEFAULT_ROOT = "/var/lib/avos/trace"
 ROOT = os.environ.get("AVOS_TRACE_ROOT", DEFAULT_ROOT)
-LEGACY = "/var/lib/avos/events.jsonl"  # the POC 1-6 ledger, read-only history since POC 7
+LEGACY = "/var/lib/avos/events.jsonl"
 HOST = socket.gethostname()
-SAFE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")  # a vm_id or run id that is safe as a file name
+SAFE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 
 
 def vm_of(principal):
@@ -78,7 +78,7 @@ class Stream:
                 size = os.fstat(fd).st_size
                 if size != self.size:
                     self.tail(size)
-                ms = max(int(time.time() * 1000), self.last_ms)  # ts never goes back within a writer
+                ms = max(int(time.time() * 1000), self.last_ms)
                 ts, seq = T.ms_ts(ms), self.seq + 1
                 ev = {"event_id": T.mint_id(ts, self.writer, seq), "kind": kind, "ts": ts, "writer": self.writer,
                       "seq": seq, "host": HOST, "principal": principal, "vm_id": vm_id or "", **fields, "prev": self.head}
@@ -89,7 +89,7 @@ class Stream:
                 self.size, self.seq, self.head, self.last_ms = size + len(line), seq, ev["hash"], ms
                 return ev
             finally:
-                os.close(fd)  # also releases the lock
+                os.close(fd)
 
 
 _streams, _streams_lock = {}, threading.Lock()
@@ -100,13 +100,11 @@ def emit(component, kind, principal, vm_id, **fields):
     with _streams_lock:
         s = _streams.get((component, vm_id)) or _streams.setdefault((component, vm_id), Stream(component, vm_id))
     ev = s.append(kind, principal, vm_id, fields)
-    if kind == "session.open":  # run id -> VM, so `avos trace --run run_*` needs no scan
+    if kind == "session.open":
         os.makedirs(f"{ROOT}/runs", exist_ok=True)
         open(f"{ROOT}/runs/{fields['run']}", "w").write(vm_id)
     return ev
 
-
-# ----------------------------------------------------------------------------- M8 counters
 
 def count(vm_id, what):
     """One byte = one counted act, appended before the act is written."""
@@ -128,8 +126,6 @@ def counters(vm_id):
         return None
     return {c: data.count(c.encode()) for c in "altsehr"}
 
-
-# ----------------------------------------------------------------------------- reading
 
 def files():
     """Every stream file, in a fixed order. Each writer lives in exactly one file, so any order is one valid trace."""

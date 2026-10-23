@@ -3,7 +3,7 @@ valid (values are redacted, keys kept) so a redacted dataset still tokenizes. No
 check could mistake for the original: the check looks for any remaining digit in any content field."""
 import json
 
-FIELDS = []  # what the tool passed as `field`, for the selftest
+FIELDS = []
 
 
 def digits(text, field):

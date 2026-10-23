@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-# Host, once (sudo), after identity/install.sh: the gateway's venv (cedarpy) and its systemd service.
-# Re-run after changing gateway.py or policies/. Needs /var/lib/avos/gateway.env (written by `just push`).
 set -euo pipefail
-CEDARPY=4.12.2 # docs/versions.md
+CEDARPY=4.12.2
 HERE=$(cd "$(dirname "$0")" && pwd)
 VENV=/opt/avos/gateway
-UV=$(command -v uv || echo "/home/${SUDO_USER:-ubuntu}/.local/bin/uv") # sudo's PATH drops ~/.local/bin
+UV=$(command -v uv || echo "/home/${SUDO_USER:-ubuntu}/.local/bin/uv")
 
 [ -f /var/lib/avos/gateway.env ] || { echo "missing /var/lib/avos/gateway.env; run just push" >&2; exit 1; }
 [ -x $VENV/bin/python ] || "$UV" venv -q --python /usr/bin/python3.12 $VENV

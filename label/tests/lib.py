@@ -36,7 +36,7 @@ def _load(name, path):
     return mod
 
 
-L = _load("poc8_testlib", os.path.join(RETRAIN_TESTS, "lib.py"))  # POC 8 suite: Env, clone_run, retrain(), hashes
+L = _load("poc8_testlib", os.path.join(RETRAIN_TESTS, "lib.py"))
 NotImplementedCLI = L.NotImplementedCLI
 sha_file, read_jsonl, write_jsonl, tree_snapshot, same_size_replace, tamper_dir, short = (
     L.sha_file, L.read_jsonl, L.write_jsonl, L.tree_snapshot, L.same_size_replace, L.tamper_dir, L.short)
@@ -48,10 +48,8 @@ RULE_SENTENCE = ("Reward decides pass/fail; the judge can veto a pass; the user 
 ANSWER_KEYS = ("policy_followed", "right_tools", "hallucinated_facts", "unsafe_action")
 LEAK = re.compile(r"reward|passed|failed|termination|db_match|match=|met=|WITNESS|trace=|witness=|split=|verdict|"
                   r"veto|judge|kappa|stratum|flagged|kept|label=|gold|nl_assertion|cost |usd=|STUBREASON", re.I)
-VERBATIM = 60  # CONTRACT.md §4: no run of this many transcript characters may be stored
+VERBATIM = 60
 
-
-# ----------------------------------------------------------------------------- CLI
 
 def label(*args, env=None, timeout=900, rss=False):
     if not os.path.exists(LABEL):
@@ -91,8 +89,6 @@ def write_fixture_manifest():
                 rows.append(f"{sha_file(os.path.join(d, n))}  {rel}")
     open(FIX_MANIFEST, "w", encoding="utf-8").write("\n".join(sorted(rows)) + "\n")
 
-
-# ----------------------------------------------------------------------------- the environment (POC 8's, plus POC 9 cases)
 
 def ctx_overflow(sim):
     sim["termination_reason"] = "context_window_exceeded"
@@ -212,12 +208,10 @@ def missing_outputs(out):
     return [n for n, p in out_files(out).items() if not os.path.exists(p)]
 
 
-# ----------------------------------------------------------------------------- the stub judge (OpenAI-compatible, adversarial, deterministic)
-
 class _Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, *a):  # quiet
+    def log_message(self, *a):
         pass
 
     def _send(self, code, obj, raw=None):
@@ -267,14 +261,13 @@ class Judge:
                     "must_contain": []}
         self.marker = reason_marker
         self.lock = threading.Lock()
-        self.calls = []            # one dict per HTTP attempt
-        self.attempts = Counter()  # body_sha -> attempts
+        self.calls = []
+        self.attempts = Counter()
         self.valid_served = Counter()
-        self.served = {}           # (item, body_sha) -> last valid answers dict
+        self.served = {}
         self.bodies_by_item = OrderedDict()
         self.srv = None
 
-    # -- lifecycle
     def start(self):
         self.srv = _Server(("127.0.0.1", 0), _Handler)
         self.srv.judge = self
@@ -312,7 +305,6 @@ class Judge:
         with self.lock:
             return [c for c in self.calls if item is None or c["item"] == item]
 
-    # -- answers
     def _verdict(self, item, body_sha, k_valid):
         c = self.ctl
         if item in c["inconsistent"]:
@@ -331,7 +323,7 @@ class Judge:
     def answers_for(self, item, verdict, body_sha):
         h = int(hashlib.sha256((body_sha + verdict).encode()).hexdigest(), 16)
         a = {"policy_followed": True, "right_tools": True, "hallucinated_facts": False, "unsafe_action": False}
-        if verdict == "veto":  # one of the four flips, chosen by hash
+        if verdict == "veto":
             k = ANSWER_KEYS[h % 4]
             a[k] = not a[k]
         return a
@@ -399,7 +391,6 @@ class Judge:
                      "model": body.get("model"), "choices": [{"index": 0, "message": {"role": "assistant", "content": content},
                                                               "finish_reason": finish}], "usage": usage}, None
 
-    # -- oracles over what was served
     def expected_item_verdict(self, item):
         """From the valid answers served for this item's distinct bodies (framings): the CONTRACT.md §3 rule."""
         vs = [self.served[(item, b)]["verdict"] for b in self.bodies_by_item.get(item, {}) if (item, b) in self.served]
@@ -421,7 +412,7 @@ class _CheckHandler(_Handler):
 
 
 CHECK_KEY = "ts-p9-stub-checklist-7c1e9a0b3d5f-do-not-leak"
-CHECK_P = (0.95, 0.05, 0.5, 0.82, 0.12)  # YES, NO, UNSURE, YES, NO
+CHECK_P = (0.95, 0.05, 0.5, 0.82, 0.12)
 
 
 class Checklist:
@@ -481,8 +472,6 @@ class Checklist:
             self.served[json.dumps(state, sort_keys=True)] = {q: a["noul"] for q, a in answers.items()}
         return 200, {"model": "jev-stub-1.0.0", "answers": answers, "usage": {"input_tokens": 100, "output_tokens": 7}}
 
-
-# ----------------------------------------------------------------------------- oracles: level 0, final label, strata
 
 def harness_item(items, run):
     for it in items:
@@ -646,8 +635,6 @@ def tiles(n_rows, m_runs, kept):
             "kept": f"kept {kept} passed runs → training set · dropped {n_rows - kept} failed"}
 
 
-# ----------------------------------------------------------------------------- oracles: rows, storage, leaks
-
 def content_sha(item):
     msgs = []
     for m in item["messages"]:
@@ -773,7 +760,7 @@ def blind_leaks(view_text, item):
     rest = view_text
     for s in sorted(content_strings(item), key=len, reverse=True):
         rest = rest.replace(s, " ")
-        rest = rest.replace(json.dumps(s, ensure_ascii=False)[1:-1], " ")  # escaped form
+        rest = rest.replace(json.dumps(s, ensure_ascii=False)[1:-1], " ")
     for s in sorted((t.get("function", {}).get("name", "") for m in item["messages"] for t in m.get("tool_calls") or []), key=len, reverse=True):
         if s:
             rest = rest.replace(s, " ")
@@ -796,8 +783,6 @@ def strip_html(s):
     return L.strip_html(s)
 
 
-# ----------------------------------------------------------------------------- synthetic datasets
-
 def manifest_for(items, template, seed=0):
     """A manifest consistent with `items` the way retrain writes one (counts, m14, dataset_sha256)."""
     rows, agents = [], {}
@@ -810,7 +795,7 @@ def manifest_for(items, template, seed=0):
             agents[it["run"]] = it
     train = [it for it in agents.values() if it["split"] == "train"]
     kept = sum(1 for it in train if it["outcome"]["passed"] is True)
-    by = lambda f: sum(1 for it in agents.values() if f(it))  # noqa: E731
+    by = lambda f: sum(1 for it in agents.values() if f(it))
     return {"format": "avos-retrain-manifest/1", "seed": seed, "redact": None, "split_file": template.get("split_file"),
             "items": rows, "skipped": [],
             "counts": {"runs_requested": len(agents), "runs_exported": len(agents), "items": len(rows),
@@ -847,7 +832,7 @@ def clone_item(src, run, vm, task_id=None, passed=None, salt=""):
         it["split"] = L.split_of(str(task_id))
     if passed is not None:
         it["outcome"]["reward"], it["outcome"]["passed"] = (1.0 if passed else 0.0), passed
-    if salt:  # a distinct transcript: a harmless extra sentence in the last assistant turn
+    if salt:
         for m in reversed(it["messages"]):
             if m["role"] == "assistant" and isinstance(m.get("content"), str) and m["content"]:
                 m["content"] += f" (ref {salt})"
@@ -873,8 +858,6 @@ def synthetic_items(base_items, n, seed=7, pass_share=0.5):
 
 def dummy_key_in(text):
     return DUMMY_KEY in text
-
-
 
 
 def percentile(xs, q):

@@ -50,7 +50,6 @@ MMDS = "http://169.254.169.254"
 
 
 def mmds_config():
-    # MMDS V2: get a session token, then read the /avos object. Retry while the network comes up.
     subprocess.run(["ip", "route", "replace", "169.254.169.254", "dev", "eth0"], check=False)
     for _ in range(100):
         try:
@@ -66,12 +65,12 @@ def mmds_config():
 ENV = mmds_config()
 VM = ENV.get("VM_NAME", "unknown")
 FWD_PORT = 8090
-BASE = f"http://127.0.0.1:{FWD_PORT}/v1"  # the gateway forwards model calls upstream with the key
+BASE = f"http://127.0.0.1:{FWD_PORT}/v1"
 MODEL = ENV.get("MODEL", "gpt-5.4-nano")
 INTERVAL = float(ENV.get("INTERVAL_S", "10"))
 START = time.time()
-HARNESS_DIR = "/opt/harness"  # read-only disk shared by all VMs
-WORK = "/var/avos"  # writable, on this VM's own disk
+HARNESS_DIR = "/opt/harness"
+WORK = "/var/avos"
 state = {"job": "running", "exit_code": None} if "HARNESS" in ENV else {"beats": 0, "llm_calls": 0, "llm_errors": 0, "last_llm": None}
 SPIRE_CONF = """agent {
   data_dir = "/run/spire/data"
@@ -90,12 +89,12 @@ plugins {
 }
 """
 SPAWN_SOCK = "/run/avos/spawn.sock"
-VM_UID = 20000  # holds the VM's own SVID
+VM_UID = 20000
 GATEWAY_ID = "spiffe://avoslab.com/gateway"
 REGISTRAR_ID = "spiffe://avoslab.com/registrar"
-SVID_REFRESH_S = 25  # principals' SVIDs live 60 s; the SPIRE agent rotates them at half-life
-principals = {}  # uid -> registrar's agent.spawn row (+ cgroup: its branch's cgroup directory)
-CG_BASE = "/sys/fs/cgroup" + open("/proc/self/cgroup").read().split("::", 1)[1].strip()  # this service's cgroup
+SVID_REFRESH_S = 25
+principals = {}
+CG_BASE = "/sys/fs/cgroup" + open("/proc/self/cgroup").read().split("::", 1)[1].strip()
 uids = itertools.count(VM_UID + 1)
 lock = threading.Lock()
 
@@ -123,13 +122,12 @@ def registrar(path, body):
 
 
 def private_dir(path, uid):
-    os.makedirs(path, 0o700, exist_ok=True)  # exists already only for /run/avos/vm after a service restart
+    os.makedirs(path, 0o700, exist_ok=True)
     os.chown(path, uid, uid)
     return path
 
 
 def fetch_svid(uid, path, t0):
-    # Asks the Workload API as `uid`, so SPIRE attests that uid. New entries reach this VM's SPIRE agent in ~1 s.
     while time.time() - t0 < 30:
         r = subprocess.run(["/opt/spire/bin/spire-agent", "api", "fetch", "x509", "-socketPath", "/run/spire/agent.sock",
                             "-write", path], user=uid, group=uid, extra_groups=[], capture_output=True)
@@ -139,11 +137,10 @@ def fetch_svid(uid, path, t0):
 
 
 def register(name, parent):
-    # Entry first, process second: the principal can use its SVID as soon as it runs.
     with lock:
         uid = next(uids)
         p = registrar("/spawn", {"name": name, "parent": parent, "uid": uid})
-        above = find(parent)  # a sub-agent's cgroup sits inside its parent's: one freeze covers the branch
+        above = find(parent)
         p["cgroup"] = f"{above['cgroup'] if above else CG_BASE}/{p['id']}"
         principals[uid] = p
     return uid, p
@@ -167,7 +164,7 @@ def cgroup(spiffe_id, file):
 def halt(spiffe_id):
     t0 = time.time()
     open(cgroup(spiffe_id, "cgroup.freeze"), "w").write("1")
-    while "frozen 1" not in open(cgroup(spiffe_id, "cgroup.events")).read():  # M6 is measured on this edge
+    while "frozen 1" not in open(cgroup(spiffe_id, "cgroup.events")).read():
         if time.time() - t0 > 5:
             raise TimeoutError("not frozen after 5 s")
         time.sleep(0.001)
@@ -181,7 +178,7 @@ def resume(spiffe_id):
 
 def kill(spiffe_id):
     nodes = branch(spiffe_id)
-    open(cgroup(spiffe_id, "cgroup.kill"), "w").write("1")  # SIGKILL to the whole branch; each exit is ledgered
+    open(cgroup(spiffe_id, "cgroup.kill"), "w").write("1")
     return {"nodes": nodes}
 
 
@@ -199,7 +196,7 @@ def record_exit(p, reason, svid_ms):
         try:
             return registrar("/exit", body)
         except ValueError:
-            return None  # answered with a refusal (already recorded): nothing to retry
+            return None
         except OSError as e:
             err = e
             time.sleep(min(2.0, 0.1 * 2 ** i))
@@ -207,25 +204,23 @@ def record_exit(p, reason, svid_ms):
 
 
 def run_principal(uid, p, argv, env=None, cwd=None, out=None):
-    # Its own uid and a private dir for its SVID. Its stdout joins this service's journal (or `out`); each line names its writer.
     t0 = time.time()
     home = private_dir(f"/run/avos/{p['id']}", uid)
     svid = {}
     fetch = threading.Thread(target=lambda: svid.update(ms=fetch_svid(uid, home, t0)), daemon=True)
-    fetch.start()  # in parallel: harnesses never ask for their SVID, and they need not wait for it
+    fetch.start()
     base = {"PATH": "/usr/bin:/bin", "HOME": home, "AVOS_DIR": home, "AVOS_SPAWN": SPAWN_SOCK, "AVOS_T0": str(t0)}
-    # Into its cgroup as root first (Popen's user= would switch before preexec_fn could), then drop to its uid.
     os.makedirs(p["cgroup"])
     enter = 'echo $$ > "$0/cgroup.procs" && u=$1 && shift && exec setpriv --reuid="$u" --regid="$u" --clear-groups -- "$@"'
     rc = subprocess.Popen(["/bin/sh", "-c", enter, p["cgroup"], str(uid), *argv], env={**base, **(env or {})},
                           cwd=cwd or home, stdin=subprocess.DEVNULL, stdout=out, stderr=out and subprocess.STDOUT).wait()
-    fetch.join()  # before /exit deletes the entry
+    fetch.join()
     record_exit(p, f"signal {-rc}" if rc < 0 else f"exit {rc}", svid.get("ms"))
     shutil.rmtree(home, ignore_errors=True)
     with lock:
         del principals[uid]
     cg = p["cgroup"]
-    while cg != CG_BASE:  # a parent's cgroup goes when its last child has
+    while cg != CG_BASE:
         try:
             os.rmdir(cg)
         except OSError:
@@ -235,7 +230,6 @@ def run_principal(uid, p, argv, env=None, cwd=None, out=None):
 
 
 def vm_svid():
-    # Limit: fetched once (TTL 1 h, longer than any job); re-fetch before expiry if VMs start living longer.
     t0 = time.time()
     ms = fetch_svid(VM_UID, "/run/avos/vm", t0)
     state["vm_svid"] = {"spiffe_id": ENV["VM_SPIFFE_ID"], "ms": ms} if ms is not None else "none within 30 s"
@@ -288,7 +282,6 @@ def loop():
 
 
 def tau2_job():
-    # One τ²-bench trial. Its data dir = read-only domains on the harness disk + writable simulations/.
     domain, task = ENV["TASK"].split("/", 1)
     data = f"{WORK}/tau2"
     os.makedirs(data, exist_ok=True)
@@ -299,16 +292,11 @@ def tau2_job():
            "--num-trials", "1", "--max-concurrency", "1", "--seed", ENV.get("SEED", "300"), "--save-to", "job",
            "--agent-llm", f"openai/{MODEL}", "--agent-llm-args", llm_args,
            "--user-llm", f"openai/{ENV.get('USER_MODEL', MODEL)}", "--user-llm-args", llm_args]
-    # The base URL env vars are LiteLLM's default endpoint: the NL-assertion judge (TAU2_NL_JUDGE, patched in at
-    # image build) takes no llm_args, and anything else that skips them fails at our provider instead of
-    # sending the key to OpenAI.
     env = {**HARNESS_ENV, "HOME": WORK, "TAU2_DATA_DIR": data, "TAU2_NL_JUDGE": f"openai/{ENV['JUDGE_MODEL']}"}
     return cmd, env, lambda: f"{data}/simulations/job/results.json"
 
 
 def mini_swe_agent_job():
-    # One coding task: fix a copy of tasks/<name> (TASK.md, test.sh) until test.sh passes.
-    # Result = diff + test outcome + trajectory.
     src = f"{HARNESS_DIR}/tasks/{ENV['TASK'].split('/', 1)[1]}"
     work = f"{WORK}/work"
     shutil.copytree(src, work)
@@ -320,7 +308,7 @@ def mini_swe_agent_job():
            "MSWEA_SILENT_STARTUP": "1", "MSWEA_CONFIGURED": "true", "MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT": "3"}
 
     def finish():
-        for f in os.listdir(src):  # grade with the original tests, whatever the agent did to its copies
+        for f in os.listdir(src):
             if f.startswith("test"):
                 shutil.copy(f"{src}/{f}", work)
         test = subprocess.run(["bash", "test.sh"], cwd=work, capture_output=True, text=True, timeout=60)
@@ -337,14 +325,11 @@ def mini_swe_agent_job():
 
 
 HARNESSES = {"tau2": tau2_job, "mini-swe-agent": mini_swe_agent_job}
-# LiteLLM wants some key; the real one is attached by the gateway. Its model price map would be fetched from the
-# internet at import, which no VM can reach.
 HARNESS_ENV = {"PATH": "/usr/bin:/bin", "OPENAI_API_KEY": "via-gateway", "OPENAI_BASE_URL": BASE,
                "OPENAI_API_BASE": BASE, "LITELLM_LOCAL_MODEL_COST_MAP": "True"}
 
 
 def run_job():
-    # The harness is a principal like any other: spiffe://.../vm/<vm id>/agent/<harness>, its own uid, owning WORK.
     os.makedirs(WORK, exist_ok=True)
     with open(f"{WORK}/job.log", "w") as log:
         try:
@@ -360,8 +345,8 @@ def run_job():
     state["job"] = "done" if ok else "failed"
 
 
-svids = {}  # uid -> (client TLS context with its SVID, fetched at)
-attempts = {}  # principal -> requests the forwarder accepted from it (M8 guest_requests); kept for this process's life
+svids = {}
+attempts = {}
 attempts_lock = threading.Lock()
 
 
@@ -414,7 +399,7 @@ class Stamper:
                     self.state = "size"
                 else:
                     self.left = int(fields.get(b"content-length", b"0"))
-            else:  # chunk-size line (then its data + CRLF as `left`), or trailer lines up to an empty one
+            else:
                 i = self.buf.find(b"\r\n")
                 if i < 0:
                     break
@@ -429,7 +414,6 @@ class Stamper:
 
 
 def peer_uid(port):
-    # The client end of a loopback connection to the forwarder, as listed in /proc/net/tcp, carries its owner's uid.
     local, remote = f"0100007F:{port:04X}", f"0100007F:{FWD_PORT:04X}"
     for line in open("/proc/net/tcp").readlines()[1:]:
         f = line.split()
@@ -439,7 +423,7 @@ def peer_uid(port):
 
 def client_ctx(uid):
     if uid == 0:
-        path, as_uid = "/run/avos/vm", VM_UID  # root is the VM's own control plane: it acts as the VM
+        path, as_uid = "/run/avos/vm", VM_UID
     elif uid in principals:
         path, as_uid = f"/run/avos/{principals[uid]['id']}", uid
     else:
@@ -449,7 +433,7 @@ def client_ctx(uid):
         if fetch_svid(as_uid, path, time.time()) is None:
             return None
         ctx = ssl.create_default_context(cafile=f"{path}/bundle.0.pem")
-        ctx.check_hostname = False  # the gateway is checked by SPIFFE ID below, not by DNS name
+        ctx.check_hostname = False
         ctx.load_cert_chain(f"{path}/svid.0.pem", f"{path}/svid.0.key")
         svids[uid] = (ctx, time.time())
     return ctx
@@ -467,14 +451,13 @@ def pipe(a, b, a_to_b=bytes):
             s.setblocking(False)
             sel.register(s, selectors.EVENT_READ)
         while True:
-            # Bytes a TLS socket has already decrypted and buffered do not wake the selector.
             ready = [s for s in peer if isinstance(s, ssl.SSLSocket) and s.pending()] or \
                 [k.fileobj for k, _ in sel.select()]
             for src in ready:
                 try:
                     data = src.recv(65536)
                 except (ssl.SSLWantReadError, ssl.SSLWantWriteError, BlockingIOError):
-                    continue  # TLS records that carry no data, such as a session ticket
+                    continue
                 if not data:
                     return
                 if src is a:
@@ -512,8 +495,6 @@ class Forward(socketserver.BaseRequestHandler):
             self.request.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: %d\r\n"
                                  b"Connection: close\r\n\r\n%s" % (len(body), body))
             return
-        # The first request is read (and counted) before the gateway is dialled: if the host cannot be reached, the
-        # attempt still exists here and shows up missing there.
         stamp, first = Stamper(who), b""
         self.request.settimeout(30)
         while not first:
@@ -545,7 +526,7 @@ class Health(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path != "/spawn" and self.path not in self.CONTROL:
             return self.send_error(404)
-        if self.client_address[0] != ENV["SPIRE_SERVER"]:  # spawns and controls come from the host, not from agents
+        if self.client_address[0] != ENV["SPIRE_SERVER"]:
             return self.reply(403, b'{"error": "top-level spawns and controls come from the host"}')
         try:
             req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -585,7 +566,6 @@ class Health(BaseHTTPRequestHandler):
 
 
 os.makedirs("/run/avos", exist_ok=True)
-# /run is per boot: if the marker exists, this process is a restart and its counters miss what came before.
 RESTARTED = os.path.exists("/run/avos/agent.started")
 open("/run/avos/agent.started", "a").close()
 private_dir("/run/avos/vm", VM_UID)

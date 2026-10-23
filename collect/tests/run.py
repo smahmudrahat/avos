@@ -14,7 +14,7 @@ import argparse, base64, json, os, pathlib, re, shutil, statistics, subprocess, 
 import urllib.request, urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import lib  # noqa: E402
+import lib
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 HERE = pathlib.Path(__file__).resolve().parent
@@ -22,7 +22,7 @@ OUT = pathlib.Path("/tmp/collect-tests")
 AVOS = REPO / "collect" / "bin" / "avos"
 KEY = "/var/lib/avos/images/vm_key"
 IP = {"vm-01": "172.16.1.2", "vm-02": "172.16.2.2"}
-GLOG = "/tmp/collect"  # log dir inside a guest
+GLOG = "/tmp/collect"
 BASE_SERVICES = ["avos-gateway", "avos-registrar"]
 QUICK = False
 
@@ -40,7 +40,6 @@ class NotImplementedCLI(Exception):
     pass
 
 
-# --------------------------------------------------------------------------------------------------- shell / ssh
 def run(cmd, timeout=120, cwd=None, env=None, input_=None):
     e = dict(os.environ)
     if env:
@@ -86,7 +85,6 @@ def ensure_active(units):
                 time.sleep(0.1)
 
 
-# --------------------------------------------------------------------------------------------------- the interface
 def avos(*args, env=None, timeout=900):
     if not AVOS.exists():
         raise NotImplementedCLI("collect/bin/avos")
@@ -122,7 +120,6 @@ def store_info():
     return j
 
 
-# --------------------------------------------------------------------------------------------------- VM lifecycle
 def vm_create(slot):
     p = run(["infra/vm", "create", slot], timeout=180)
     if p.returncode != 0 and "exists" in (p.stdout + p.stderr):
@@ -203,7 +200,6 @@ def flush_wait(store):
     time.sleep(max(1.0, min(BAR["flush_s"], store.get("flush_ms", 5000) / 1000.0)) + 0.5)
 
 
-# =============================================================================================== STAGES
 def stage_tree():
     """Done 1-4: one agent (support) with three sub-agents in vm-01, a decoy support agent in vm-02 doing the
     latency calls; one refusal, one halt/resume of B2; then destroy and restart."""
@@ -249,7 +245,6 @@ def stage_tree():
     ctx["snap1"] = lib.snapshot(ctx["store1"]["files"])
     dump("tree_outputs.json", {"P": P, "controls": ctx["controls"], "comp": ctx["comp"], "store": ctx["store1"],
                                "counts": {n: lib.count_kinds(o) for n, o in outs.items()}, "gt": ctx["gt"]})
-    # Done 4: destroy, query again; restart services, query again
     vm_destroy("vm-01"); vm_destroy("vm-02")
     flush_wait(store)
     _, rr = avos_ndjson("trace", "--principal", P["B2"])
@@ -376,7 +371,7 @@ def drop_caches():
 
 def stage_scale():
     """M9: one day of >= 1M events imported into a scratch store root; cold/warm query for small/median/largest."""
-    store_info()  # raises NotImplementedCLI before any generation work
+    store_info()
     root = OUT / "store"
     day_path = OUT / "day.jsonl"
     try:
@@ -455,7 +450,7 @@ def stage_index():
         ga = lib.gen_day(str(A), n, day="2026-09-01", seed=21, host="hday")
         gb = lib.gen_day(str(B), n, day="2026-09-02", seed=22, host="hdayb")
         lib.mutate_day(str(A), str(A2))
-        probe, big = ga["smallest"], ga["largest"]  # fixed names: present in both days with different content
+        probe, big = ga["smallest"], ga["largest"]
         assert gb["smallest"] == probe and gb["largest"] == big
         wa = lib.audit_oracle_stream(str(A), [probe, big])
         wb = lib.audit_oracle_stream(str(B), [probe, big])
@@ -463,19 +458,16 @@ def stage_index():
         wab = lib.audit_oracle_stream([str(A), str(B)], [probe, big])
         wab_dayA = lib.audit_oracle_stream([str(A), str(B)], [probe, big], day="2026-09-01")
         ctx = {"n": n, "sizes": {"A": A.stat().st_size, "A2": A2.stat().st_size, "B": B.stat().st_size}}
-        # --- I1: two roots, queried in turn
         envR, stR = _import_day(rootR, A)
         envS, stS = _import_day(rootS, B)
         seq = [("R", probe, envR, wa), ("S", probe, envS, wb), ("R", probe, envR, wa), ("S", big, envS, wb), ("R", big, envR, wa), ("S", probe, envS, wb)]
         ctx["two_roots"] = [(tag, p.rsplit("/", 1)[1], _judge(w[p], *_q(p, env))) for tag, p, env, w in seq]
-        # --- I3: append a second day to root R after a warm query
         _q(probe, envR); _q(big, envR)
         imp, r = avos_json("import", str(B), env=envR, timeout=1800)
         ctx["append_rc"] = r["rc"]
         ctx["append"] = {"probe_all": _judge(wab[probe], *_q(probe, envR)), "big_all": _judge(wab[big], *_q(big, envR)),
                          "big_dayA": _judge(wab_dayA[big], *_q(big, envR, "2026-09-01")),
                          "big_dayB": _judge(lib.audit_oracle_stream([str(A), str(B)], [big], day="2026-09-02")[big], *_q(big, envR, "2026-09-02"))}
-        # --- I2: same root path, re-created with a different day of identical byte size, files given the old mtimes
         envR, stR = _import_day(rootR, A)
         _q(probe, envR); _q(big, envR)
         before = {f: (os.stat(f).st_size, os.stat(f).st_mtime_ns) for f in stR["files"]}
@@ -546,7 +538,6 @@ def stage_trace():
     return {"rc": p.returncode, "passed": sum(1 for ok, _ in lines.values() if ok), "total": len(lines)}
 
 
-# =============================================================================================== CHECKS
 def d1(c):
     gt, P = c["gt"], c["P"]
     exc = sum(g["exc"] for g in gt.values())
@@ -843,7 +834,6 @@ def cleanup_injections():
         ensure_active(sorted(_killed))
 
 
-# =============================================================================================== SELFTEST
 def selftest():
     FIX = HERE / "fixtures"
     res = []
@@ -900,7 +890,6 @@ def selftest():
         ok("append_only_catches_rewrite", lib.prefix_broken(snap) == [b])
         open(a, "wb").write(b"lin")
         ok("append_only_catches_truncate", set(lib.prefix_broken(snap)) == {a, b})
-        # generator: a small day validates with the POC 6 tools, every principal has an oracle, the picks are sane
         day = os.path.join(tmp, "day.jsonl")
         t0 = time.perf_counter()
         gen = lib.gen_day(day, 20_000, seed=2)
@@ -919,7 +908,6 @@ def selftest():
             s = sub_halt[0]["nodes"][1]
             w = lib.audit_oracle_stream(day, [s])[s]
             ok("oracle_includes_parent_halt_for_sub", any(x[0] == sub_halt[0]["event_id"] for x in w))
-        # chain and validity through the POC 6 black boxes
         for tool in ("validate", "verify"):
             p = run(["python3", str(REPO / "trace" / "bin" / tool), day], timeout=300)
             try:
@@ -927,7 +915,6 @@ def selftest():
             except ValueError:
                 j = {"ok": None, "errors": [p.stdout[:100]]}
             ok("gen_day_%s" % tool, p.returncode == 0 and j.get("ok") is True, str((j.get("errors") or [])[:1]))
-        # the audit oracle agrees with the POC 6 reference query (independent implementation)
         p = run(["python3", str(REPO / "trace" / "bin" / "query"), "audit", "--principal", picks["median"], day], timeout=300)
         got = [json.loads(l) for l in p.stdout.splitlines() if l.strip()]
         ok("oracle_matches_poc6_query", p.returncode == 0 and lib.compare_audit(want[picks["median"]], got) is None, str(lib.compare_audit(want[picks["median"]], got)))
@@ -938,7 +925,6 @@ def selftest():
             ok("compare_audit_catches_authority", lib.compare_audit(want[picks["median"]], got2) is not None or got[0]["authority"] == {})
             got3 = [dict(got[0], hash="0" * 64)] + got[1:]
             ok("compare_audit_catches_foreign_row_hash", lib.compare_audit(want[picks["median"]], got3) is not None)
-        # stale-index oracle: a mutated day has the same size, the same ids, different hashes, and is still valid
         day2 = os.path.join(tmp, "day2.jsonl")
         lib.mutate_day(day, day2)
         want2 = lib.audit_oracle_stream(day2, [picks["median"], gen["smallest"]])
@@ -946,13 +932,11 @@ def selftest():
            and [w[0] for w in want2[picks["median"]]] == [w[0] for w in want[picks["median"]]])
         w_small_a = lib.audit_oracle_stream(day, [gen["smallest"]])[gen["smallest"]]
         ok("mutate_day_hashes_differ", any(a[2] != b[2] for a, b in zip(want2[gen["smallest"]], w_small_a)))
-        # the POC 6 reference query over the OLD day is exactly a stale answer for the new day: the oracle rejects it
         stale = [json.loads(l) for l in run(["python3", str(REPO / "trace" / "bin" / "query"), "audit", "--principal", gen["smallest"], day], timeout=300).stdout.splitlines() if l.strip()]
         ok("stale_answer_detected", stale and lib.compare_audit(want2[gen["smallest"]], stale) is not None)
         for tool in ("validate", "verify"):
             pp = run(["python3", str(REPO / "trace" / "bin" / tool), day2], timeout=300)
             ok("mutate_day_%s" % tool, pp.returncode == 0 and json.loads(pp.stdout).get("ok") is True)
-        # two days (different hosts) concatenate into one valid store; the oracle over both includes both
         dayb = os.path.join(tmp, "dayb.jsonl")
         genb = lib.gen_day(dayb, 5_000, day="2026-09-02", seed=22, host="hdayb")
         both = os.path.join(tmp, "both.jsonl")
@@ -967,7 +951,6 @@ def selftest():
     return all(res)
 
 
-# =============================================================================================== main
 def main():
     global QUICK
     ap = argparse.ArgumentParser()

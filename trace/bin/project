@@ -11,7 +11,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-import lib_trace as T  # noqa: E402
+import lib_trace as T
 
 
 def main():
@@ -27,7 +27,7 @@ def main():
     msgs, usage, harness_calls, label, principal = [], {"prompt_tokens": 0, "completion_tokens": 0}, set(), {}, None
     for e in evs:
         k = e["kind"]
-        if k == "llm.call" and "role" in e:  # a model call the harness transcript was merged into
+        if k == "llm.call" and "role" in e:
             if "output" not in e:
                 print("project: the trace has no content; ingest it with AVOS_TRACE_CONTENT=1", file=sys.stderr)
                 return 1

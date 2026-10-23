@@ -1,11 +1,9 @@
-# POC targets. `push` runs on your Mac; the rest run on the host (ssh avos-dev, cd ~/poc).
 host := "avos-dev"
 
 base_url := "https://api.tokenfactory.nebius.com/v1"
 model := "Qwen/Qwen3-30B-A3B-Instruct-2507"
 judge := "deepseek-ai/DeepSeek-V4-Flash-0731"
 
-# Mac: copy the repo to the host; the model key and upstream URL go to the gateway only, model names to the VMs
 push:
     rsync -az --delete --exclude .git --exclude .env --exclude .venv --exclude .serena --exclude notes ./ {{host}}:poc/
     { grep '^nebulus_API_KEY=' .env | sed 's/^nebulus_API_KEY=/OPENAI_API_KEY=/'; echo "OPENAI_BASE_URL={{base_url}}"; } \
@@ -13,7 +11,6 @@ push:
     { echo "MODEL={{model}}"; echo "JUDGE_MODEL={{judge}}"; } | ssh {{host}} 'sudo install -D -m 600 /dev/stdin /var/lib/avos/agent.env'
     grep '^jev_api_key=' .env | sed 's/^jev_api_key=/TYPESAFE_API_KEY=/' | ssh {{host}} 'sudo install -D -m 600 /dev/stdin /var/lib/avos/checklist.env'
 
-# Host: build kernel + rootfs with the agent baked in
 image:
     sudo infra/image/build.sh
 
@@ -23,11 +20,9 @@ create name="vm-01":
 destroy name="vm-01":
     sudo infra/vm destroy {{name}}
 
-# Host: M1 median and worst over N boots
 bench n="20":
     sudo infra/vm bench {{n}}
 
-# Host: POC 1 done tests 1-5 (create, /health, model calls on the tap (to the gateway since POC 4), destroy, twice)
 poc1:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -40,11 +35,9 @@ poc1:
       if curl -s -m 2 http://172.16.1.2/health; then echo "FAIL: still answering"; exit 1; else echo "curl fails after destroy: ok"; fi
     done
 
-# Host: one ephemeral job, e.g. `just job tau2 retail/0`
 job harness task:
     sudo infra/job run {{harness}} {{task}}
 
-# Host: POC 2 done tests 3-4: N τ² jobs on the first N train tasks (never held-out), M2 and M13
 poc2 n="10":
     #!/usr/bin/env bash
     set -uo pipefail
@@ -65,15 +58,12 @@ poc2 n="10":
         if j["status"] != "done": print("infra error:", j["run"], "http", j["http"], j.get("error", ""))
     PY
 
-# Host, once (before `just image`): SPIRE server + identity registrar as services
 spire:
     sudo identity/install.sh
 
-# Host: principals as a tree (live VMs; `just who --all` includes destroyed ones)
 who *args:
     sudo identity/registrar.py who {{args}}
 
-# Host: POC 3 done tests 1-6 on vm-01, then M3/M4 over N extra sub-agents
 poc3 n="20":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -104,11 +94,9 @@ poc3 n="20":
     sleep 30
     sudo identity/registrar.py stats "$vm_id"
 
-# Host, once (after `just spire` and `just push`): the authorization gateway as a service
 gateway:
     sudo gateway/install.sh
 
-# Host: POC 4 done tests 1-4 on vm-01 (vm-02 plays a second VM), then M5. Test 5 = run it again 30 min later.
 poc4:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -153,11 +141,9 @@ poc4:
     echo "== 2: M5"
     sudo gateway/gateway.py stats "$vm_id" "$vm2_id"
 
-# Host: the control table (`just ctl ls`, `just ctl halt ag_1234`, ...)
 ctl *args:
     sudo supervisor/ctl.py {{args}}
 
-# Host: POC 5 done tests 1-8 on vm-01 (vm-02 holds a sibling in another VM), then M6 over N halts and M7
 poc5 n="10":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -179,7 +165,7 @@ poc5 n="10":
     B="$A/sub/B"
     timeout 20 bash -c "until sudo identity/registrar.py who | grep -q sub/B1; do sleep 0.2; done"; sleep 3
     ctl ls
-    b_dir=$(vm 1 "cd /sys/fs/cgroup/system.slice/avos-agent.service && ls -d */*/ | head -1 | sed 's:/$::'")   # A's id/B's id
+    b_dir=$(vm 1 "cd /sys/fs/cgroup/system.slice/avos-agent.service && ls -d */*/ | head -1 | sed 's:/$::'")
     b1_dir=$(vm 1 "cd /sys/fs/cgroup/system.slice/avos-agent.service && ls -d */*/*/ | head -1 | sed 's:/$::'")
     echo "== 1: halt B by name; B and B1 freeze, the rest keep ticking"
     ctl halt "$B"
@@ -214,7 +200,7 @@ poc5 n="10":
     echo "agent -> own cgroup.freeze: $(vm 1 "setpriv --reuid=$a_uid --regid=$a_uid --clear-groups sh -c 'echo 1 > /sys/fs/cgroup/system.slice/avos-agent.service/$b_dir/cgroup.freeze'" 2>&1 | tail -1)"
     echo "== errors in the forwarder (guest) and the gateway (host) during the run"
     for n in 1 2; do vm $n "journalctl -o cat -u avos-agent | grep -B2 -A12 Traceback | tail -40"; done
-    sudo journalctl -u avos-gateway --since "-15 min" -o cat | grep -v -E '^(Started|Stopping|Stopped)' | tail -20 || true  # no output is the good case
+    sudo journalctl -u avos-gateway --since "-15 min" -o cat | grep -v -E '^(Started|Stopping|Stopped)' | tail -20 || true
     echo "== M6 / M7"
     { vm 1 "journalctl -o cat -u avos-agent | grep '\"tick\"'"; vm 2 "journalctl -o cat -u avos-agent | grep '\"tick\"'"; } > /tmp/poc5-ticks.jsonl
     ctl stats /tmp/poc5-ticks.jsonl --tick 0.05
@@ -226,11 +212,9 @@ poc5 n="10":
     sudo gateway/gateway.py stats "$vm1" "$vm2"
     echo "cgroups in vm-01: $(vm 1 'ls -d /sys/fs/cgroup/system.slice/avos-agent.service/*/ 2>/dev/null | wc -l') (one per live top-level agent: A, support, G, H, F)"
 
-# Anywhere (no VM): the POC 6 acceptance suite without the 1M-event scale checks
 trace-check:
     python3 trace/tests/run.py --quick
 
-# Anywhere: POC 6 done tests on the real ledger window and the real run, then the full suite (≈ 3 min)
 poc6:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -269,17 +253,12 @@ poc6:
     echo "== acceptance suite (full)"
     python3 trace/tests/run.py
 
-# Host: claim 1 acceptance suite, written independently of the implementation (`just claim1 --quick` to iterate)
 claim1 *args:
     sudo python3 supervisor/tests/claim1.py {{args}}
 
-# Host: POC 7 acceptance suite (collect/tests, written independently): the tree, a τ² job, kills and cuts, M8, M9 at
-# 1M imported events, overhead, then claim 1, poc4 and the POC 6 suite (≈ 30 min; `just poc7 --quick` to iterate)
 poc7 *args:
     sudo python3 collect/tests/run.py {{args}}
 
-# Host: POC 8 on the host's runs: evidence per run, `export --all` twice (byte-compared), the latest run in the
-# viewer, statistics. Acceptance suite: from the workstation, `python3 retrain/tests/run.py [--quick] [--host]`.
 poc8:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -302,12 +281,6 @@ poc8:
     echo "== viewer: $r (header, outcome, first messages)"
     rt view --run $r | head -24
 
-# Host: POC 9 on the dry-run set (data/splits/dryrun_v1.json): POC 8 export, `label run` (level 0 by default; `just
-# poc9 0,1` asks the judge for every run without a recorded answer and records the answers in /var/lib/avos/labels),
-# the dataset card, the gold set. Label blind only after `0,1` (the judge's answers decide the gold set's disagreement
-# stratum): `label view --run R`, `label human --run R --verdict pass|fail --labeller NAME`, `label gold --out
-# /tmp/poc9/out --next` (AVOS_LABEL_DATASET=/tmp/poc9/ds). `just poc9 0,1 --checklist` adds the advisory checklist
-# (`label checklist --out /tmp/poc9/out --run R`). Suite: `python3 label/tests/run.py [--quick] [--host]`.
 poc9 level="0" *flags="":
     #!/usr/bin/env bash
     set -uo pipefail
@@ -322,11 +295,9 @@ poc9 level="0" *flags="":
     echo "== gold set"; lb gold --out $t/out --status
     echo "next to label blind: $(lb gold --out $t/out --next)"
 
-# Host: one principal's audit timeline, or one run's (`just audit --principal SPIFFE_ID`, `just audit --run vm-01-abc123`)
 audit *args:
     sudo python3 collect/bin/avos trace {{args}}
 
-# Host: M7 baseline: the poc5 tree ticking SECS with no control at all, RUNS times (what happens anyway)
 poc5-baseline runs="10" secs="120":
     #!/usr/bin/env bash
     set -euo pipefail

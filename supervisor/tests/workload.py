@@ -136,26 +136,21 @@ def run_intruder():
         except Exception as e:
             rec(k="intrude", attempt=name, blocked=True, detail=type(e).__name__ + ":" + str(e)[:140])
 
-    # (a) guest control endpoint
     def post_halt():
         try:
             r = urllib.request.urlopen(
                 urllib.request.Request("http://%s/halt" % ic["guest_ip"], data=b"{}"), timeout=5)
             return "HTTP %s %s" % (r.status, r.read()[:120])
         except urllib.error.HTTPError as e:
-            return "HTTP %s %s" % (e.code, e.read()[:120])  # 403 = blocked, but it is still an answer
+            return "HTTP %s %s" % (e.code, e.read()[:120])
     attempt("post_/halt", lambda: _refused_or_raise(post_halt()))
 
-    # (b) write another branch's cgroup.freeze
     attempt("write_victim_cgroup.freeze",
             lambda: open(ic["victim_cg"] + "/cgroup.freeze", "w").write("1"))
-    # (c) write our own cgroup.freeze (self-halt)
     attempt("write_own_cgroup.freeze",
             lambda: open(ic["self_cg"] + "/cgroup.freeze", "w").write("1"))
-    # (d) shim socket: ask it to halt / kill
     attempt("shim_op_halt", lambda: _refused_or_raise(shim({"op": "halt", "name": "victim"})))
     attempt("shim_op_kill", lambda: _refused_or_raise(shim({"op": "kill", "name": "victim"})))
-    # (e) read another principal's private SVID key (to impersonate / locate it)
     attempt("read_victim_svid_key",
             lambda: open(ic["victim_run"] + "/svid.0.key").read(16))
     rec(k="intrude_done")
@@ -167,7 +162,7 @@ def _refused_or_raise(resp):
     if ("403" in resp or "forbidden" in low or "unknown op" in low or "error" in low
             or "come from the host" in low):
         raise PermissionError(resp)
-    return resp  # looked accepted -> recorded as NOT blocked (a failure)
+    return resp
 
 
 def main():
@@ -189,7 +184,7 @@ def main():
     for t in threads:
         t.start()
     if cfg.get("forker_file"):
-        run_forker()  # blocks
+        run_forker()
     while True:
         time.sleep(3600)
 

@@ -1,11 +1,4 @@
 #!/usr/bin/env bash
-# vm create vm-NN [KEY=VALUE...] | vm destroy vm-NN | vm bench [N]   (run on the host as root)
-# KEY=VALUE pairs go into the VM's MMDS config next to agent.env (e.g. HARNESS=tau2 TASK=retail/0).
-# One Firecracker microVM per name: tap-vm-NN, host 172.16.NN.1/30, guest 172.16.NN.2.
-# M1 vm_boot_ms = `vm create` start -> agent answers GET /health (upper bound on "agent process running").
-# Identity (POC 3): each boot mints a unique VM name vm-NN-xxxxxx and a SPIRE join token (identity/registrar.py).
-# Trace (POC 7): vm.boot goes to the VM's own stream in the trace store; destroy reads the guest forwarder's final
-# request counters (GET /health) before the kill, for the registrar's vm.exit (collect/store.py).
 set -euo pipefail
 ROOT=/var/lib/avos
 ID=$(dirname "$0")/../identity/registrar.py
@@ -14,15 +7,13 @@ IMG=$ROOT/images
 MEM_MIB=${MEM_MIB:-2048}
 VCPUS=${VCPUS:-1}
 
-net() { # sets N, IP, GW, TAP from a vm-NN name
+net() {
   [[ $1 =~ ^vm-([0-9]{2,3})$ ]] || { echo "name must be vm-NN" >&2; exit 2; }
   N=$((10#${BASH_REMATCH[1]})); ((N >= 1 && N <= 254)) || { echo "NN must be 1..254" >&2; exit 2; }
   GW=172.16.$N.1 IP=172.16.$N.2 TAP=tap-$1
 }
 
-host_net() { # shared, idempotent. Guests have no route out (POC 4): the gateway on :8443 is their only exit.
-  # On the host they reach only SPIRE (8081), the registrar (8082) and the gateway (8443), plus replies to the host.
-  # The host never routes guest traffic (ip_forward stays off); this rule holds even if something turns it on.
+host_net() {
   iptables -C FORWARD -s 172.16.0.0/16 -j REJECT 2>/dev/null || iptables -I FORWARD -s 172.16.0.0/16 -j REJECT
   if ! iptables -n -L AVOS-IN > /dev/null 2>&1; then
     iptables -N AVOS-IN
@@ -38,7 +29,6 @@ ms() { echo $(($(date +%s%N) / 1000000)); }
 create() {
   local name=$1 t0; t0=$(ms); shift
   net "$name"
-  # The jailer chroots Firecracker into $dir and drops to uid/gid 10000+N, one per VM.
   local jail=$ROOT/jail/firecracker/$name dir=$ROOT/jail/firecracker/$name/root uid=$((10000 + N))
   [ -e "$jail" ] && { echo "$name exists; run: vm destroy $name" >&2; exit 1; }
   [ -f $ROOT/agent.env ] || { echo "missing $ROOT/agent.env (MODEL=...); run just push" >&2; exit 1; }
@@ -49,7 +39,6 @@ create() {
   cp --sparse=always $IMG/rootfs.ext4 "$dir/rootfs.ext4"
   ln $IMG/vmlinux "$dir/vmlinux"
   ln $IMG/harness.ext4 "$dir/harness.ext4"
-  # Secrets reach the guest through MMDS, never its disk; this host file is deleted once the agent is up.
   python3 -c 'import json, sys
 env = dict(l.split("=", 1) for l in open(sys.argv[1]).read().splitlines() + sys.argv[4:] if "=" in l)
 print(json.dumps({"avos": {**env, **json.load(open(sys.argv[3])), "VM_NAME": sys.argv[2]}}))' \
@@ -62,7 +51,6 @@ print(json.dumps({"avos": {**env, **json.load(open(sys.argv[3])), "VM_NAME": sys
   ip tuntap add "$TAP" mode tap user "$uid"
   ip addr add "$GW/30" dev "$TAP"
   ip link set "$TAP" up
-  # The registrar and the gateway name the calling VM by source IP, so a guest may only send from its own address.
   iptables -I INPUT -i "$TAP" ! -s "$IP" -j DROP
 
   cat > "$dir/config.json" <<EOF
@@ -98,7 +86,6 @@ EOF
 destroy() {
   local name=$1 jail=$ROOT/jail/firecracker/$1
   net "$name"
-  # Before the kill: what the guest's forwarder counted (vm-down files it; unreachable = M8 unverified for this VM).
   [ -d "$jail" ] && { curl -sf -m 2 "http://$IP/health" -o "$jail/health.json" || rm -f "$jail/health.json"; }
   if [ -f "$jail/pid" ]; then
     local pid; pid=$(cat "$jail/pid")
@@ -113,7 +100,7 @@ destroy() {
   echo "$name destroyed"
 }
 
-bench() { # M1 over N boots of vm-01, create -> destroy each time
+bench() {
   local n=${1:-20} out=() i
   for i in $(seq "$n"); do
     out+=("$(create vm-01 | grep -oP 'm1_ms=\K[0-9]+')")

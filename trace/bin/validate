@@ -10,12 +10,12 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-import lib_trace as T  # noqa: E402
+import lib_trace as T
 
-KINDS = {k: k for k in T.schema_table()}  # canonical kind strings, shared by every stored reference
-EXEMPT = {"vm.boot", "vm.exit", "agent.exit", "session.close", "label"}  # post-hoc records: no liveness rule
+KINDS = {k: k for k in T.schema_table()}
+EXEMPT = {"vm.boot", "vm.exit", "agent.exit", "session.close", "label"}
 NEEDS_AUTHZ = {"llm.call": "llm.call", "net.connect": "net.connect", "tool.call": "tool.call"}
-RULE_FIELDS = {"authz_ref", "receipt"}  # missing -> E_AUTHZ_MISSING / E_RECEIPT rather than E_SCHEMA
+RULE_FIELDS = {"authz_ref", "receipt"}
 DENY = "deny"
 
 
@@ -26,9 +26,9 @@ def main():
     a = ap.parse_args()
     table = T.schema_table()
     L = T.principal_table([a.file] + ([a.ledger] if a.ledger else []))
-    seen = {}      # event_id -> kind, DENY, or (principal, action, ts) for an allow decision
-    last_ts = {}   # writer -> ts of its previous event in file order
-    last_seq = {}  # writer -> seq of its previous event in file order
+    seen = {}
+    last_ts = {}
+    last_seq = {}
     n = bad = 0
     w = sys.stdout.write
     w('{"errors": [')
@@ -80,11 +80,10 @@ def main():
         if wr in last_seq and ev["seq"] <= last_seq[wr]:
             err(line, eid, "E_SEQ_ORDER", f"seq {ev['seq']} is not greater than {last_seq[wr]} earlier in writer {wr}")
         last_seq[wr] = ev["seq"]
-        if bad_fields:  # the rules below read this kind's fields
+        if bad_fields:
             seen.setdefault(eid, k)
             continue
 
-        # identity and liveness
         if k == "agent.spawn":
             if ev["spiffe_id"] != p:
                 err(line, eid, "E_SCHEMA", "agent.spawn: spiffe_id must equal principal")
@@ -102,7 +101,6 @@ def main():
                 if start < life[0] or (life[1] is not None and start > life[1]):
                     err(line, eid, "E_PRINCIPAL_DEAD", f"principal {p} not alive at {start}")
 
-        # per-kind rules
         if k == "halt" or k == "resume":
             if not T.RECEIPT_RE.match(str(ev.get("receipt", ""))):
                 err(line, eid, "E_RECEIPT", f"{k} without an hr_xxxx receipt")

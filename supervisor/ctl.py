@@ -27,8 +27,8 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[:0] = [os.path.join(HERE, "..", "identity"), os.path.join(HERE, "..", "collect")]
-import registrar  # noqa: E402  (the per-host index of principals lives there)
-import store  # noqa: E402
+import registrar
+import store
 
 CUT = f"{registrar.ROOT}/cut.json"
 
@@ -43,7 +43,7 @@ def cut_table():
 def write_cut(table):
     tmp = CUT + ".tmp"
     json.dump(table, open(tmp, "w"))
-    os.replace(tmp, CUT)  # atomic: the gateway never sees a half-written table
+    os.replace(tmp, CUT)
 
 
 def vms():
@@ -65,7 +65,7 @@ def resolve(name):
     for vm_id, vm in live_vms.items():
         if name in (vm_id, vm["slot"], vm["spiffe_id"]):
             return {"spiffe_id": vm["spiffe_id"], "vm_id": vm_id, "vm": vm, "kind": "vm"}
-    p = registrar.by_id(name) if name.startswith("ag_") else registrar.get(name)  # the index, not the ledger
+    p = registrar.by_id(name) if name.startswith("ag_") else registrar.get(name)
     if p and not p["exited_at"] and p["vm_id"] in live_vms:
         return {"spiffe_id": p["spiffe_id"], "vm_id": p["vm_id"], "vm": live_vms[p["vm_id"]], "kind": "principal"}
     sys.exit(f"{name}: not a live VM or principal (see `ctl.py ls`)")
@@ -82,7 +82,6 @@ def guest(t, path, body):
 
 
 def firecracker(t, state):
-    # The VM's own API socket inside its jail; pausing the VMM freezes every vCPU at once.
     s = socket.socket(socket.AF_UNIX)
     s.connect(f"{registrar.JAIL}/{t['vm']['slot']}/root/fc.sock")
     body = json.dumps({"state": state}).encode()
@@ -95,7 +94,6 @@ def firecracker(t, state):
 
 
 def nodes_under(t):
-    # The target itself first (a VM is not a ledger principal, so it would otherwise be missing), then its branch.
     return [t["spiffe_id"]] + [p["spiffe_id"] for p in registrar.live(t["vm_id"])
                                if p["spiffe_id"].startswith(t["spiffe_id"] + "/")]
 
@@ -112,9 +110,9 @@ def live_count(exclude):
 
 
 def control(cmd, name):
-    t0 = time.time()  # M6 counts from the command, name resolution included
+    t0 = time.time()
     t = resolve(name)
-    store.count(t["vm_id"], "r" if cmd in ("resume", "uncut") else "h")  # issued; its event follows the act
+    store.count(t["vm_id"], "r" if cmd in ("resume", "uncut") else "h")
     table = cut_table()
     if cmd == "halt":
         if t["kind"] == "vm":
@@ -141,7 +139,7 @@ def control(cmd, name):
         out = guest(t, "/kill", {"spiffe_id": t["spiffe_id"]})
         ms = round((time.time() - t0) * 1000, 1)
         r = receipt("halt", t, "kill", ms, out["nodes"])
-        table[t["spiffe_id"]] = {"receipt": r, "state": "killed"}  # drops any answer still in flight
+        table[t["spiffe_id"]] = {"receipt": r, "state": "killed"}
     elif cmd == "cut":
         out = {"nodes": nodes_under(t)}
         r = receipt("halt", t, "net-cut", 0, out["nodes"])
@@ -197,8 +195,8 @@ def stats(ticks_path, tick_s):
     controls = [(datetime.fromisoformat(r["ts"].replace("Z", "+00:00")).timestamp(), r["action"]) for r in rows]
     siblings = {sid: ts for sid, ts in ticks.items() if not any(sid == n or sid.startswith(n + "/") for n in named)}
     lost = 0
-    late, failed = [], []  # (gap s or 0, ts, principal, nearest control); the same 1 s window applies to both
-    near_ticks = near_calls = 0  # denominators: how much of the run lay inside a control window
+    late, failed = [], []
+    near_ticks = near_calls = 0
 
     def nearest(at):
         return min(controls, key=lambda c: abs(c[0] - at), default=(float("inf"), "-"))
@@ -208,7 +206,7 @@ def stats(ticks_path, tick_s):
 
     for sid, ts in siblings.items():
         ts.sort(key=lambda t: t["tick"])
-        lost += ts[-1]["tick"] - len(ts)  # a gap in seq = a tick that was never written
+        lost += ts[-1]["tick"] - len(ts)
         failed += [(0, t["ts"], sid, nearest(t["ts"])) for t in ts if isinstance(t.get("gw"), str)]
         late += [(b["ts"] - a["ts"], b["ts"], sid, nearest(b["ts"])) for a, b in zip(ts, ts[1:])
                  if b["ts"] - a["ts"] > tick_s + 0.1]
@@ -220,8 +218,6 @@ def stats(ticks_path, tick_s):
     print(f"M7 sibling_disruption: {lost + len(during)} (lost {lost}, failed calls {len(failed)}, late during a control "
           f"{len(during) - len(failed)}; late outside any control: {len(late) - len(during) + len(failed)}) over "
           f"{len(siblings)} never-named principals, {n_ticks} ticks")
-    # The window is only fair if anomalies outside it are as common as anomalies inside it (and as in a run with no
-    # controls at all, `just poc5-baseline`); these counts let the rates be compared.
     out = {"principals": len(siblings), "ticks": n_ticks, "ticks_in_window": near_ticks, "lost": lost,
            "late_in": sum(1 for x in late if abs(x[3][0] - x[1]) <= 1), "late_out": sum(1 for x in late if abs(x[3][0] - x[1]) > 1),
            "calls": n_calls, "calls_in_window": near_calls,

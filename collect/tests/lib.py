@@ -14,7 +14,6 @@ KINDS7 = ("authz.decision", "llm.call", "tool.call", "agent.spawn", "agent.exit"
 RECEIPT = re.compile(r"hr_[0-9a-f]{4}")
 
 
-# ----------------------------------------------------------------------------- POC 6 primitives (pinned by contract)
 def ms_ts(ms):
     return _dt.datetime.fromtimestamp(ms / 1000, _dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (ms % 1000)
 
@@ -38,7 +37,6 @@ def is_sorted(events):
     return all(a <= b for a, b in zip(ks, ks[1:]))
 
 
-# ----------------------------------------------------------------------------- ground truth from a principal's log
 def ground_truth(records):
     """records: the JSONL records one guest_agent.py principal wrote. Returns what the agent saw."""
     gt = {"attempts": 0, "answered": 0, "exc": 0, "tool_ok": 0, "llm_ok": 0, "denied": 0, "calls": [],
@@ -52,7 +50,6 @@ def ground_truth(records):
         elif k == "call":
             gt["attempts"] += 1
             st = r.get("st")
-            # a tool answer can only be the gateway's 200/403; anything else came from the path, not a decision
             if isinstance(st, int) and (r["kind"] == "llm" or st in (200, 403)):
                 gt["answered"] += 1
                 gt["latency_ms"].append((r["t1"] - r["t0"]) * 1000)
@@ -118,7 +115,7 @@ def shape_of(e):
     if k == "tool.call":
         return ("tool", e.get("args", {}).get("amount_cents"))
     if k == "tool.result":
-        return None  # optional companion of a gateway tool.call
+        return None
     if k in ("halt", "resume"):
         return (k, e.get("receipt"))
     return ("other", k)
@@ -163,13 +160,12 @@ def check_timeline(events, principal, records, controls):
             p.append("foreign event %s %s principal=%s" % (e.get("kind"), e.get("event_id"), e.get("principal")))
     got = [s for s in (shape_of(e) for e in events) if s is not None]
     want = expected_shapes(records, controls)
-    if any(c[1] is None for c in controls):  # receipt unknown to the caller: any well-formed receipt matches
+    if any(c[1] is None for c in controls):
         got = [(s[0], None) if s[0] in ("halt", "resume") else s for s in got]
     if got != want:
         i = next((i for i, (a, b) in enumerate(zip(got, want)) if a != b), min(len(got), len(want)))
         p.append("timeline differs at %d: got %s want %s (got %d shapes, want %d)" %
                  (i, got[i] if i < len(got) else None, want[i] if i < len(want) else None, len(got), len(want)))
-    # authority: every call names the allow that permitted it; every deny names its policy; controls their receipt
     last_allow = {}
     denies = [r for r in records if r.get("k") == "call" and r.get("st") == 403]
     di = 0
@@ -197,7 +193,7 @@ def check_timeline(events, principal, records, controls):
                 p.append("%s %s authority is not an allow with policy ids" % (k, e["event_id"]))
             if a.get("authz_ref") != last_allow.get(k) or e.get("authz_ref") != last_allow.get(k):
                 p.append("%s %s authz_ref %s != preceding allow %s" % (k, e["event_id"], a.get("authz_ref"), last_allow.get(k)))
-            last_allow.pop(k, None)  # an allow is spent once
+            last_allow.pop(k, None)
         elif k in ("halt", "resume"):
             r = e.get("receipt")
             if not (isinstance(r, str) and RECEIPT.fullmatch(r)) or a.get("receipt") != r or not a.get("by"):
@@ -363,7 +359,6 @@ def prefix_broken(snap):
     return bad
 
 
-# ----------------------------------------------------------------------------- one day of events (M9 at scale)
 def gen_day(path, n, day="2026-09-01", seed=5, big_share=0.03, host="hday"):
     """Write ~n POC 6-valid events of the real kind mix on one UTC day to `path` (chained, one host, 5 writers):
     thousands of short VM lives with 1-3 principals each, plus one long-lived `support` agent that owns ~big_share
@@ -385,7 +380,6 @@ def gen_day(path, n, day="2026-09-01", seed=5, big_share=0.03, host="hday"):
         return r
 
     def flush(rows, out):
-        # within a block, seq follows time per writer; ids derive from (writer, seq); refs are remapped; chain per writer
         rows.sort(key=lambda r: (r["ts"], r["writer"]))
         remap = {}
         for r in rows:
@@ -453,7 +447,6 @@ def gen_day(path, n, day="2026-09-01", seed=5, big_share=0.03, host="hday"):
 
     with open(path, "w") as out:
         rows = []
-        # the long-lived VM and its support agent (largest principal)
         big_vm_id = "vm-07-b16b16"
         big_vm = "%s/vm/%s" % (TD, big_vm_id)
         big = big_vm + "/agent/support"
@@ -462,7 +455,6 @@ def gen_day(path, n, day="2026-09-01", seed=5, big_share=0.03, host="hday"):
         mk(rows, "agent.spawn", t + 300, "registrar", big, big_vm_id, spiffe_id=big, parent=big_vm, name="support", agent_id="ag_b16b", uid=20001)
         flush(rows, out)
         vm_ids.append(big_vm_id)
-        # the smallest principal: a VM with one agent that does exactly one thing
         small_vm_id = "vm-03-5ma111"
         small_vm = "%s/vm/%s" % (TD, small_vm_id)
         small = small_vm + "/agent/probe"
@@ -499,11 +491,9 @@ def gen_day(path, n, day="2026-09-01", seed=5, big_share=0.03, host="hday"):
                 parent = a.rsplit("/sub/", 1)[0] if "/sub/" in a else vm
                 mk(rows, "agent.spawn", tb + 300 + i * 40, "registrar", a, vm_id, spiffe_id=a, parent=parent,
                    name=a.rsplit("/", 1)[1], agent_id="ag_%04x" % rnd.randrange(65536), uid=20001 + i)
-            # agents work in parallel, each on its own clock
             ends = [calls(rows, a, vm_id, tb + 500 + i * 40, rnd.randint(10, 60), run) for i, a in enumerate(agents)]
-            ends.append(calls(rows, big, big_vm_id, tb + rnd.randint(0, 200), big_per_block))  # the big principal, all day
+            ends.append(calls(rows, big, big_vm_id, tb + rnd.randint(0, 200), big_per_block))
             tt = max(ends)
-            # a parent halt covering its sub-agent: the audit of the sub must show it too
             if any("/sub/" in a for a in agents) and rnd.random() < 0.3:
                 par = agents[0]
                 sb = next(a for a in agents if "/sub/" in a)

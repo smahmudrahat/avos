@@ -19,10 +19,8 @@ import sys
 from collections import deque
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-import lib_trace as T  # noqa: E402
+import lib_trace as T
 
-# legacy kind -> the emitter that writes it today (infra/vm, infra/job, identity/registrar.py, supervisor/ctl.py,
-# gateway/gateway.py); ctl writes through registrar.emit but is its own process and stream
 WRITER = {"vm.boot": "vm", "session.open": "job", "session.close": "job", "agent.spawn": "registrar",
           "agent.exit": "registrar", "vm.exit": "registrar", "halt": "ctl", "resume": "ctl"}
 RUN_KINDS = {"authz.decision", "llm.call", "tool.call", "tool.result", "net.connect", "fs.write"}
@@ -60,7 +58,7 @@ class Harness:
                 self.turns[-1][2].append(m)
             else:
                 free.append(m)
-        self.unmatched = len(free)  # messages after the last model call: no event carries them
+        self.unmatched = len(free)
         self.call_ids, self.labelled = {}, False
 
     def matches(self, principal, ev):
@@ -79,7 +77,7 @@ def content(fields, name, value, keep):
     if keep:
         fields[name] = value
     else:
-        fields.setdefault(name + "_sha256", T.sha(value))  # a hash the gateway wrote (what it saw) is kept
+        fields.setdefault(name + "_sha256", T.sha(value))
 
 
 def first_host(path):
@@ -110,9 +108,9 @@ def rows(src):
 
 
 def convert(src, out, keep, prices, harness=None):
-    allows = {}      # (principal, resource[, args]) -> deque of allow event ids, FIFO
-    receipts = {}    # principal -> receipt of its latest delivery-time deny of a model answer
-    run_of = {}      # vm_id -> run of its open session
+    allows = {}
+    receipts = {}
+    run_of = {}
     for line, r in rows(src):
         if r is None:
             raise ValueError(f"{src}:{line}: not a JSON object")
@@ -125,7 +123,7 @@ def convert(src, out, keep, prices, harness=None):
         if "id" in r:
             r["agent_id"] = r.pop("id")
         if k == "vm.boot":
-            r.pop("host", None)  # the envelope's host (or --host) replaces it
+            r.pop("host", None)
         if k in RUN_KINDS and vm_id in run_of:
             r["run"] = run_of[vm_id]
 
@@ -137,7 +135,7 @@ def convert(src, out, keep, prices, harness=None):
             if harness and r["run"] == harness.run:
                 label(out, harness, ts, vm_id)
         elif k in ("halt", "resume") and p not in r["nodes"]:
-            r["nodes"] = [p] + r["nodes"]  # a VM pause lists the agents under the VM but not the VM itself
+            r["nodes"] = [p] + r["nodes"]
         elif k == "authz.decision":
             if r["decision"] == "allow":
                 allow = (p, r["resource"], json.dumps(r["args"], sort_keys=True)) if r["action"] == "tool.call" else (p, r["resource"])
@@ -147,7 +145,7 @@ def convert(src, out, keep, prices, harness=None):
                     receipts[p] = hr
         elif k == "agent.spawn" and harness and not harness.agent and r["name"] == harness.job.get("harness") \
                 and r["parent"] == f"spiffe://avoslab.com/vm/{vm_id}":
-            harness.agent = p  # job.json without agent_spiffe_id: the harness's own birth row
+            harness.agent = p
         elif k == "net.connect":
             r["dest"] = r.pop("host", None)
             r["authz_ref"] = take(allows, (p, f"Host::{json.dumps(r['dest'])}"))
@@ -166,7 +164,7 @@ def convert(src, out, keep, prices, harness=None):
                 if type(r.get("prompt_tokens")) is int and type(r.get("completion_tokens")) is int:
                     r["cost_usd"] = round((r["prompt_tokens"] * pr["prompt_per_mtok"] + r["completion_tokens"] * pr["completion_per_mtok"]) / 1e6, 9)
         if r.get("authz_ref") is None:
-            r.pop("authz_ref", None)  # left out rather than null: validate reports E_AUTHZ_MISSING
+            r.pop("authz_ref", None)
 
         turn = harness.turns.popleft() if k == "llm.call" and harness and harness.matches(p, r) else None
         if turn:
@@ -184,7 +182,7 @@ def convert(src, out, keep, prices, harness=None):
             out.emit("tool.result", ts, name, p, vm_id, res)
         if turn:
             harness_tools(out, harness, turn, ev, keep)
-    if harness and not harness.labelled:  # no session.close for the run (partial ledger): label at the last row
+    if harness and not harness.labelled:
         label(out, harness, ev["ts"], ev["vm_id"])
 
 

@@ -35,19 +35,19 @@ from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "collect"))
-import store  # noqa: E402
+import store
 
 ROOT = "/var/lib/avos"
 JAIL = f"{ROOT}/jail/firecracker"
 TD = "spiffe://avoslab.com"
 SPIRE = "/opt/spire/bin/spire-server"
 SOCK = "/run/spire-server/api.sock"
-SVID_TTL_S = 60  # a copied SVID is useless after this; the SPIRE agent rotates live ones at half-life
-VM_UID = 20000  # the guest's holder of the VM's own SVID (infra/agent/agent.py)
+SVID_TTL_S = 60
+VM_UID = 20000
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}")
 CERT_DIR = "/run/avos-registrar"
 INDEX = f"{ROOT}/index"
-lock = threading.Lock()  # spawns and exits are serialized (IDs must stay unique); TLS handshakes are not
+lock = threading.Lock()
 
 
 def spire(*args, check=True):
@@ -66,8 +66,6 @@ def ledger():
 
 
 def principals():
-    # Reporting only (who, stats, reindex): reads the whole ledger. Hot paths use get() and live() instead.
-    # Only rows with a spiffe_id are principals (infra/job writes job-level agent.exit rows without one).
     ps = {}
     for r in ledger():
         if r["kind"] == "agent.spawn" and "spiffe_id" in r:
@@ -86,7 +84,7 @@ def put(path, obj):
     tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     with open(tmp, "w") as f:
         json.dump(obj, f)
-    os.replace(tmp, path)  # readers see the old file or the new one, never half of one
+    os.replace(tmp, path)
 
 
 def get(spiffe_id):
@@ -145,11 +143,9 @@ def vm_up(slot, gw, out):
     while os.path.exists(f"{INDEX}/vm/{(vm_id := f'{slot}-{secrets.token_hex(3)}')}"):
         pass
     put(f"{INDEX}/vm/{vm_id}", {})
-    store.count(vm_id, "")  # the VM's counters exist from its birth: none counted yet is 0, not unknown
+    store.count(vm_id, "")
     vm_spiffe = f"{TD}/vm/{vm_id}"
-    # The token's -spiffeID makes the VM's SPIRE agent known by the VM's own name; workload entries hang off it.
     token = spire("token", "generate", "-spiffeID", vm_spiffe, "-ttl", "600").split()[-1]
-    # That alias only names the SPIRE agent. This entry gives the VM a credential of its own for the same ID.
     entry = spire("entry", "create", "-spiffeID", vm_spiffe, "-parentID", vm_spiffe, "-selector", f"unix:uid:{VM_UID}",
                   "-output", "json")
     ident = {"VM_ID": vm_id, "VM_SPIFFE_ID": vm_spiffe, "VM_ENTRY_ID": json.loads(entry)["results"][0]["entry"]["id"],
@@ -161,7 +157,7 @@ def vm_up(slot, gw, out):
 
 def end(p, reason, svid_ms=None, attempts=None):
     spire("entry", "delete", "-entryID", p["entry_id"], check=False)
-    extra = {"attempts": attempts} if type(attempts) is int else {}  # the guest forwarder's count for it
+    extra = {"attempts": attempts} if type(attempts) is int else {}
     row = emit("agent.exit", p["spiffe_id"], p["vm_id"], spiffe_id=p["spiffe_id"], agent_id=p["id"], exit_reason=reason,
                svid_ms=svid_ms, **extra)
     index_exit(p, row)
@@ -185,12 +181,11 @@ def vm_down(slot):
     shutil.rmtree(f"{INDEX}/live/{ident['VM_ID']}", ignore_errors=True)
     spire("entry", "delete", "-entryID", ident["VM_ENTRY_ID"], check=False)
     agent = f"{TD}/spire/agent/join_token/{ident['JOIN_TOKEN']}"
-    # The join token's -spiffeID alias is an entry of its own (parent: the SPIRE agent); it outlives the eviction.
     alias = json.loads(spire("entry", "show", "-parentID", agent, "-output", "json", check=False) or "{}")
     for e in alias.get("entries") or []:
         spire("entry", "delete", "-entryID", e["id"], check=False)
     spire("agent", "evict", "-spiffeID", agent, check=False)
-    if os.path.exists(f"{store.vm_dir(ident['VM_ID'])}/vm.jsonl"):  # a VM that never booted has no life to end
+    if os.path.exists(f"{store.vm_dir(ident['VM_ID'])}/vm.jsonl"):
         emit("vm.exit", ident["VM_SPIFFE_ID"], ident["VM_ID"], vm=slot, guest=guest)
 
 
@@ -210,7 +205,7 @@ def spawn(vm, body):
     out = spire("entry", "create", "-spiffeID", spiffe_id, "-parentID", vm["VM_SPIFFE_ID"],
                 "-selector", f"unix:uid:{uid}", "-x509SVIDTTL", str(SVID_TTL_S), "-output", "json")
     entry_id = json.loads(out)["results"][0]["entry"]["id"]
-    while by_id(pid := f"ag_{secrets.token_hex(2)}"):  # short display ID, unique among live principals
+    while by_id(pid := f"ag_{secrets.token_hex(2)}"):
         pass
     row = emit("agent.spawn", spiffe_id, vm["VM_ID"], spiffe_id=spiffe_id, parent=parent or vm["VM_SPIFFE_ID"],
                name=name, agent_id=pid, uid=uid, entry_id=entry_id)
@@ -228,12 +223,10 @@ def exit_(vm, body):
 class Handler(BaseHTTPRequestHandler):
     def setup(self):
         super().setup()
-        self.connection.do_handshake()  # deferred out of accept(), so a stalled client blocks no one
+        self.connection.do_handshake()
 
     def do_POST(self):
         try:
-            # vm create pins each tap to its guest IP (iptables), so the source IP names the VM; the client SVID
-            # proves the caller is that VM's root (agents in the VM can reach this port, but hold no VM SVID).
             m = re.fullmatch(r"172\.16\.(\d+)\.2", self.client_address[0])
             if not m:
                 raise PermissionError("not a guest")
@@ -271,7 +264,6 @@ class Server(ThreadingHTTPServer):
 
 
 def mint():
-    # The registrar's own server SVID; guests verify it with the trust bundle. Re-minted hourly (TTL 2 h).
     os.makedirs(CERT_DIR, mode=0o700, exist_ok=True)
     spire("x509", "mint", "-spiffeID", "spiffe://avoslab.com/registrar", "-ttl", "2h", "-write", CERT_DIR)
     CTX.load_cert_chain(f"{CERT_DIR}/svid.pem", f"{CERT_DIR}/key.pem")

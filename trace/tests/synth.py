@@ -9,7 +9,7 @@ import random
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import lib  # noqa: E402
+import lib
 
 TD = "spiffe://avoslab.com"
 MODEL = "Qwen/Qwen3-30B-A3B-Instruct-2507"
@@ -35,7 +35,6 @@ class Stream:
 
     def done(self, sort=False):
         rows = sorted(self.rows, key=lib.order_key) if sort else self.rows
-        # chain is per writer in file order
         return lib.chain(rows)
 
 
@@ -44,8 +43,6 @@ def cost(pt, ct, price=PRICE):
         return None
     return round((pt * price["prompt_per_mtok"] + ct * price["completion_per_mtok"]) / 1e6, 9)
 
-
-# ----------------------------------------------------------------------------- one small valid run
 
 def small_run(host="h1", vm_id="vm-01-aaaaaa", t0=1_792_000_000_000, run="run_retail-0_1", with_sub=True):
     """A VM boots, a session opens, an agent (and a sub-agent) run, calls happen, a halt/resume, exit."""
@@ -72,7 +69,7 @@ def small_run(host="h1", vm_id="vm-01-aaaaaa", t0=1_792_000_000_000, run="run_re
     S.ev("authz.decision", t + 2600, "gateway", caller, vm_id, action="tool.call", resource='Tool::"issue_refund"',
          args={"order_id": "#W1", "amount_cents": 48000}, decision="deny", policy_ids=["refund-200"], errors=[])
     d4 = S.ev("authz.decision", t + 2900, "gateway", caller, vm_id, action="llm.call", resource=f'Model::"{MODEL}"', args={},
-              decision="allow", policy_ids=["llm-all"], errors=[])  # the call was allowed; the answer arrives after the halt
+              decision="allow", policy_ids=["llm-all"], errors=[])
     h = S.ev("halt", t + 3000, "ctl", caller, vm_id, receipt="hr_0a1b", action="freeze", by="ubuntu", target=caller,
              nodes=[caller], ms=7.3, freeze_ms=0.1)
     S.ev("authz.decision", t + 3100, "gateway", caller, vm_id, action="llm.call", resource=f'Model::"{MODEL}"', args={},
@@ -137,7 +134,7 @@ def golden(outdir):
     reg("llm_no_tokens", "E_TOKENS", lambda R: (R[llm0].__setitem__("prompt_tokens", None), llm0)[1])
     reg("authz_denied", "E_AUTHZ_DENIED", lambda R: (R[idx[R[tc]["authz_ref"]]].__setitem__("decision", "deny"), tc)[1])
     reg("ts_order", "E_TS_ORDER", lambda R: (R[tr].__setitem__("ts", lib.ms_ts(lib.ts_ms(R[tc]["ts"]) - 5000)), tr)[1])
-    reg("seq_order", "E_SEQ_ORDER", lambda R: _swap_lines(R, tc + 1, tc + 2), rechain=False)  # chain stays valid in seq order
+    reg("seq_order", "E_SEQ_ORDER", lambda R: _swap_lines(R, tc + 1, tc + 2), rechain=False)
     reg("chain", "E_CHAIN_HASH", lambda R: (R[tc]["args"].__setitem__("amount_cents", 100), tc)[1], rechain=False)
     json.dump(cases, open(os.path.join(outdir, "bad_cases.json"), "w"), indent=1, sort_keys=True)
     return cases
@@ -158,7 +155,6 @@ def _move_exit(R, spawn_sub, exit_sub):
     R[exit_sub]["ts"] = lib.ms_ts(lib.ts_ms(R[spawn_sub]["ts"]) + 1)
     ex = R.pop(exit_sub)
     R.insert(spawn_sub + 1, ex)
-    # renumber the registrar stream so seq stays contiguous and ts-ordered
     s = 0
     for r in R:
         if r["writer"].endswith("/registrar"):
@@ -168,15 +164,13 @@ def _move_exit(R, spawn_sub, exit_sub):
     return next(i for i, r in enumerate(R) if r["kind"] == "tool.call")
 
 
-# ----------------------------------------------------------------------------- mini tau2 run (harness + legacy ledger)
-
 def mini_run(outdir):
     """A hand-sized SimulationRun with its legacy ledger half and the expected chat projection."""
     os.makedirs(outdir, exist_ok=True)
     vm_id, run = "vm-01-m1n1aa", "run_retail-7_0"
     vm = f"{TD}/vm/{vm_id}"
     ag = f"{vm}/agent/tau2"
-    g0 = "2026-10-21T21:00:00"  # guest clock (harness) ; host clock is 300 ms ahead
+    g0 = "2026-10-21T21:00:00"
     msgs = [
         {"role": "assistant", "content": "Hi! How can I help you today?", "tool_calls": None, "turn_idx": 0, "timestamp": g0 + ".100000", "usage": None},
         {"role": "user", "content": "Cancel order #W9 please.", "tool_calls": None, "turn_idx": 1, "timestamp": g0 + ".900000", "usage": {"completion_tokens": 9, "prompt_tokens": 400}},
@@ -294,8 +288,6 @@ def skewed_run_dir(src_dir, out_dir, skew_s=3600):
         open(os.path.join(out_dir, n), "w").write(open(os.path.join(src_dir, n)).read())
 
 
-# ----------------------------------------------------------------------------- completeness / sort / economics
-
 def completeness_fixture(path, n=10_000, writers=4, drop=None, seed=7):
     """n events over `writers` contiguous streams; optionally drop one line (index in file order)."""
     rnd = random.Random(seed)
@@ -338,13 +330,12 @@ def multiwriter_fixture(path):
                       decision="allow", policy_ids=["llm-all"], errors=[])
             S_.ev("llm.call", base + 50, "gateway", ag, vm_id, authz_ref=d["event_id"], model=MODEL, status=200, ms=50,
                   prompt_tokens=100 + i, completion_tokens=10, dropped=False, price=PRICE, cost_usd=cost(100 + i, 10),
-                  guest_ts=lib.ms_ts(base + 50 + (3_600_000 if dt_ else -250)))  # guest clock: +1 h on host B
+                  guest_ts=lib.ms_ts(base + 50 + (3_600_000 if dt_ else -250)))
             if i % 10 == 5:
                 S_.ev("halt", base + 60, "ctl", ag, vm_id, receipt=f"hr_{i:04x}", action="freeze", by="ubuntu", target=ag, nodes=[ag], ms=5.0)
                 S_.ev("resume", base + 80, "ctl", ag, vm_id, receipt=f"hr_{i + 1:04x}", action="thaw", by="ubuntu", target=ag, nodes=[ag], ms=4.0)
         S_.ev("agent.exit", t + dt_ + 9000, "registrar", ag, vm_id, spiffe_id=ag, exit_reason="exit 0", agent_id="ag_" + vm_id[-4:])
         S_.ev("vm.exit", t + dt_ + 9500, "vm", vm, vm_id, vm="vm-01")
-    # file order: grouped by writer (as if each writer's log were concatenated), chain per writer
     for S_ in (S, T):
         byw = {}
         for r in S_.rows:
@@ -392,8 +383,6 @@ def economics_fixture(path):
             "prompt_tokens": pt_sum, "completion_tokens": ct_sum, "cost_usd": round(exp_cost, 9), "wall_ms": 7200}
 
 
-# ----------------------------------------------------------------------------- cache-staleness fixtures
-
 def serialized_size(rows):
     return sum(len(json.dumps(r, separators=(",", ":")).encode()) + 1 for r in rows)
 
@@ -401,7 +390,7 @@ def serialized_size(rows):
 def same_size(rows_a, rows_b, pad_key="pad"):
     """Pad the smaller trace (an extra string field on its first event; unknown fields are allowed by the
     contract) so both serialize to the same byte count. Both are re-chained. Returns (rows_a, rows_b)."""
-    for rows in (rows_a, rows_b):  # both carry the field, so growing the string grows the file byte for byte
+    for rows in (rows_a, rows_b):
         rows[0][pad_key] = "x" * 16
         lib.chain(rows)
     a, b = serialized_size(rows_a), serialized_size(rows_b)
@@ -415,7 +404,7 @@ def same_size(rows_a, rows_b, pad_key="pad"):
 def rewrite_in_place(path, rows):
     """Overwrite the file's content keeping path, inode, byte size and mtime (and atime)."""
     st = os.stat(path)
-    with open(path, "r+") as f:  # same inode
+    with open(path, "r+") as f:
         f.truncate(0)
         for r in rows:
             f.write(json.dumps(r, separators=(",", ":")) + "\n")
@@ -486,8 +475,6 @@ def economics_variant(path, shift):
     return rows, want
 
 
-# ----------------------------------------------------------------------------- scale: mimic the real distribution
-
 def big_fixture(path, n, hosts=4, seed=11):
     """n contract events whose kind mix, principal shapes and sizes follow the real POC 4-5 ledger
     (authz.decision ~73%, tool.call ~10%, llm.call ~7%, lifecycle and control the rest), spread over
@@ -498,7 +485,7 @@ def big_fixture(path, n, hosts=4, seed=11):
     per_host = n // hosts
     heads, seqs = {}, {}
     sample_p, sample_rows = None, []
-    with open(path, "w") as out:  # named `out`, not `f`: an inner loop variable once shadowed the handle
+    with open(path, "w") as out:
         for h in range(hosts):
             host = f"host{h:02d}"
             t = t0
@@ -536,7 +523,7 @@ def big_fixture(path, n, hosts=4, seed=11):
                     a = rnd.choice(agents)
                     t += rnd.randint(1, 60)
                     x = rnd.random()
-                    if x < 0.80:  # tool call, mostly denied (the real ledger is dominated by refund probes)
+                    if x < 0.80:
                         amt = rnd.choice((100, 15000, 48000, 120000))
                         allow = amt <= 20000 and rnd.random() < 0.3
                         d = ev("authz.decision", t, "gateway", a, action="tool.call", resource='Tool::"issue_refund"',
@@ -568,7 +555,6 @@ def big_fixture(path, n, hosts=4, seed=11):
                 ev("session.close", t + 300, "job", vm, run=run, status="done", wall_ms=t + 300 - (t0 if vm_n == 1 else 0))
                 ev("vm.exit", t + 400, "vm", vm, vm="vm-01")
                 t += 1000
-                # seq is assigned in time order per writer (a writer's log is time-ordered), ids and refs follow
                 rows.sort(key=lambda r: (r["ts"], r["writer"], r["seq"]))
                 remap = {}
                 for r in rows:

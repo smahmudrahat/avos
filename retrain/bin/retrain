@@ -20,10 +20,10 @@ import sys
 from collections import Counter, defaultdict
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-import build  # noqa: E402
-from build import Skip  # noqa: E402
+import build
+from build import Skip
 
-SHORTCUT = 0.9  # share of items calling one tool at one message index that flags a shortcut (τ-bench failure: 98 %)
+SHORTCUT = 0.9
 REASONS = ("unknown_run", "no_host_rows", "witness_unreadable", "store_unreadable")
 
 
@@ -47,8 +47,6 @@ def default_split():
     rel = build.DEFAULT_SPLIT
     return rel if os.path.exists(rel) else os.path.join(build.REPO, rel)
 
-
-# ----------------------------------------------------------------------------- diversity statistics
 
 class Stats:
     def __init__(self):
@@ -78,7 +76,7 @@ class Stats:
     def result(self):
         top = max((c for cs in self.at.values() for c in cs.values()), default=0)
         shortcut = None
-        if top:  # ties: the first (tool, index) in order
+        if top:
             name, i = min((n, i) for n, cs in self.at.items() for i, c in cs.items() if c == top)
             shortcut = {"tool": name, "index": i, "share": top / self.n, "flag": top / self.n >= SHORTCUT}
         groups = sorted(sorted(g) for g in self.dups.values() if len(g) >= 2)
@@ -105,15 +103,13 @@ def dump_stats(s):
     return json.dumps(s, sort_keys=True, indent=1) + "\n"
 
 
-# ----------------------------------------------------------------------------- subcommands
-
 def cmd_runs(a):
     src = build.Sources()
     rows = []
     for r in src.runs():
         try:
             rows.append(build.describe(src, r))
-        except Skip as e:  # a store run whose stream cannot be read
+        except Skip as e:
             rows.append({"run": r, "harness": None, "task": None, "vm_id": src.vm_of(r), "evidence": None,
                          "witness": False, "exportable": False, "reason": e.reason})
     sys.stdout.write(json.dumps(rows, indent=1) + "\n")
@@ -203,7 +199,6 @@ def cmd_export(a):
     red = build.Redactor(a.redact) if a.redact else None
     want = list(dict.fromkeys(requested(src, a)))
 
-    # one pass per run, in (run, principal) order; only manifest rows and statistics stay in memory
     located, skipped = [], []
     for r in want:
         try:
@@ -246,7 +241,7 @@ def cmd_export(a):
             if default in items:
                 agents[run] = items[default]
     st = stats.result()
-    runs_by = lambda f: sum(1 for it in agents.values() if f(it))  # noqa: E731
+    runs_by = lambda f: sum(1 for it in agents.values() if f(it))
     train = [it for it in agents.values() if it["split"] == "train"]
     kept = sum(1 for it in train if it["outcome"]["passed"] is True)
     ids = [x["item_id"] for x in rows]

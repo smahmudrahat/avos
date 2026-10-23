@@ -29,7 +29,7 @@ TOOLS_FIX = os.path.join(FIX, "tau2_retail_tools.json")
 PROMPT_FIX = os.path.join(FIX, "tau2_llm_agent_prompt_template.json")
 
 sys.path.insert(0, os.path.join(ROOT, "trace"))
-import lib_trace as T  # noqa: E402  (POC 6 shared code: canonical hash, id minting, timestamps)
+import lib_trace as T
 
 
 def _load(name, path):
@@ -40,11 +40,11 @@ def _load(name, path):
     return mod
 
 
-T6 = _load("poc6_testlib", os.path.join(ROOT, "trace", "tests", "lib.py"))  # POC 6 suite oracles (tau2/chat normalisation, chain)
+T6 = _load("poc6_testlib", os.path.join(ROOT, "trace", "tests", "lib.py"))
 
 TD = "spiffe://avoslab.com"
 STORE_RUNS = ["run_retail-0_11", "run_retail-0_12", "run_retail-0_13", "run_retail-0_14", "run_retail-0_15"]
-NATIVE_RUNS = ["run_retail-0_16", "run_retail-0_17", "run_retail-0_18", "run_retail-1_4"]  # gateway rows with response_id + hashes
+NATIVE_RUNS = ["run_retail-0_16", "run_retail-0_17", "run_retail-0_18", "run_retail-1_4"]
 FIX_MANIFEST = os.path.join(FIX, "MANIFEST.sha256")
 CHAT_ROLES = ("system", "user", "assistant", "tool")
 TREE_VM = "vm-01-6cc405"
@@ -54,8 +54,6 @@ GREETING = "Hi! How can I help you today?"
 class NotImplementedCLI(Exception):
     """A contract path is missing: the check reports FAIL 'not implemented: <path>'."""
 
-
-# ----------------------------------------------------------------------------- CLI
 
 def _run(cmd, env=None, timeout=900, rss=False, cwd=None):
     e = dict(os.environ)
@@ -97,8 +95,6 @@ def no_traceback(res):
     return "Traceback" not in (res["err"] or "")
 
 
-# ----------------------------------------------------------------------------- fixture drift
-
 def fixture_drift():
     """Files under fixtures/ whose SHA-256 differs from MANIFEST.sha256 (or are missing / unlisted). The suite's
     inputs are frozen by the tester; any drift fails every run loudly."""
@@ -125,8 +121,6 @@ def write_fixture_manifest():
                 rows.append(f"{sha_file(os.path.join(d, n))}  {rel}")
     open(FIX_MANIFEST, "w", encoding="utf-8").write("\n".join(sorted(rows)) + "\n")
 
-
-# ----------------------------------------------------------------------------- files
 
 def read_jsonl(path):
     with open(path, encoding="utf-8") as f:
@@ -185,7 +179,7 @@ def same_size_replace(path, old, new, count=-1):
     data = open(path, "rb").read()
     assert old.encode() in data, f"{old!r} not in {path}"
     data = data.replace(old.encode(), new.encode(), count)
-    with open(path, "r+b") as f:  # in place: same inode
+    with open(path, "r+b") as f:
         f.seek(0)
         f.write(data)
         f.truncate()
@@ -215,8 +209,6 @@ def tamper_dir(d, mode, rnd):
             open(b, "wb").write(da)
     return len(files)
 
-
-# ----------------------------------------------------------------------------- the test environment
 
 class Env:
     """A private copy of the fixtures laid out as the contract expects: a POC 7 store root, a results root, a
@@ -272,7 +264,6 @@ class Env:
         return {"store": tree_snapshot(self.store), "results": tree_snapshot(self.results),
                 "ledger": (os.path.getsize(self.ledger), sha_file(self.ledger))}
 
-    # -- store access (oracle side)
     def vm_of_run(self, run):
         if run.startswith("vm-"):
             return run
@@ -309,8 +300,6 @@ class Env:
         w = self.witness(run)
         return w["simulations"][0] if w and "simulations" in w else None
 
-
-# ----------------------------------------------------------------------------- cloning real runs into new, valid ones
 
 def _rechain(files_rows):
     """files_rows: [(path, rows)] in store order; re-mint ids from (ts, writer, seq), fix refs, chain per writer."""
@@ -454,8 +443,6 @@ def inject_call(env, vm, model, prompt_tokens=1234, completion_tokens=7, respons
     return call["event_id"]
 
 
-# ----------------------------------------------------------------------------- oracles: witness, messages, prompt
-
 def witness_models(result):
     info = result.get("info") or {}
     out = set()
@@ -508,7 +495,6 @@ def witness_verdict(result, calls, tools, system_prompt):
     else:
         join = "tokens"
         pairs, problems = match_witness(msgs, part)
-    # host hashes
     sys_sha, tools_sha = T.content_sha(system_prompt), T.content_sha(tools)
     conv = [{"role": "system", "content": system_prompt}]
     pair_at = {i: c for i, c in pairs}
@@ -535,8 +521,6 @@ def witness_verdict(result, calls, tools, system_prompt):
 def hashed(calls):
     return bool(calls) and all(c.get("output_sha256") and c.get("response_id") for c in calls)
 
-
-# -- class A mutators (token counts untouched)
 
 def mut_reply_text(sim):
     m = next(m for m in sim["messages"] if m["role"] == "assistant" and m.get("usage") and m.get("content"))
@@ -632,8 +616,6 @@ def expected_train_flags(sim, pairs):
     matched = {i for i, _ in pairs}
     return [m["role"] == "assistant" and bool(m.get("usage")) and i in matched for i, m in enumerate(sim["messages"])]
 
-
-# ----------------------------------------------------------------------------- oracles: split, outcome, M14, schema
 
 def split_of(task_id, split_path=SPLIT):
     s = json.load(open(split_path))
@@ -761,8 +743,6 @@ def tools_cover_calls(item):
     return bad
 
 
-# ----------------------------------------------------------------------------- oracles: statistics (CONTRACT §9)
-
 def _args_key(a):
     try:
         return json.dumps(json.loads(a), sort_keys=True)
@@ -863,15 +843,12 @@ def planted_dataset(path, n=100, shortcut_share=0.98, seed=3, tool="find_user_id
               "split": "train", "outcome": {"passed": True}}
         it["item_id"] = canon_item_id(it)
         items.append(it)
-    # two exact duplicates planted: items 1 and 2 share item 0's conversation
     for k in (1, 2):
         items[k]["messages"] = copy.deepcopy(items[0]["messages"])
         items[k]["item_id"] = canon_item_id(items[k])
     write_jsonl(os.path.join(path, "trajectories.jsonl"), items)
     return items
 
-
-# ----------------------------------------------------------------------------- viewer oracle
 
 def in_order(text, needles):
     """Each needle appears, and after the previous one. Returns the first missing needle or None."""
@@ -917,8 +894,6 @@ def strip_html(s):
     return html.unescape(re.sub(r"<[^>]+>", "", s))
 
 
-# ----------------------------------------------------------------------------- redaction hook (CONTRACT §8)
-
 DIGIT = re.compile(r"\d")
 
 
@@ -936,8 +911,6 @@ def content_strings(item_or_example):
     return out
 
 
-# ----------------------------------------------------------------------------- scale fixtures
-
 def gen_scale(env, n_runs, n_noise_vms, seed=11):
     """n_runs τ² runs cloned round-robin from the five real store runs (12–20 messages, 7–14 calls) and
     n_noise_vms unrelated VMs cloned from the tree VM. Deterministic."""
@@ -953,8 +926,6 @@ def gen_scale(env, n_runs, n_noise_vms, seed=11):
         clone_vm(env, TREE_VM, f"vm-{(i % 90) + 10:02d}-{rnd.getrandbits(24):06x}")
     return runs
 
-
-# ----------------------------------------------------------------------------- misc
 
 def percentile(xs, q):
     xs = sorted(xs)

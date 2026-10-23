@@ -23,8 +23,8 @@ import zlib
 from urllib.parse import quote
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-import store  # noqa: E402
-from store import T  # noqa: E402
+import store
+from store import T
 
 KINDS7 = ("authz.decision", "llm.call", "tool.call", "agent.spawn", "agent.exit", "halt", "resume")
 COUNTER = {"authz.decision": "a", "llm.call": "l", "tool.call": "t", "agent.spawn": "s", "agent.exit": "e",
@@ -32,8 +32,6 @@ COUNTER = {"authz.decision": "a", "llm.call": "l", "tool.call": "t", "agent.spaw
 BUCKETS = 256
 INDEX = f"{store.ROOT}/index"
 
-
-# ----------------------------------------------------------------------------- imported writers and their index
 
 def import_files():
     return sorted(glob.glob(f"{store.ROOT}/import/*.jsonl"))
@@ -78,7 +76,7 @@ def build_index(prints):
                 off += len(raw)
         json.dump(ranges, open(f"{tmp}/{b:02x}.json", "w"))
     json.dump(runs, open(f"{tmp}/runs.json", "w"))
-    json.dump(prints, open(f"{tmp}/manifest.json", "w"))  # last: an index without it is rebuilt
+    json.dump(prints, open(f"{tmp}/manifest.json", "w"))
     old = f"{store.ROOT}/.index-old"
     shutil.rmtree(old, ignore_errors=True)
     if os.path.isdir(INDEX):
@@ -127,7 +125,7 @@ def vm_events(vm_id):
     """Every stored event of one VM: its collected streams and its share of the imported writers."""
     out = list(store.vm_events(vm_id))
     imported = indexed_events(vm_id)
-    if imported is None:  # never answer from a wrong index: rebuild it from the files, once
+    if imported is None:
         imported = indexed_events(vm_id, rebuild=True)
     if imported is None:
         raise ValueError("import index does not match the imported files even after a rebuild")
@@ -148,12 +146,10 @@ def resolve(run):
     return json.load(open(f"{d}/runs.json")).get(run) if d else None
 
 
-# ----------------------------------------------------------------------------- subcommands
-
 def answer(events, keep, day):
     evs = [e for e in events if keep(e) and (not day or e["ts"].startswith(day))]
     evs.sort(key=lambda e: (e["ts"], e["writer"], e["seq"]))
-    by_id = {e["event_id"]: e for e in evs if e["kind"] == "authz.decision"}  # a call's decision is in the same VM
+    by_id = {e["event_id"]: e for e in evs if e["kind"] == "authz.decision"}
     sys.stdout.write("".join(json.dumps({**e, "authority": T.authority(e, by_id)}, ensure_ascii=False) + "\n" for e in evs))
     return 0
 
@@ -177,7 +173,6 @@ def completeness(a):
 def m8(vm, evs):
     """The M8 record of one VM from its stored events and the counters beside the store (retrain/ carries it per item)."""
     stored = {k: sum(e["kind"] == k for e in evs) for k in KINDS7}
-    # seq gaps of this VM's own writers (imported writers span VMs, so their seq jumps here mean nothing)
     seqs = {}
     for e in evs:
         if e["writer"].endswith("/" + vm):
@@ -216,7 +211,7 @@ def guest_requests(evs):
     for e in evs:
         if e["kind"] == "authz.decision" and type(e.get("attempt")) is int:
             s = seen.setdefault(e["principal"], set())
-            reset |= e["attempt"] in s  # numbering started over: a restarted forwarder
+            reset |= e["attempt"] in s
             s.add(e["attempt"])
         elif e["kind"] == "agent.exit" and type(e.get("attempts")) is int:
             final[e["principal"]] = e["attempts"]
@@ -267,7 +262,7 @@ def do_import(a):
                     state[w] = [s.seq, s.head]
                     out[w] = open(dest, "ab", buffering=1 << 20)
                 if ev["seq"] <= state[w][0]:
-                    continue  # already stored
+                    continue
                 if ev["prev"] != state[w][1]:
                     raise ValueError(f"{path}:{line}: {w} seq {ev['seq']} does not continue the stored chain")
                 out[w].write(raw if raw.endswith(b"\n") else raw + b"\n")

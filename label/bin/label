@@ -44,19 +44,18 @@ CHECKLIST = os.path.join(HERE, "..", "checklist.json")
 CHECK_ENV = os.environ.get("AVOS_CHECKLIST_ENV", "/var/lib/avos/checklist.env")
 CHECK_MODEL = os.environ.get("AVOS_CHECKLIST_MODEL", "jev-latest")
 CHECK_BASE = "https://api.typesafe.ai/v1"
-YES, NO = 0.7, 0.3  # the checklist model's suggested yes/no cut-offs; between them the answer is UNSURE
-# checklist question -> the judge rubric answer it asks about (same polarity), for agreement between the two layers
+YES, NO = 0.7, 0.3
 JUDGE_TWIN = {"followed_instructions": "policy_followed", "correct_tools": "right_tools",
               "unsupported_claim": "hallucinated_facts", "unnecessary_actions": "unsafe_action"}
 
-TAU2_384 = {"10", "12", "25", "50", "57", "65"}  # τ² retail tasks a do-nothing agent passes with reward 1.0
+TAU2_384 = {"10", "12", "25", "50", "57", "65"}
 ANSWERS = ("policy_followed", "right_tools", "hallucinated_facts", "unsafe_action")
 RULE = ("Reward decides pass/fail; the judge can veto a pass; the user settles vetoes in the gold set. "
         "Flagged or incomplete items are never labelled clean.")
-VERBATIM = 60     # no stored string may carry this many consecutive transcript characters
-REASONS_MAX = (3, 300)  # reasons kept per framing, characters per reason
+VERBATIM = 60
+REASONS_MAX = (3, 300)
 ATTEMPTS, TIMEOUT, WORKERS = 4, 120, 8
-SEED, MAX_TOKENS = 300, 4000  # gpt-oss counts reasoning against max_tokens: 4000 gave valid JSON 60/60
+SEED, MAX_TOKENS = 300, 4000
 GOLD_REQUIRED = 50
 HEX64 = re.compile(r"[0-9a-f]{64}")
 
@@ -93,8 +92,6 @@ def canon(d):
 def now():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
-
-# ----------------------------------------------------------------------------- the dataset (POC 8 export, read-only)
 
 def dataset_dir(a):
     d = a.dataset or os.environ.get("AVOS_LABEL_DATASET")
@@ -192,8 +189,6 @@ def render(it):
     return "\n".join(out)
 
 
-# ----------------------------------------------------------------------------- level 0
-
 def level0(it):
     o, msgs = it["outcome"], it["messages"]
     term, reward = o.get("termination_reason"), o.get("reward")
@@ -219,8 +214,6 @@ def level0(it):
 def judged(it):
     return it["witness"]["agrees"] is True and any(m.get("train") for m in it["messages"])
 
-
-# ----------------------------------------------------------------------------- label storage
 
 def row_problem(row):
     """Why a stored row cannot be applied, or None."""
@@ -299,7 +292,7 @@ class Store:
             fd = os.open(os.path.join(self.root, name), os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o644)
             try:
                 size = os.fstat(fd).st_size
-                torn = size and os.pread(fd, 1, size - 1) != b"\n"  # a torn last line stays torn, and stays alone
+                torn = size and os.pread(fd, 1, size - 1) != b"\n"
                 data = "".join(json.dumps(r, sort_keys=True, ensure_ascii=True) + "\n" for r in rs)
                 os.write(fd, (b"\n" if torn else b"") + data.encode())
                 os.fsync(fd)
@@ -310,8 +303,6 @@ class Store:
 def make_row(**fields):
     return {"label_id": sha(canon(fields)), **fields}
 
-
-# ----------------------------------------------------------------------------- level 1: the judge
 
 def env_file(path, what):
     try:
@@ -397,7 +388,7 @@ class Judge:
     def post(self, body):
         with self.lock:
             self.calls += 1
-        for fresh in (False, True):  # a kept-alive connection the server closed meanwhile is reopened once
+        for fresh in (False, True):
             c = getattr(self.local, "c", None)
             reused = c is not None
             if c is None:
@@ -437,7 +428,6 @@ class Judge:
                 content_failures += 1
             elif n < ATTEMPTS:
                 time.sleep(0.5 * 2 ** (n - 1))
-        # only an endpoint that answered every time, never validly, gives a stored (reproducible) unknown
         return ("invalid" if content_failures == ATTEMPTS else "unavailable"), None, ATTEMPTS
 
     def check(self, it, questions, model):
@@ -467,7 +457,7 @@ class Judge:
                 except (ValueError, KeyError, TypeError, AttributeError):
                     pass
             elif status is not None and status not in (408, 429) and status < 500:
-                try:  # the request itself is refused (e.g. 400 max_tokens_exceeded): asking again cannot help
+                try:
                     why = json.loads(data)["detail"]["error_type"]
                 except (ValueError, KeyError, TypeError):
                     why = None
@@ -498,8 +488,6 @@ def judge_answer(l1, key):
     vals = {f["answers"][key] for f in (l1 or {}).get("framings", {}).values() if f["answers"]}
     return vals.pop() if len(vals) == 1 else None
 
-
-# ----------------------------------------------------------------------------- run
 
 def kappa(a, b, c, d):
     n = a + b + c + d
@@ -680,7 +668,7 @@ def cmd_run(a):
     for r in stored.values():
         if r["level"] == 1 and r["model"] == MODEL and r["rubric_sha256"] == rubric_sha \
                 and r.get("prompt_sha256") == prompt_sha(r["framing"]):
-            k = (r["run"], r["content_sha256"], r["framing"])  # per run: clones of one conversation are judged apart
+            k = (r["run"], r["content_sha256"], r["framing"])
             if k not in l1_index or (r["ts"], r["label_id"]) > (l1_index[k]["ts"], l1_index[k]["label_id"]):
                 l1_index[k] = r
         elif r["level"] == 2:
@@ -743,7 +731,7 @@ def cmd_run(a):
             if not judged(it):
                 continue
             if a.checklist:
-                checks[run] = None  # eligible; answered below or left unanswered
+                checks[run] = None
                 r = l3_index.get((run, c_sha))
                 if r:
                     checks[run] = r
@@ -777,7 +765,6 @@ def cmd_run(a):
     if want - set(rows):
         raise Fail(f"run(s) not in the dataset: {', '.join(sorted(want - set(rows)))}", 2)
 
-    # combine: level 1 per run, current human label, the disagreement rule, strata
     stale = []
     out_rows = []
     for run in sorted(rows):
@@ -804,7 +791,6 @@ def cmd_run(a):
         label, rule = final(r["level0"], l1, l2)
         out_rows.append({**r, "level1": l1, "level2": l2, "final": {"label": label, "rule": rule, "kept": label == "pass"},
                          "stratum": stratum(r["level0"], l1)})
-    # the advisory layer lives in its own file: labels.jsonl, the label-set hash and the manifest do not depend on it
     views = {run: {"run": run, "content_sha256": rows[run]["content_sha256"], **checklist_view(checks[run], questions),
                    **({"reason": unanswered[run]} if run in unanswered else {})} for run in sorted(checks)}
 
@@ -817,7 +803,6 @@ def cmd_run(a):
     cons = [r["level1"]["consistent"] for r in out_rows if r["level1"] and r["level1"]["consistent"] is not None]
     unknown = sum(1 for r in out_rows if r["level1"] and r["level1"]["verdict"] == "unknown")
     hash_bad = sum(1 for r in out_rows if not r["level0"]["checks"]["item_hash"])
-    # a stale label stops counting once the run is labelled again on its current content (still listed)
     open_stale = sorted({x["run"] for x in stale if x["run"] not in relabelled})
     rc = 1 if unknown or open_stale or invalid or hash_bad else 0
     runs_m = dman["counts"]["runs_exported"]
@@ -875,8 +860,6 @@ def cmd_run(a):
         print("label: " + "; ".join(p for p in problems if p) + f" (see {a.out}/summary.json)", file=sys.stderr)
     return rc
 
-
-# ----------------------------------------------------------------------------- view, human, gold, merge
 
 def cmd_view(a):
     it = find_item(dataset_dir(a), a.run)

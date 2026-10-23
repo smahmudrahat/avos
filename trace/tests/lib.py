@@ -32,8 +32,6 @@ class NotImplementedCLI(Exception):
     """A contract path is missing: the check reports FAIL 'not implemented: <path>'."""
 
 
-# ----------------------------------------------------------------------------- basics
-
 def read_jsonl(path):
     with open(path) as f:
         return [json.loads(line) for line in f if line.strip()]
@@ -63,8 +61,6 @@ def order_key(ev):
     """Total order fixed by the contract: host ts, then writer, then seq."""
     return (ev["ts"], ev["writer"], ev["seq"])
 
-
-# ----------------------------------------------------------------------------- hash chain (pinned)
 
 def canon(ev):
     d = {k: v for k, v in ev.items() if k != "hash"}
@@ -99,8 +95,6 @@ def chain_check(rows):
     return None
 
 
-# ----------------------------------------------------------------------------- CLI runner
-
 def cli_path(name):
     return os.path.join(BIN, name)
 
@@ -116,7 +110,7 @@ def run_cli(name, *args, stdin=None, env=None, cwd=None, timeout=900, rss=False)
     if env:
         e.update(env)
     stats = None
-    if rss:  # per-process peak RSS: run through a wrapper whose only child is the CLI
+    if rss:
         stats = os.path.join(cwd or HERE, f".rss.{os.getpid()}.{time.time_ns()}.json")
         wrapper = ("import json,resource,subprocess,sys;r=subprocess.run(sys.argv[2:]);"
                    "json.dump({'maxrss':resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss},open(sys.argv[1],'w'));"
@@ -146,8 +140,6 @@ def cli_ndjson(res):
     except ValueError:
         raise AssertionError(f"stdout is not NDJSON: {res['out'][:200]!r}")
 
-
-# ----------------------------------------------------------------------------- legacy ledger view
 
 def legacy_principal(r):
     """Principal of a POC 1-5 ledger row, as the tests understand it."""
@@ -184,12 +176,11 @@ def ledger(events, legacy=False):
 def alive(L, p, ts):
     e = L.get(p)
     if not e or e[0] is None:
-        return None  # unknown
+        return None
     t = ts_ms(ts)
     return e[0] <= t and (e[1] is None or t <= e[1])
 
 
-# Post-hoc records about a principal, written after it ended: not subject to the liveness rule.
 LIVENESS_EXEMPT = {"vm.boot", "vm.exit", "agent.exit", "session.close", "label"}
 
 
@@ -259,8 +250,6 @@ def pair_llm_calls(rows):
     return out, receipts
 
 
-# ----------------------------------------------------------------------------- tau2 chat oracle
-
 def tau2_sim(result_path):
     j = json.load(open(result_path))
     return j["simulations"][0]
@@ -320,8 +309,6 @@ def first_diff(a, b):
     return None
 
 
-# ----------------------------------------------------------------------------- misc
-
 def percentile(xs, q):
     xs = sorted(xs)
     return xs[min(len(xs) - 1, int(q * len(xs)))]
@@ -330,8 +317,6 @@ def percentile(xs, q):
 def cpu_seconds():
     return resource.getrusage(resource.RUSAGE_SELF).ru_utime
 
-
-# ----------------------------------------------------------------------------- independent rule checker
 
 COMMON = {"event_id": str, "kind": str, "ts": str, "writer": str, "seq": int, "host": str, "principal": str,
           "vm_id": str, "prev": str, "hash": str}
@@ -354,7 +339,7 @@ def lint(rows):
     """Apply the contract's validation rules independently. Returns [(index, code, message)].
     This is the suite's oracle; it is deliberately simple and complete rather than fast."""
     errs = []
-    E = lambda i, c, m: errs.append((i, c, m))  # noqa: E731
+    E = lambda i, c, m: errs.append((i, c, m))
     seen_ids, last_ts, last_seq, by_id = {}, {}, {}, {}
     L = ledger(rows)
     for i, r in enumerate(rows):
@@ -443,8 +428,6 @@ def lint(rows):
 def lint_codes(rows):
     return {(rows[i].get("event_id") if isinstance(rows[i], dict) else None, c) for i, c, _ in lint(rows)}
 
-
-# ----------------------------------------------------------------------------- audit / cost / completeness oracles
 
 def authority_oracle(r, by_id):
     k = r["kind"]

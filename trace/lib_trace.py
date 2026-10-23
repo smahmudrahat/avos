@@ -19,8 +19,6 @@ RECEIPT_RE = re.compile(r"hr_[0-9a-f]{4}\Z")
 VM_OF = re.compile(r"spiffe://[^/]+/vm/([^/]+)")
 
 
-# ----------------------------------------------------------------------------- chain
-
 def canon(ev):
     """The pinned canonical form: the event without `hash`, keys sorted, compact, ASCII-escaped."""
     d = dict(ev)
@@ -70,11 +68,8 @@ def chat_form(m, role=None):
 
 
 def dumps(ev):
-    # One line as stored: the emitters' own json.dumps style, UTF-8 rather than \u escapes.
     return json.dumps(ev, ensure_ascii=False) + "\n"
 
-
-# ----------------------------------------------------------------------------- time and ids
 
 _DAY = {}
 
@@ -108,8 +103,6 @@ def vm_of(principal):
     return m[1] if m else None
 
 
-# ----------------------------------------------------------------------------- schema
-
 _TYPES = {"string": (str,), "integer": (int,), "number": (int, float), "boolean": (bool,), "object": (dict,),
           "array": (list,), "null": (type(None),)}
 
@@ -136,8 +129,6 @@ def type_ok(v, allowed):
     t = type(v)
     return t in allowed and not (t is bool and bool not in allowed)
 
-
-# ----------------------------------------------------------------------------- reading
 
 def lines(path):
     """(line number, raw line) for every non-blank line, streamed."""
@@ -176,7 +167,7 @@ def principal_table(paths):
                 elif k in ("vm.exit", "agent.exit"):
                     L.setdefault(p, [None, None, None])[1] = r["ts"]
             except (ValueError, KeyError, TypeError):
-                continue  # reported by the second pass
+                continue
     return L
 
 
@@ -191,8 +182,6 @@ def fingerprint(path):
         h.update(f.read(65536))
     return [st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, h.hexdigest()]
 
-
-# ----------------------------------------------------------------------------- projections
 
 GATED = {"llm.call", "tool.call", "net.connect"}
 
@@ -236,8 +225,6 @@ def legacy(ev):
         r["id"] = r.pop("agent_id")
     return r
 
-
-# ----------------------------------------------------------------------------- CLI
 
 def cli(main):
     """Exit 2 with a one-line message (never a traceback) on unreadable input; argparse already exits 2 on usage."""

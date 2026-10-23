@@ -26,7 +26,7 @@ import traceback
 sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import lib  # noqa: E402
+import lib
 
 CHECKS = []
 TH = {"shortcut_share": 0.9, "export_s_per_run": 0.2, "export_s_fixed": 5.0, "rss_mib": 512, "scale_factor": 3.0,
@@ -44,8 +44,6 @@ def check(cid, target, scale=False, host=False):
         return fn
     return deco
 
-
-# =============================================================================== context
 
 class Ctx:
     def __init__(self):
@@ -103,7 +101,7 @@ class Ctx:
         return self.export("base", *sum((["--run", r] for r in lib.STORE_RUNS), []), expect_rc=0)
 
     def everything(self):
-        return self.export("all", "--all", expect_rc=1)  # witness-only runs are skipped, one witness is tampered
+        return self.export("all", "--all", expect_rc=1)
 
     def tree(self):
         return self.export("tree", "--run", lib.TREE_VM, expect_rc=0)
@@ -112,7 +110,7 @@ class Ctx:
         for it in exp["items"]:
             if it["run"] == run and (principal is None and it["principal"].endswith("/agent/tau2") or it["principal"] == principal):
                 return it
-        for it in exp["items"]:  # non-τ² harness agent
+        for it in exp["items"]:
             if it["run"] == run and principal is None and it["principal"].count("/agent/") == 1 and "/sub/" not in it["principal"]:
                 return it
         raise AssertionError(f"no item for {run} {principal or '(agent)'} in {exp['dir']}")
@@ -123,9 +121,8 @@ class Ctx:
             raise AssertionError(f"view traceback: {lib.short(res['err'], 300)}")
         return res
 
-    # -- ssh (host mode)
     def ssh_base(self):
-        if self.ssh_ctl is None:  # a Unix socket path must stay < 104 bytes: never under macOS's long TMPDIR
+        if self.ssh_ctl is None:
             d = tempfile.mkdtemp(prefix="p8-", dir="/tmp")
             self.ssh_dir, self.ssh_ctl = d, os.path.join(d, "cm-%C")
             if len(os.path.join(d, "cm-" + "0" * 40)) >= 100:
@@ -149,8 +146,6 @@ class Ctx:
         subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-o", "ControlMaster=no", "-o", "ControlPath=none", HOST,
                         f"sudo rm -rf {HOST_TMP} /tmp/poc8-tests-* /tmp/poc8-selftest-*"], capture_output=True, text=True, timeout=120)
 
-
-# =============================================================================== A: command surface
 
 @check("A0_cli_surface", "CONTRACT §1/§3: exit codes, no tracebacks, `runs` lists every run with its evidence")
 def a0(ctx):
@@ -186,8 +181,6 @@ def a0(ctx):
                     probs.append(f"runs entries lack {k}")
     return not probs, "; ".join(probs) or "no-args and unknown subcommand exit 2; runs lists 20 runs with evidence store/ledger/witness"
 
-
-# =============================================================================== D: the four done tests
 
 def _viewer_check(ctx, run, html=False):
     e = ctx.env
@@ -305,7 +298,6 @@ def d2(ctx):
     tj = rep.get("trajectories") or {}
     if tj.get("tokenized") != len(b["items"]):
         probs.append(f"trajectories.jsonl: {tj.get('tokenized')} tokenized of {len(b['items'])} ({tj.get('error', '')[:200]})")
-    # the policy turns the suite expects, from the export itself
     policy = {}
     by_id = {it["item_id"]: it for it in b["items"]}
     for it in b["items"]:
@@ -337,7 +329,7 @@ def d2(ctx):
         own = (m.get("content") or "") + "".join(t["function"]["arguments"] for t in m.get("tool_calls") or [])
         for um in it["messages"][:x["turn_index"]]:
             snip = um.get("content")[:24] if isinstance(um.get("content"), str) and len(um["content"]) >= 24 else None
-            if um["role"] in ("user", "tool") and snip and snip in tr and snip not in own:  # a snippet the policy itself repeats is its own text
+            if um["role"] in ("user", "tool") and snip and snip in tr and snip not in own:
                 bad.append(f"environment text {snip!r} trained")
                 break
         if x["n_trained"] == 0 or x["n_trained"] >= x["n_tokens"]:
@@ -443,7 +435,6 @@ def d4(ctx):
     for f in files:
         if open(os.path.join(a["dir"], f), "rb").read() != open(os.path.join(b["dir"], f), "rb").read():
             probs.append(f"{f} differs between two runs (caches cleared, other --out)")
-    # copied roots
     copy = os.path.join(ctx.tmp, "rootscopy")
     shutil.copytree(e.dir, copy, ignore=shutil.ignore_patterns("out", "cache", "tmp", "home"))
     env2 = e.env(AVOS_TRACE_ROOT=os.path.join(copy, "store"), AVOS_RESULTS_ROOT=os.path.join(copy, "results"),
@@ -503,8 +494,6 @@ def d4b(ctx):
     return not probs, "; ".join(probs[:4]) or f"{len(ids)} item hashes listed, counts {json.dumps({k: got.get(k) for k in ('passed', 'failed', 'unknown', 'train', 'held_out')})}, M14 {m['m14']['train_passed']}/{m['m14']['train_runs']}"
 
 
-# =============================================================================== L: lineage and the store
-
 @check("L1_lineage_store_ids", "statement (POC 7 debt): every item traces to stored events by the store's own ids, never re-minted; every stored llm.call of the principal is referenced")
 def l1(ctx):
     e, b = ctx.env, ctx.base()
@@ -527,7 +516,6 @@ def l1(ctx):
         so = next((x["event_id"] for x in evs if x["kind"] == "session.open"), None)
         if it["lineage"].get("spawn") != spawn or it["lineage"].get("session_open") != so:
             probs.append(f"{run}: lineage.spawn/session_open wrong")
-        # re-minted ids: what ingest --run-dir would mint (POC 7 debt) must not appear
         rd = os.path.join(e.results, run)
         if os.path.exists(os.path.join(rd, "events.jsonl")):
             out = os.path.join(ctx.tmp, f"ingest-{run}.jsonl")
@@ -562,8 +550,6 @@ def l2(ctx):
         probs.append("run_retail-0_94 (stale copy of run_retail-0_14 next to it): lineage follows the copy, not the store")
     return not probs, "; ".join(probs) or "copy removed → exported from the store; stale copy → ids are the store's for the right VM"
 
-
-# =============================================================================== P: per-principal trajectories
 
 @check("P1_tree_per_principal", "statement: per-principal trajectories for a real POC 7 tree; parent lists children's items; store-only content is null and untrained")
 def p1(ctx):
@@ -625,8 +611,6 @@ def p1(ctx):
     return not probs, "; ".join(probs[:4]) or "5 items (VM, support, B1, B2, B3); support: 10 gateway tool calls + results with store ids, 3 children with item ids; nothing trained, outcome null"
 
 
-# =============================================================================== S: split, outcome, M8, M14
-
 @check("S1_split_user_disjoint", "claim 3 / statement: held-out tasks never tagged train; train/held_out/null from the user-disjoint split")
 def s1(ctx):
     a = ctx.everything()
@@ -642,7 +626,6 @@ def s1(ctx):
         probs.append(f"run_retail-10_0: split {it10['split']} task_id {it10['task_id']}")
     if ctx.item(a, "run_coding-slugify_2")["split"] is not None:
         probs.append("coding run has a τ² split")
-    # a split that holds out task 0 must flip every task-0 item
     alt = os.path.join(ctx.tmp, "alt_split.json")
     s = json.load(open(lib.SPLIT))
     s["train"] = [x for x in s["train"] if x != "0"]
@@ -714,8 +697,6 @@ def s3(ctx):
     return not probs, "; ".join(probs[:4]) or "store runs match avos (complete / incomplete / unverified); legacy runs unverified"
 
 
-# =============================================================================== V: diversity statistics
-
 @check("V1_stats_match_oracle", "statement: tool-at-turn-index, turn-count histogram, tool-call share, exact duplicates equal values computed independently")
 def v1(ctx):
     a = ctx.everything()
@@ -766,8 +747,6 @@ def v3(ctx):
     ok = any(i1 in g and i2 in g for g in groups) and i1 != i2
     return ok, "run_retail-0_13 and its clone run_retail-0_80 share a duplicate group (distinct item ids)" if ok else f"not grouped: {[len(g) for g in groups]}"
 
-
-# =============================================================================== H: honesty under missing data
 
 @check("H2_legacy_runs", "statement: POC 1–5 runs (ledger rows + result.json) export as evidence=ledger, unverified, with the witness's conversation; ids never claimed to be the store's")
 def h2(ctx):
@@ -881,7 +860,7 @@ def h7(ctx):
     probs = []
     if it["harness"] != "mini-swe-agent" or it["evidence"] != "ledger" or it["outcome"]["passed"] is not True or it["outcome"]["source"] != "mini-swe-agent":
         probs.append(f"harness {it['harness']} evidence {it['evidence']} passed {it['outcome']['passed']} source {it['outcome']['source']}")
-    tm = [m for m in w["trajectory"]["messages"] if m.get("role") in lib.CHAT_ROLES]  # mini-swe-agent's {"role": "exit"} is not a chat message
+    tm = [m for m in w["trajectory"]["messages"] if m.get("role") in lib.CHAT_ROLES]
     got = [(m["role"], m.get("content")) for m in it["messages"]]
     want = [(m["role"], m.get("content")) for m in tm]
     if got != want:
@@ -897,8 +876,6 @@ def h7(ctx):
         probs.append("trains on turns the host cannot match")
     return not probs, "; ".join(probs[:3]) or f"ledger evidence, tests_passed → passed, {len(tm)} trajectory messages verbatim, {n_ast} assistant vs {n_calls} calls → agrees={agrees}"
 
-
-# =============================================================================== A: host-hash witness checks (native gateway rows)
 
 def _native(ctx):
     return ctx.export("native", *sum((["--run", r] for r in lib.NATIVE_RUNS), []), expect_rc=0)
@@ -930,7 +907,7 @@ def a1(ctx):
 
 def _tamper_case(ctx, name, mutate, src="run_retail-0_16", tools_env=None):
     e = ctx.env
-    run = f"run_retail-0_{name}"  # cloned at environment creation (so the roots snapshot covers it)
+    run = f"run_retail-0_{name}"
     env = e.env(**(tools_env or {}))
     x = ctx.export(f"tamper-{name}", "--run", run, env=env)
     if x["manifest"] is None:
@@ -1006,8 +983,6 @@ def j2(ctx):
     ok = it is not None and x["res"]["rc"] == 1 and it["witness"]["agrees"] is False and not any(m.get("train") for m in it["messages"]) and not x["sft"]
     return ok, "leftover call on the agent's model flagged, nothing trained" if ok else f"rc={x['res']['rc']} witness={it and it['witness']['agrees']} sft={len(x['sft'])}"
 
-
-# =============================================================================== X: derived state
 
 @check("X1_witness_replaced_same_size_mtime", "CONTRACT §11: after a warm export the witness changes content with the same size, mtime and inode; the next export and view follow the file")
 def x1(ctx):
@@ -1094,8 +1069,6 @@ def x3(ctx):
     return not probs, "; ".join(probs[:3]) or f"{n_files} cached files damaged over 3 modes + deletion: every export identical to the clean one or refused"
 
 
-# =============================================================================== R: redaction
-
 @check("R1_redaction_hook", "statement: a content redaction hook applied to every content field of trajectories, sft and the viewer; recorded in the manifest")
 def r1(ctx):
     e = ctx.env
@@ -1132,8 +1105,6 @@ def r1(ctx):
             probs.append("view --redact does not show the redacted content")
     return not probs, "; ".join(probs[:3]) or f"{len(x['items'])} items + {len(x['sft'])} sft examples + view: no digit left in any content field; ids differ; hook recorded"
 
-
-# =============================================================================== SC: scale
 
 @check("SC1_export_700_runs", "CONTRACT §12: export of 700 synthetic runs (--runs-file) (POC 11/12 dataset size) ≤ 145 s, peak RSS ≤ 512 MiB", scale=True)
 def sc1(ctx):
@@ -1172,8 +1143,6 @@ def sc2(ctx):
     return ok, f"20 runs: small store {ts:.2f}s, +2000 VMs {tb:.2f}s (×{ratio:.2f}, bar ×{TH['scale_factor']}); view {v['secs']:.2f}s (bar {TH['view_s']}s)"
 
 
-# =============================================================================== Z: roots untouched (last)
-
 @check("Z_roots_untouched", "collect/CONTRACT.md §2 / CONTRACT §6: after every command the store, results and ledger are byte-identical; nothing was written under them")
 def z(ctx):
     e = ctx.env
@@ -1188,8 +1157,6 @@ def z(ctx):
         probs.append("ledger changed")
     return not probs, "; ".join(probs) or f"{len(now['store'])} store files, {len(now['results'])} result files, ledger: unchanged"
 
-
-# =============================================================================== HOST: live checks over ssh
 
 def _host_retrain_present(ctx):
     p = ctx.ssh(f"test -f {HOST_REPO}/retrain/bin/retrain && echo yes")
@@ -1324,7 +1291,7 @@ def host4(ctx):
     t0 = time.perf_counter()
     p = ctx.ssh(cmd)
     secs = time.perf_counter() - t0
-    ok = "rc=0" in p.stdout and secs <= TH["view_s"] + 0.5  # + ssh round trip
+    ok = "rc=0" in p.stdout and secs <= TH["view_s"] + 0.5
     return ok, f"{secs:.2f}s incl. ssh (bar {TH['view_s']}s + 0.5 ssh), {p.stdout.strip()}"
 
 
@@ -1356,8 +1323,6 @@ def hostz(ctx):
     return not probs, "; ".join(probs) or "no suite process on the host, no ssh master on the laptop"
 
 
-# =============================================================================== runner
-
 def run(args):
     ctx = Ctx()
     n_fail = n_pass = 0
@@ -1382,7 +1347,7 @@ def run(args):
                 ok, note = False, f"not implemented: {e}"
             except AssertionError as e:
                 ok, note = False, f"{lib.short(e, 400)}"
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 ok, note = False, f"suite error {type(e).__name__}: {lib.short(e, 200)}"
                 if args.verbose:
                     traceback.print_exc()
@@ -1395,12 +1360,10 @@ def run(args):
             ctx.host_cleanup()
         ctx.ssh_close()
         if n_fail == 0:
-            shutil.rmtree(ctx.tmp, ignore_errors=True)  # kept on failure for inspection (printed above)
+            shutil.rmtree(ctx.tmp, ignore_errors=True)
     print(f"# {n_pass} passed, {n_fail} failed")
     return 0 if n_fail == 0 else 1
 
-
-# =============================================================================== selftest
 
 def selftest(args):
     results = []
@@ -1412,11 +1375,9 @@ def selftest(args):
     tmp = tempfile.mkdtemp(prefix="poc8-selftest-")
     ok("fixtures_frozen", lib.fixture_drift() == [], str(lib.fixture_drift()[:3]))
     e = lib.Env(tmp)
-    # fixtures are POC 6-valid and complete
     for vm in ("vm-01-e1a4cf", lib.TREE_VM):
         v, note = lib.validate_store(e, vm)
         ok(f"fixture_valid_{vm}", v, str(note) if not v else "validate+verify ok")
-    # cloning keeps validity and the M8 verdicts the fixtures need
     lib.clone_run(e, "run_retail-0_13", "run_retail-10_0", "vm-01-aa0010", task_id="10")
     lib.clone_run(e, "run_retail-0_11", "run_retail-0_92", "vm-01-aa0092", counters="truncate")
     lib.clone_run(e, "run_retail-0_11", "run_retail-0_93", "vm-01-aa0093", counters="none")
@@ -1428,7 +1389,6 @@ def selftest(args):
     ok("clone_m8", st == {"run_retail-10_0": "complete", "run_retail-0_92": "incomplete", "run_retail-0_93": "unverified"}, str(st))
     ok("clone_task", e.job("run_retail-10_0")["task"] == "retail/10" and e.sim("run_retail-10_0")["task_id"] == "10")
     ok("store_ids_distinct", not set(x["event_id"] for x in e.store_events("vm-01-aa0010")) & set(x["event_id"] for x in e.store_events("vm-01-a42e93")))
-    # witness matching
     ag = e.job("run_retail-0_12")["agent_spiffe_id"]
     pairs, probs = lib.match_witness(e.sim("run_retail-0_12")["messages"], lib.agent_calls(e.store_events("vm-01-e1a4cf"), ag))
     ok("witness_agrees_real", len(pairs) == 11 and not probs, f"{len(pairs)} pairs, {probs}")
@@ -1437,7 +1397,6 @@ def selftest(args):
     ok("witness_tamper_detected", bool(probs), f"{probs[:1]}")
     sim9 = e.sim("run_retail-0_9")
     ok("greeting_is_first", sim9["messages"][0]["content"] == lib.GREETING and not sim9["messages"][0].get("usage"))
-    # host-hash oracle on native runs, and the mutators defeat it with token counts unchanged
     for run in lib.NATIVE_RUNS:
         res = e.witness(run)
         vm = e.vm_of_run(run)
@@ -1460,7 +1419,6 @@ def selftest(args):
     t2 = json.loads(json.dumps(tools))
     t2[3]["function"]["description"] += " (edited)"
     ok("mutator_tools_caught", bool(lib.witness_verdict(res, calls, t2, lib.system_prompt_for(res["simulations"][0]))[1]))
-    # judge-call injection keeps the store valid and M8 complete
     lib.clone_run(e, "run_retail-0_16", "run_retail-0_209", "vm-01-bb209")
     jid = lib.inject_call(e, "vm-01-bb209", "deepseek-ai/DeepSeek-V4-Flash-0731")
     v, note = lib.validate_store(e, "vm-01-bb209")
@@ -1472,7 +1430,6 @@ def selftest(args):
     lib.inject_call(e, "vm-01-bb210", "Qwen/Qwen3-30B-A3B-Instruct-2507", response_id="chatcmpl-leftover-0001")
     calls10 = lib.agent_calls(e.store_events("vm-01-bb210"), e.job("run_retail-0_210")["agent_spiffe_id"])
     ok("inject_same_model_leftover", bool(lib.witness_verdict(e.witness("run_retail-0_210"), calls10, tools, lib.system_prompt_for(e.sim("run_retail-0_210")))[1]))
-    # round-trip comparator
     sim = e.sim("run_retail-0_13")
     fake = {"messages": [{"role": "system", "content": "x"}] + json.loads(json.dumps(
         [({"role": "tool", "tool_call_id": m["id"], "content": m["content"]} if m["role"] == "tool" else
@@ -1489,7 +1446,6 @@ def selftest(args):
     ok("roundtrip_catches_order", lib.first_diff(lib.tau2_norm(sim), lib.item_norm(bad2)) is not None)
     sp = lib.system_prompt_for(sim)
     ok("system_prompt", sp.startswith("<instructions>") and sim["policy"] in sp and len(sp) > 6000, f"{len(sp)} chars")
-    # statistics
     d = os.path.join(tmp, "planted")
     items = lib.planted_dataset(d)
     s = lib.stats_oracle(items)
@@ -1499,10 +1455,8 @@ def selftest(args):
     ok("stats_diverse_unflagged", s2["shortcut"]["flag"] is False, str(s2["shortcut"]))
     ok("stats_diff_catches", lib.stats_diff(s, {**s, "tool_call_share": s["tool_call_share"] + 0.01}) and not lib.stats_diff(s, json.loads(json.dumps(s))))
     ok("item_ids_canonical", all(lib.canon_item_id(i) == i["item_id"] for i in items))
-    # split and outcome
     ok("split_oracle", lib.split_of("10") == "held_out" and lib.split_of("0") == "train" and lib.split_of("64") is None)
     ok("passed_oracle", lib.passed_of_sim(e.sim("run_retail-0_13")) is True and lib.passed_of_sim(e.sim("run_retail-0_12")) is False and lib.passed_of_sim(e.sim("run_retail-2_1")) is None)
-    # file oracles
     p = os.path.join(tmp, "f.txt")
     open(p, "w").write("hello world 19122\n")
     st0 = os.stat(p)
@@ -1517,7 +1471,6 @@ def selftest(args):
     t0 = lib.tree_snapshot(e.results)
     open(os.path.join(e.results, "run_retail-0_12", "job.json"), "a").write(" ")
     ok("tree_snapshot_detects", lib.tree_snapshot(e.results) != t0)
-    # item schema oracle
     good = {"item_id": "", "run": "r", "principal": "p", "parent": None, "children": [], "vm_id": "v", "host": "h", "harness": "tau2", "task": "retail/0",
             "task_id": "0", "evidence": "store", "messages": [{"role": "system", "content": "x", "train": False, "event_id": None},
                                                              {"role": "assistant", "content": None, "train": True, "event_id": "e",
@@ -1540,11 +1493,9 @@ def selftest(args):
     b3["messages"][1]["tool_calls"][0]["function"]["arguments"] = {"a": 1}
     ok("item_schema_rejects", lib.item_problems(b1) and lib.item_problems(b2) and lib.item_problems(b3))
     ok("tools_cover_calls", lib.tools_cover_calls(good) == [] and lib.tools_cover_calls({**good, "messages": [{"role": "assistant", "tool_calls": [{"id": "c", "type": "function", "function": {"name": "g", "arguments": "{}"}}]}]}))
-    # redaction hook
     import redact_hook
     r = redact_hook.digits('{"zip": "19122", "n": 5}', "arguments")
     ok("redact_hook", not lib.DIGIT.search(r) and json.loads(r)["zip"] == "#####" and redact_hook.digits("a1b2", "content") == "a#b#", r)
-    # viewer oracle: a text built from the witness passes; a swapped pair fails
     sim = e.sim("run_retail-0_12")
     needles = lib.viewer_needles(sim, lib.system_prompt_for(sim), None)
     text = "\n".join(needles)
@@ -1554,13 +1505,11 @@ def selftest(args):
     sw[i], sw[i + 1] = sw[i + 1], sw[i]
     ok("viewer_needles_catch_order", lib.in_order("\n".join(sw), needles) is not None)
     ok("strip_html", lib.strip_html("<pre>a &lt; b</pre>") == "a < b")
-    # scale generator is deterministic and valid
     e2 = lib.Env(tmp, "scale")
     n_base = len(os.listdir(os.path.join(e2.store, "vm")))
     runs = lib.gen_scale(e2, 6, 3)
     v, note = lib.validate_store(e2, e2.vm_of_run(runs[0]))
     ok("gen_scale_valid", v and len(runs) == 6 and len(os.listdir(os.path.join(e2.store, "vm"))) == n_base + 6 + 3, str(note) if not v else f"{len(os.listdir(os.path.join(e2.store, 'vm')))} VMs")
-    # the TRL harness itself, on a hand-made dataset (needs uv + network once)
     if shutil.which("uv") is None:
         print("SKIP selftest.trl_harness                         uv not on PATH")
     else:

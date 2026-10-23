@@ -25,8 +25,8 @@ TOK = "Qwen/Qwen3-0.6B"
 def main(ds_dir, out_path):
     rep = {"ok": False, "versions": {}, "trajectories": {}, "sft": {}, "errors": []}
     try:
-        import torch  # noqa: F401
-        import trl, transformers, datasets  # noqa: E401
+        import torch
+        import trl, transformers, datasets
         from datasets import load_dataset
         from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
         from trl import SFTConfig, SFTTrainer
@@ -44,18 +44,16 @@ def main(ds_dir, out_path):
             args = SFTConfig(output_dir=out, per_device_train_batch_size=1, max_length=32768, report_to=[], **kw)
             return ds, SFTTrainer(model=model, args=args, train_dataset=ds, processing_class=tok)
 
-        # pass 1: conversational messages + tools, accepted as-is
         traj = os.path.join(ds_dir, "trajectories.jsonl")
         n_lines = sum(1 for l in open(traj, encoding="utf-8") if l.strip())
         try:
             ds, tr = trainer(traj)
             rep["trajectories"] = {"lines": n_lines, "loaded": len(ds), "tokenized": len(tr.train_dataset),
                                    "columns": tr.train_dataset.column_names}
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             rep["trajectories"] = {"lines": n_lines, "error": f"{type(e).__name__}: {e}"[:600]}
             rep["errors"].append("trajectories.jsonl rejected by SFTTrainer")
 
-        # pass 2: prompt-completion, completion-only loss: which text carries labels
         sft = os.path.join(ds_dir, "sft.jsonl")
         raw = [json.loads(l) for l in open(sft, encoding="utf-8") if l.strip()]
         if not raw:
@@ -77,7 +75,7 @@ def main(ds_dir, out_path):
             if len(tds) != len(raw):
                 rep["errors"].append(f"sft.jsonl: {len(raw)} lines but {len(tds)} tokenized examples (fully masked examples are dropped silently)")
         rep["ok"] = not rep["errors"]
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         rep["errors"].append(f"{type(e).__name__}: {e}"[:600])
         rep["traceback"] = traceback.format_exc()[-3000:]
     json.dump(rep, open(out_path, "w"), indent=1)

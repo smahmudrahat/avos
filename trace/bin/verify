@@ -13,7 +13,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-import lib_trace as T  # noqa: E402
+import lib_trace as T
 
 
 def main():
@@ -29,7 +29,7 @@ def main():
             continue
         w, seq, h = ev.get("writer"), ev.get("seq"), ev.pop("hash", None)
         s = writers.setdefault(w, {"count": 0, "head": T.GENESIS, "last_seq": None})
-        e = lambda code, msg: errors.append({"line": line, "event_id": ev.get("event_id"), "writer": w, "seq": seq,  # noqa: E731
+        e = lambda code, msg: errors.append({"line": line, "event_id": ev.get("event_id"), "writer": w, "seq": seq,
                                              "code": code, "message": msg})
         if h != sha(dumps(ev, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest():
             e("E_CHAIN_HASH", "event does not hash to its hash")

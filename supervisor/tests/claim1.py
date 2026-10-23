@@ -22,28 +22,27 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 HERE = pathlib.Path(__file__).resolve().parent
 OUT = pathlib.Path("/tmp/claim1")
 KEY = "/var/lib/avos/images/vm_key"
-AVOS = ["python3", str(REPO / "collect" / "bin" / "avos")]   # collect/CONTRACT.md §1: the documented query path
-INGEST = ["python3", str(REPO / "trace" / "bin" / "ingest")]  # Justfile poc6: raw ledger rows -> POC 6 trace file
-SCRATCH_ROOT = OUT / "scratch-trace"                          # AVOS_TRACE_ROOT for check 6; never the live store
+AVOS = ["python3", str(REPO / "collect" / "bin" / "avos")]
+INGEST = ["python3", str(REPO / "trace" / "bin" / "ingest")]
+SCRATCH_ROOT = OUT / "scratch-trace"
 CGROOT = "/sys/fs/cgroup/system.slice/avos-agent.service"
 IP = {"vm-01": "172.16.1.2", "vm-02": "172.16.2.2"}
-MODEL = None  # read from agent.env at startup
+MODEL = None
 
-TICK = 0.05           # sibling tick period (as in poc5)
-LATE = 0.100          # metrics.md M7: a tick "delayed" is one late by more than 100 ms
-WINDOW = 1.0          # metrics.md M7: ... within 1 s of a halt or resume
-GAP_BAR = TICK + LATE  # a tick is delayed if the gap before it exceeds this (0.15 s)
-HOLD = 1.0            # seconds a branch is held halted/cut per repetition
+TICK = 0.05
+LATE = 0.100
+WINDOW = 1.0
+GAP_BAR = TICK + LATE
+HOLD = 1.0
 M6_BAR_MS = 500
 M6_GROWTH_BAR_MS = 20
 SYN_ROWS_FULL = 200_000
 SYN_ROWS_QUICK = 20_000
 
-_offsets = {}         # slot -> (host_clock - guest_clock) seconds
-_created = set()      # slots to destroy in finally
+_offsets = {}
+_created = set()
 
 
-# --------------------------------------------------------------------------------------------------- shell / ssh
 def run(cmd, timeout=120, check=False):
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if check and p.returncode != 0:
@@ -67,7 +66,6 @@ def ctl(*args, timeout=30, env=None):
                           timeout=timeout, env=e)
 
 
-# --------------------------------------------------------------------------------------------------- VM lifecycle
 def vm_create(slot):
     p = run(["infra/vm", "create", slot], timeout=120)
     if p.returncode != 0 and "exists" in (p.stdout + p.stderr):
@@ -80,7 +78,7 @@ def vm_create(slot):
     for tok in (p.stdout + p.stderr).split():
         if tok.startswith("vm_id="):
             vm_id = tok.split("=", 1)[1]
-    gssh_base(slot)  # establish master
+    gssh_base(slot)
     gssh(slot, "true")
     ship(slot)
     _offsets[slot] = measure_offset(slot)
@@ -116,7 +114,6 @@ def hostclock(slot, guest_wall):
     return guest_wall + _offsets[slot]
 
 
-# --------------------------------------------------------------------------------------------------- spawning
 def cfg_for(name, **kw):
     c = {"self": "/tmp/workload.py", "log": "/tmp/claim1/%s.jsonl" % name}
     c.update(kw)
@@ -173,7 +170,6 @@ def calls(logs, name):
     return [r for r in logs.get(name, []) if r["k"] == "call"]
 
 
-# --------------------------------------------------------------------------------------------------- freeze watcher
 class Watcher:
     """Reads EDGE lines from /tmp/watch.py over a persistent ssh channel: edges = [(cgdir, frozen, host_wall)]."""
     def __init__(self, slot, cgdirs):
@@ -206,7 +202,6 @@ class Watcher:
             pass
 
 
-# --------------------------------------------------------------------------------------------------- M7 scoring
 def m7_score(logs, slot, sibling_names, control_times):
     """metrics.md M7: every failed sibling call (any time) + every sibling tick late by > GAP_BAR within
     WINDOW of a control. Returns (total, failed_calls, delayed_ticks, detail list)."""
@@ -231,7 +226,6 @@ def dump(name, obj):
     (OUT / name).write_text(json.dumps(obj, indent=2, default=str))
 
 
-# =============================================================================================== CHECKS
 def check1(reps):
     """Halt a sub-agent (own child) by name: M6 <= 500 ms, whole branch frozen (cgroup + counter), parent and
     siblings keep progressing, resume continues with no lost sequence."""
@@ -270,17 +264,14 @@ def check1(reps):
 
     time.sleep(0.5)
     logs = read_logs(slot)
-    # independent-of-ctl freeze proof: B's own tick counter makes no progress inside any halt window
     b_in_window = 0
     for n, t in ticks(logs, "B", slot):
         if any(fz + 0.08 <= t <= tr for fz, tr in intervals):
             b_in_window += 1
-    # parent + siblings progressed during the holds
     sib_ok = True
     for nm in ("A", "S1", "S2"):
         adv = sum(1 for n, t in ticks(logs, nm, slot) if any(fz <= t <= tr for fz, tr in intervals))
         sib_ok = sib_ok and adv > 0
-    # resume with no lost sequence: B's tick numbers are contiguous 1..max
     bn = [n for n, _ in ticks(logs, "B", slot)]
     contiguous = bool(bn) and set(bn) == set(range(1, max(bn) + 1))
 
@@ -327,11 +318,8 @@ def check2(reps):
             halt_froze += 1
         ctl("resume", spiffeDF); ctl("resume", spiffeFK)
         time.sleep(0.4)
-    # sibling S unaffected while descendants were frozen
     logs = read_logs(slot)
     s_alive = len(ticks(logs, "S", slot)) > 0
-    # kill: no descendant may remain. Proof independent of ctl: both branch cgroups are gone (cgroup.kill removes
-    # the whole subtree, reparented daemon included) and the daemon counter is frozen for good.
     d_pre = daemon_val()
     ctl("kill", spiffeDF); ctl("kill", spiffeFK)
     time.sleep(1.0)
@@ -339,7 +327,7 @@ def check2(reps):
                    % (cgDF, cgFK), timeout=15).stdout.split()
     cgroups_removed = cg_gone == ["GONE", "GONE"]
     d_post1 = daemon_val(); time.sleep(1.0); d_post2 = daemon_val()
-    daemon_frozen = d_post2 == d_post1  # counter not advancing after kill
+    daemon_frozen = d_post2 == d_post1
     alive_after_kill = 0 if (cgroups_removed and daemon_frozen) else 1
     s_after = len(ticks(read_logs(slot), "S", slot)) > 0
     dump("check2.json", {"halt_froze": halt_froze, "reps": reps, "sibling_alive": s_alive,
@@ -358,7 +346,6 @@ def check3(reps):
     running (not frozen); siblings' calls all answered; uncut restores, measured the same way."""
     slot = "vm-01"
     vm_create(slot)
-    # target "support": its refunds are normally allowed (200); a sibling "support2" is denied (403) -- both answers.
     spawn_top(slot, "support", cfg_for("support", tick=TICK, call={"kind": "tool", "cents": 100}, call_every=0.05))
     spawn_top(slot, "support2", cfg_for("support2", tick=TICK, call={"kind": "tool", "cents": 100}, call_every=0.05))
     logs = wait_logs(slot, ["support", "support2"])
@@ -370,7 +357,6 @@ def check3(reps):
         t0 = time.time(); ctl("cut", spiffeT); time.sleep(1.0)
         tu = time.time(); ctl("uncut", spiffeT); time.sleep(1.0)
         logs = read_logs(slot)
-        # first target call refused (403 after being 200) after t0, and first allowed (200) after tu
         tcalls = sorted(((c["t1"], c["st"], c.get("b", "")) for c in calls(logs, "support")))
         first_ref = next((hostclock(slot, t) for t, st, b in tcalls if hostclock(slot, t) >= t0 and st == 403), None)
         first_ok = next((hostclock(slot, t) for t, st, b in tcalls if hostclock(slot, t) >= tu and st == 200), None)
@@ -378,7 +364,6 @@ def check3(reps):
             cut_lat.append((first_ref - t0) * 1000)
         if first_ok:
             uncut_lat.append((first_ok - tu) * 1000)
-        # target kept ticking across the cut window (not frozen)
         adv = sum(1 for n, t in ticks(logs, "support", slot) if t0 <= t <= tu)
         if adv > 0:
             kept_running += 1
@@ -405,21 +390,16 @@ def check4(reps):
     vm_create(slot)
     delivered, uncorroborated = 0, 0
     detail = []
-    n = max(1, reps // 3)  # slow LLM calls are ~9 s each; a few per mode is enough
+    n = max(1, reps // 3)
     for mode in ("halt", "cut"):
         for i in range(n):
             nm = "F_%s_%d" % (mode, i)
             info = spawn_top(slot, nm, cfg_for(nm, call={"kind": "llm", "model": MODEL, "max_tokens": 1500},
                                                calls_max=1))
             spiffe = info["spiffe_id"]
-            time.sleep(1.5)  # let the call get in flight
+            time.sleep(1.5)
             t_ctl = time.time()
             ctl(mode, spiffe)
-            # Hold the control until the upstream answer has reached the gateway and been handled: the store's
-            # llm.call event for this principal, read through the documented query (`avos trace --principal`).
-            # The control must not be released earlier -- an answer that arrives after release is legitimately
-            # delivered. The upstream model has been seen to take up to ~40 s; bound the wait at 240 s and treat
-            # a missing event as a FAIL (uncorroborated), never as a pass.
             rowstate = wait_llm_row(spiffe, timeout=240)
             time.sleep(0.5)
             ctl("resume" if mode == "halt" else "uncut", spiffe)
@@ -457,7 +437,6 @@ def check5(reps, load_secs):
     for slot in ("vm-01", "vm-02"):
         wait_logs(slot, [n for s, n in sib_names if s == slot])
 
-    # (a) control-free baseline
     base_start = time.time()
     time.sleep(load_secs)
     base_end = time.time()
@@ -465,14 +444,12 @@ def check5(reps, load_secs):
     base_failed, base_delayed = 0, 0
     for slot in ("vm-01", "vm-02"):
         names = [n for s, n in sib_names if s == slot]
-        # baseline: no controls, so score failed calls + any gap>bar over the whole window (worst case for us)
         for nm in names:
             base_failed += sum(1 for c in calls(logs0[slot], nm) if not (c["st"] == 200 or c["st"] == 403))
             seq = ticks(logs0[slot], nm, slot)
             base_delayed += sum(1 for (a, b) in zip(seq, seq[1:])
                                 if base_start <= b[1] <= base_end and (b[1] - a[1]) > GAP_BAR)
 
-    # (b) control period: hammer a dedicated victim in each VM
     control_times = {slot: [] for slot in ("vm-01", "vm-02")}
     for slot in ("vm-01", "vm-02"):
         spawn_top(slot, "V_" + slot[-2:], cfg_for("V_" + slot[-2:], tick=TICK))
@@ -485,7 +462,7 @@ def check5(reps, load_secs):
         r += 1
         for slot in ("vm-01", "vm-02"):
             vic = ctl_spiffe(slot, "/agent/V_" + slot[-2:])
-            if not vic:  # victim was killed last round; respawn
+            if not vic:
                 spawn_top(slot, "V_%s_%d" % (slot[-2:], r), cfg_for("V_%s_%d" % (slot[-2:], r), tick=TICK))
                 wait_logs(slot, ["V_%s_%d" % (slot[-2:], r)])
                 vic = ctl_spiffe(slot, "/agent/V_%s_%d" % (slot[-2:], r))
@@ -554,7 +531,6 @@ def check6(reps):
     scratch_events = store_events(env)
     after = measure(reps)
     live_after = store_events()
-    # the control path really wrote into the scratch root (so the large history was on its path)
     ctl_rows_in_scratch = sum(1 for e in avos_trace(spiffeB, env) if e.get("kind") in ("halt", "resume"))
 
     bmed = statistics.median(before) if before else 1e9
@@ -581,14 +557,13 @@ def check7(reps):
         vm_create(slot)
     agents_per_vm = 4
     total_target = 3200 if QUICK else 20000
-    per_agent = -(-total_target // (agents_per_vm * 2))  # ceil
+    per_agent = -(-total_target // (agents_per_vm * 2))
     names = []
     for slot in ("vm-01", "vm-02"):
         for i in range(agents_per_vm):
             nm = "C_%s_%d" % (slot[-2:], i)
             names.append((slot, nm))
             spawn_top(slot, nm, cfg_for(nm, call={"kind": "tool", "cents": 100}, call_every=0, calls_max=per_agent))
-    # wait for all callers to finish
     deadline = time.time() + (120 if QUICK else 600)
     while time.time() < deadline:
         logsA = read_logs("vm-01"); logsB = read_logs("vm-02")
@@ -630,12 +605,9 @@ def check8(reps):
     vic_run = "/run/avos/" + vic["id"]
     atk_cfg = cfg_for("attacker", intruder={"victim_cg": vic_cg, "victim_run": vic_run,
                                             "self_cg": CGROOT + "/__SELF__", "guest_ip": IP[slot]})
-    # self_cg is filled by the attacker itself from /proc/self/cgroup; placeholder unused by intruder for self.
     atk = spawn_top(slot, "attacker", atk_cfg)
-    # fix self_cg: attacker reads its own; but we passed a placeholder. Re-point to the real attacker cgroup.
     atk_meta = wait_logs(slot, ["attacker"], need_meta=True)
     real_self = cg_of(atk_meta, "attacker")
-    # the intruder used the placeholder for self-freeze; redo that one attempt against the real self cgroup.
     gssh(slot, "setpriv --reuid=%d --regid=%d --clear-groups sh -c 'echo 1 > %s/cgroup.freeze' 2>&1 | tail -1 > /tmp/claim1/selffreeze.txt || true"
          % (atk["uid"], atk["uid"], real_self), timeout=15)
     selffreeze = gssh(slot, "cat /tmp/claim1/selffreeze.txt", timeout=15).stdout.strip()
@@ -643,7 +615,6 @@ def check8(reps):
     logs = read_logs(slot)
     attempts = [r for r in logs.get("attacker", []) if r["k"] == "intrude"]
     not_blocked = [a for a in attempts if not a["blocked"]]
-    # victim must still be alive and ticking (attacker changed nothing)
     before = len(ticks(logs, "victim", slot))
     time.sleep(1.0)
     after = len(ticks(read_logs(slot), "victim", slot))
@@ -658,7 +629,6 @@ def check8(reps):
         (len(not_blocked), self_froze_blocked, victim_progressing), "escapes_succeeded=0"
 
 
-# --------------------------------------------------------------------------------------------------- ledger / ctl helpers
 def ctl_spiffe(slot, suffix):
     """Resolve a live principal's full SPIFFE id from `ctl ls` by the slot's current vm-id and a suffix."""
     out = ctl("ls").stdout
@@ -730,7 +700,6 @@ def import_history(nrows, env):
         return -1
 
 
-# --------------------------------------------------------------------------------------------------- main
 CHECKS = {1: check1, 2: check2, 3: check3, 4: check4, 6: check6, 7: check7, 8: check8}
 QUICK = False
 
@@ -763,7 +732,6 @@ def main():
                 import traceback
                 dump("check%d.error.txt" % cid, traceback.format_exc())
                 ok, what, meas, bar = False, "ERROR " + type(e).__name__, str(e)[:200], "-"
-                # clean up any VMs this check left behind
                 for slot in list(_created):
                     vm_destroy(slot)
             dt = time.time() - t0
@@ -773,7 +741,7 @@ def main():
     finally:
         for slot in list(_created):
             vm_destroy(slot)
-        shutil.rmtree(SCRATCH_ROOT, ignore_errors=True)   # the only history this suite ever creates
+        shutil.rmtree(SCRATCH_ROOT, ignore_errors=True)
         run(["sh", "-c", "rm -f %s/cm-*" % OUT], timeout=15)
     print("total %.0fs, %d/%d passed" % (time.time() - t_start, sum(results), len(results)))
     sys.exit(0 if all(results) and results else 1)

@@ -26,7 +26,7 @@ import traceback
 sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import lib  # noqa: E402
+import lib
 
 CHECKS = []
 TH = {"level0_s": 60.0, "level01_s": 900.0, "rerun_s": 120.0, "rss_mib": 512, "root_mib": 50, "n_scale": 10000,
@@ -47,8 +47,6 @@ def check(cid, target, scale=False, host=False):
     return deco
 
 
-# =============================================================================== context
-
 class Ctx:
     def __init__(self):
         self.tmp = tempfile.mkdtemp(prefix="poc9-tests-")
@@ -58,7 +56,7 @@ class Ctx:
         self.cache = {}
         self.ssh_ctl = None
         self.snap0 = None
-        self.transcripts = []  # (text, where) seen on stdout/stderr, scanned for the key
+        self.transcripts = []
 
     @property
     def env(self):
@@ -111,7 +109,6 @@ class Ctx:
             raise AssertionError(f"rc={res['rc']} but outputs missing: {lib.missing_outputs(out)}")
         return d
 
-    # -- the warm level 0,1 run over the base dataset with the adversarial stub (shared by several checks)
     def judged(self):
         if "judged" in self.cache:
             return self.cache["judged"]
@@ -120,7 +117,6 @@ class Ctx:
         runs = lib.runs_of(ds["items"])
         items = {r: self.item(r) for r in runs}
         eligible = [r for r in runs if lib.judged_oracle(items[r])]
-        # controlled verdicts: two inconsistent items, one that never answers validly, one slow, the rest by hash
         inc = [items[r]["item_id"] for r in ("run_retail-0_13", "run_retail-0_17")]
         inv = [items["run_retail-0_14"]["item_id"]]
         slow = {items["run_retail-0_11"]["item_id"]: 3}
@@ -131,12 +127,11 @@ class Ctx:
         j.reset(verdict=verdict, inconsistent=inc, always_invalid=inv, delay=slow, faults=True, drift=False,
                 quote_reasons=True, keep_bodies=True, must_contain=must, status=None, default="hash")
         r = self.roots("judged")
-        d = self.run(r, ds, expect_rc=1)  # one item stays unknown (judge_invalid)
+        d = self.run(r, ds, expect_rc=1)
         d.update({"roots": r, "eligible": eligible, "items": items, "inconsistent": inc, "invalid": inv})
         self.cache["judged"] = d
         return d
 
-    # -- the 200-run synthetic dataset with a stub verdict map (gold set, kappa)
     def synth(self):
         if "synth" in self.cache:
             return self.cache["synth"]
@@ -145,7 +140,7 @@ class Ctx:
         ds = {"dir": ds_dir, "items": items, "manifest": json.load(open(os.path.join(ds_dir, "manifest.json")))}
         rnd = random.Random(21)
         verdict = {}
-        for it in items:  # judge agrees with the reward 70 % of the time
+        for it in items:
             agree = rnd.random() < 0.7
             p = it["outcome"]["passed"]
             verdict[it["item_id"]] = ("pass" if p else "veto") if agree else ("veto" if p else "pass")
@@ -153,15 +148,14 @@ class Ctx:
                           quote_reasons=False, keep_bodies=False, must_contain=[], status=None, default="hash")
         r = self.roots("synth")
         d = self.run(r, ds, "--gold-n", "60", "--seed", "3", expect_rc=0)
-        root0 = os.path.join(self.tmp, "synth_root0")  # as built: later checks copy this, never the live root
+        root0 = os.path.join(self.tmp, "synth_root0")
         shutil.copytree(r.root, root0)
         d.update({"roots": r, "ds": ds, "verdict": verdict, "root0": root0})
         self.cache["synth"] = d
         return d
 
-    # -- ssh (host mode)
     def ssh_base(self):
-        if self.ssh_ctl is None:  # a Unix socket path must stay < 104 bytes: never under macOS's long TMPDIR
+        if self.ssh_ctl is None:
             d = tempfile.mkdtemp(prefix="p9-", dir="/tmp")
             self.ssh_dir, self.ssh_ctl = d, os.path.join(d, "cm-%C")
             if len(os.path.join(d, "cm-" + "0" * 40)) >= 100:
@@ -194,7 +188,6 @@ class Ctx:
             self.checker.stop()
             self.checker = None
 
-    # -- the checklist layer: a stub system-one endpoint and roots that point at it
     def check_stub(self):
         if getattr(self, "checker", None) is None:
             self.checker = lib.Checklist().start()
@@ -212,8 +205,6 @@ def row_by_run(d):
     return {r["run"]: r for r in d["rows"]}
 
 
-# =============================================================================== A: command surface
-
 @check("A0_cli_surface", "CONTRACT.md §1: exit codes, no tracebacks, usage errors are 2, unknown run is 1 with empty stdout")
 def a0(ctx):
     r = ctx.roots("a0", judge=False)
@@ -230,7 +221,6 @@ def a0(ctx):
             probs.append(f"{' '.join(args[:2]) or 'no args'}: rc={res['rc']} want {want}")
         if want == 1 and args[0] == "view" and res["out"].strip():
             probs.append("view of an unknown run printed something")
-    # level 1 without a readable env file: exit 2, nothing half-written
     env = r.env(AVOS_JUDGE_ENV=os.path.join(ctx.tmp, "no.env"))
     out = r.out()
     res = ctx.label("run", "--dataset", ds["dir"], "--out", out, "--level", "0,1", env=env)
@@ -240,8 +230,6 @@ def a0(ctx):
         probs.append("rows were written to the label root although no judge was reachable")
     return not probs, "; ".join(probs) or "usage 2, unknown run 1 (empty stdout), missing judge env 2; no tracebacks"
 
-
-# =============================================================================== L: level 0 on the dataset
 
 @check("L0_rows_match_oracle", "done test 1 / statement level 0: one row per run with reward, termination, structural status and the final label")
 def l0(ctx):
@@ -282,7 +270,6 @@ def l0(ctx):
         probs.append(f"counts labelled/kept/dropped {c.get('labelled')}/{c.get('kept')}/{c.get('dropped')} want {len(runs)}/{kept}/{len(runs) - kept}")
     if s.get("levels") != [0] or s.get("exit") != 0:
         probs.append(f"summary.levels {s.get('levels')} exit {s.get('exit')}")
-    # the normal empty-NL-assertion shape: a passed, complete, agreeing run is clean and kept
     row13 = row_by_run(d).get("run_retail-0_13", {})
     if row13.get("level0", {}).get("status") != "clean" or not row13.get("final", {}).get("kept"):
         probs.append(f"run_retail-0_13 (nl_assertions [] with NL_ASSERTION basis) not clean/kept: {row13.get('level0', {}).get('reasons')}")
@@ -335,7 +322,7 @@ def l0c(ctx):
     st = os.stat(p)
     new = old[:-1] + ("X" if old[-1] != "X" else "Y")
     lines[k] = lines[k].replace(old, new, 1)
-    with open(p, "r+b") as f:  # in place, same size, same inode; mtime restored
+    with open(p, "r+b") as f:
         f.seek(0)
         f.write("\n".join(lines).encode("utf-8"))
         f.truncate()
@@ -347,8 +334,6 @@ def l0c(ctx):
     ok = len(bad) == 1 and bad[0]["run"] == "run_retail-0_13" and bad[0]["final"]["kept"] is False and "item_hash" in bad[0]["level0"]["reasons"]
     return ok, f"edited run_retail-0_13 in place: {[x['run'] for x in bad]} flagged item_hash, kept={bad and bad[0]['final']['kept']}, rc {d['res']['rc']}"
 
-
-# =============================================================================== J: the judge
 
 @check("J1_judge_protocol", "done test 1 / CONTRACT.md §3: judge rows follow the stub's answers, ≤ 4 attempts, both framings, reasons without transcript text")
 def j1(ctx):
@@ -379,7 +364,6 @@ def j1(ctx):
             if c["temperature"] != 0 or not isinstance(c["seed"], int) or c["model"] != "openai/gpt-oss-120b":
                 probs.append(f"{run}: temperature {c['temperature']} seed {c['seed']!r} model {c['model']}")
                 break
-        # transcript present in every request
         for c in calls:
             miss = [s for s in lib.content_strings(it) if s not in (c["text"] or "")]
             if miss:
@@ -479,7 +463,6 @@ def j2(ctx):
     jd = (d2["summary"] or {}).get("judge", {})
     if jd.get("calls_made") != 0 or jd.get("calls_reused") != 2 * len(d["eligible"]):
         probs.append(f"summary.judge calls_made {jd.get('calls_made')} calls_reused {jd.get('calls_reused')} want 0 / {2 * len(d['eligible'])}")
-    # from a copy of the dataset and root elsewhere
     cp = os.path.join(ctx.tmp, "copy")
     shutil.rmtree(cp, ignore_errors=True)
     shutil.copytree(ctx.base["dir"], os.path.join(cp, "ds"))
@@ -527,7 +510,7 @@ def j3(ctx):
         probs.append("summary.model is not the changed model")
     n2 = j.n_calls
     j.set(must_contain=[])
-    d5 = ctx.run(r, ctx.base, expect_rc=1)  # the original key: everything stored, incl. the unknown rows
+    d5 = ctx.run(r, ctx.base, expect_rc=1)
     if j.n_calls != n2:
         probs.append(f"back to the original rubric/model: {j.n_calls - n2} requests (want 0)")
     if lib.out_bytes(d5["dir"]) != lib.out_bytes(d["dir"]):
@@ -566,7 +549,6 @@ def j4(ctx):
 def j5(ctx):
     d = ctx.judged()
     probs = []
-    # closed port
     import socket
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -588,7 +570,6 @@ def j5(ctx):
         probs.append("rows stored for an unreachable judge (a later run could never retry)")
     if (d1["summary"] or {}).get("counts", {}).get("labelled") != len(ctx.base["items"]):
         probs.append("level 0 rows missing when the judge is down")
-    # the same root now reaches the judge: it asks (nothing was stored)
     j = ctx.stub()
     j.set(status=None, drift=False, faults=False)
     r.judge_env(j.base_url)
@@ -596,7 +577,6 @@ def j5(ctx):
     ctx.run(r, ctx.base, expect_rc=0)
     if j.n_calls - n0 < 2 * len(d["eligible"]):
         probs.append(f"after the judge came back only {j.n_calls - n0} requests were made")
-    # credentials rejected
     j.set(status=401)
     r2 = ctx.roots("j5b")
     res = ctx.label("run", "--dataset", ctx.base["dir"], "--out", r2.out(), "--level", "0,1", env=r2.env())
@@ -617,8 +597,6 @@ def j6(ctx):
     ok = not hits and not outs
     return ok, "key nowhere" if ok else f"key found in files {hits[:2]} / outputs of {outs[:2]}"
 
-
-# =============================================================================== G: blind view, gold set, human labels, M10
 
 @check("G1_blind_view", "done test 2 / CONTRACT.md §7: the view shows the whole transcript and leaks no outcome, verdict, flag or label, for every run")
 def g1(ctx):
@@ -648,7 +626,6 @@ def g1(ctx):
             if leaks:
                 probs.append(f"{run}: outcome words in the blind view: {leaks[:4]}")
             n += 1
-    # AVOS_LABEL_DATASET default
     res = ctx.label("view", "--run", "run_retail-0_13", env=r.env(AVOS_LABEL_DATASET=ctx.base["dir"]))
     if res["rc"] != 0:
         probs.append("AVOS_LABEL_DATASET is not honoured by view")
@@ -663,7 +640,6 @@ def g2(ctx):
     for row in d["rows"]:
         if row.get("stratum"):
             strata[row["stratum"]].append(row["run"])
-    # strata recomputed from the stub's verdict map and the oracle
     for row in d["rows"]:
         it = lib.harness_item(d["ds"]["items"], row["run"])
         l0 = lib.level0_oracle(it)
@@ -679,7 +655,6 @@ def g2(ctx):
         probs.append("gold.strata are not the eligible runs by stratum")
     if g.get("labelled") != [] or g.get("left") != want["runs"]:
         probs.append("labelled/left wrong before any human label")
-    # another seed and n: different, still the algorithm
     r = d["roots"]
     d2 = ctx.run(r, d["ds"], "--gold-n", "80", "--seed", "4", expect_rc=0)
     want2 = lib.gold_oracle(strata, 80, 4)
@@ -687,10 +662,9 @@ def g2(ctx):
         probs.append("seed 4 / n 80: gold set differs from the algorithm")
     if (d2["gold"] or {}).get("runs") == g.get("runs"):
         probs.append("seed 4 / n 80 gave the same set as seed 3 / n 60")
-    d3 = ctx.run(r, d["ds"], "--gold-n", "7", "--seed", "3", expect_rc=0)  # clamped to 50
+    d3 = ctx.run(r, d["ds"], "--gold-n", "7", "--seed", "3", expect_rc=0)
     if (d3["gold"] or {}).get("n") != 50 or len((d3["gold"] or {}).get("runs") or []) != 50:
         probs.append(f"--gold-n 7 not clamped to 50: n={(d3['gold'] or {}).get('n')}")
-    # resumable: label three, --next is left[0], --status counts
     env = r.env(AVOS_LABEL_DATASET=d["ds"]["dir"])
     for run in want["runs"][:3]:
         ctx.label("human", "--run", run, "--verdict", "pass", "--labeller", "tester", env=env, expect_rc=0)
@@ -708,7 +682,6 @@ def g2(ctx):
         sj = {}
     if (sj.get("selected"), sj.get("labelled"), sj.get("left")) != (60, 3, 57):
         probs.append(f"gold --status {sj} want selected 60 labelled 3 left 57")
-    # small dataset: fewer than 50 eligible → short, all picked
     jd = ctx.judged()
     gj = jd["gold"] or {}
     elig = sorted(row["run"] for row in jd["rows"] if row.get("stratum"))
@@ -738,7 +711,6 @@ def g3(ctx):
     if len(gold) != 60:
         return False, f"gold set has {len(gold)} runs"
     plan = _plan_human(ctx, d, gold)
-    # 20 labels: unverified, values null
     for run in gold[:20]:
         ctx.label("human", "--run", run, "--verdict", plan[run], "--labeller", "tester", env=env, expect_rc=0)
     d1 = ctx.run(r, d["ds"], "--gold-n", "60", "--seed", "3", expect_rc=0)
@@ -753,12 +725,11 @@ def g3(ctx):
             probs.append(f"{k} (20 labels) parts differ: {lib.kappa_diff(want, got)[:2]}")
     if not re.search(r"M10 kappa\(judge, human\): unverified \(n=\d+ < 50\)", d1["card"] or ""):
         probs.append("CARD.md does not read 'M10 kappa(judge, human): unverified (n=… < 50)'")
-    # the remaining 40, one relabel and a second labeller
     for run in gold[20:]:
         ctx.label("human", "--run", run, "--verdict", plan[run], "--labeller", "tester", env=env, expect_rc=0)
     flip = gold[25]
     other = "fail" if plan[flip] == "pass" else "pass"
-    time.sleep(1.1)  # a later second: the newest row must win even with second-resolution timestamps
+    time.sleep(1.1)
     ctx.label("human", "--run", flip, "--verdict", other, "--labeller", "second", "--note", "relabelled", env=env, expect_rc=0)
     plan[flip] = other
     d2 = ctx.run(r, d["ds"], "--gold-n", "60", "--seed", "3", expect_rc=0)
@@ -778,14 +749,12 @@ def g3(ctx):
                 probs.append(f"CARD.md lacks the line for {k} ({want['value']:.3f}, n={want['n']})")
     if (m.get("gold") or {}).get("labelled") != 60 or (m.get("gold") or {}).get("selected") != 60 or (m.get("gold") or {}).get("required") != 50:
         probs.append(f"m10.gold {m.get('gold')}")
-    # level 2 rows: current = newest, history kept, attribution
     l2 = by2[flip].get("level2") or {}
     if l2.get("verdict") != other or l2.get("labeller") != "human:second" or l2.get("history") != 2:
         probs.append(f"relabelled run: level2 {l2} want verdict {other} by human:second, history 2")
     rows = [row for _, _, row, _ in lib.root_rows(r.root) if row and row.get("level") == 2 and row["run"] == flip]
     if len(rows) != 2 or {x["labeller"] for x in rows} != {"human:tester", "human:second"} or not all(not lib.row_problems(x) for x in rows):
         probs.append(f"storage holds {len(rows)} level-2 rows for the relabelled run (want both, canonical)")
-    # the disagreement rule with humans: settled vetoes, reward-fail stays fail, counts by rule
     for run in gold:
         row = by2[run]
         want = lib.final_oracle(row["level0"], (row.get("level1") or {}).get("verdict"), plan[run])
@@ -815,7 +784,6 @@ def g3(ctx):
 @check("G4_stale_label_reported", "CONTRACT.md §3: a human label whose item changed is reported, never applied; exit 1")
 def g4(ctx):
     e = ctx.env
-    # a human label on run_retail-0_13, then the witness of that run changes (a word in a reply) → new item_id
     r = ctx.roots("g4", judge=False)
     ds0 = ctx.base
     env = r.env(AVOS_LABEL_DATASET=ds0["dir"])
@@ -825,7 +793,6 @@ def g4(ctx):
     if row_by_run(d0)["run_retail-0_13"]["final"] != {"label": "fail", "rule": "human", "kept": False}:
         return False, f"before the change the human label is not applied: {row_by_run(d0)['run_retail-0_13']['final']}"
     L = lib.L
-    # re-export after editing the witness text (token counts unchanged): POC 8 flags it, item_id changes
     p = os.path.join(e.results, "run_retail-0_13", "result.json")
     backup = open(p, "rb").read()
     try:
@@ -850,7 +817,6 @@ def g4(ctx):
         probs.append(f"summary.stale_labels {stale} lacks the old/current content keys, item ids or the labeller")
     if s.get("exit") != 1:
         probs.append(f"summary.exit {s.get('exit')}")
-    # the user relabels the new content: exit 0 again, the stale row still listed
     ctx.label("human", "--dataset", ds1["dir"], "--run", "run_retail-0_13", "--verdict", "fail", "--labeller", "tester", env=r.env(), expect_rc=0)
     d2 = ctx.run(r, ds1, level="0", expect_rc=0)
     s2 = d2["summary"] or {}
@@ -873,7 +839,6 @@ def g5(ctx):
     for run, v in zip(runs, ("fail", "pass", "pass")):
         ctx.label("human", "--run", run, "--verdict", v, "--labeller", "tester", env=env, expect_rc=0)
     d0 = ctx.run(r, ctx.base, expect_rc=1)
-    # the same runs with non-content fields changed, item_id recomputed (POC 8 would emit this after an import / pricing / another host)
     items = json.loads(json.dumps(ctx.base["items"]))
     for it in items:
         it["host"] = "another-host"
@@ -897,7 +862,6 @@ def g5(ctx):
         probs.append(f"stale_labels reported for a non-content change: {len(d1['summary']['stale_labels'])}")
     if any(by1[run]["item_id"] == by0[run]["item_id"] for run in runs):
         probs.append("suite error: item_id did not change")
-    # one word in one reply of run_retail-0_13: stale, reported, not applied; the other two labels stay
     items2 = json.loads(json.dumps(items))
     it = lib.harness_item(items2, "run_retail-0_13")
     m = next(m for m in it["messages"] if m["role"] == "assistant" and isinstance(m.get("content"), str) and len(m["content"]) > 20)
@@ -917,8 +881,6 @@ def g5(ctx):
         probs.append(f"one-word edit: {j.n_calls - n0} judge requests (want 2: only the edited run, both framings)")
     return not probs, "; ".join(probs[:4]) or "evidence/cost/host/lineage change: 3 labels kept, 0 requests, no stale; one-word edit: that run stale and reported (rc 1), 2 requests, others kept"
 
-
-# =============================================================================== M: manifest, card, POC 8 untouched
 
 @check("M1_manifest_card", "done test 3 / dataset card: the manifest is POC 8's plus labels and M10; the card carries the tiles, M10 lines and the rule")
 def m1(ctx):
@@ -996,8 +958,6 @@ def m3(ctx, quick_only=None):
     return not probs, "; ".join(probs) or f"POC 8 suite {' / '.join(' '.join(x) for x in runs)} passes" + ("" if ctx.quick else "; collect selftest passes")
 
 
-# =============================================================================== X: tampering, merge, transcripts
-
 @check("X1_row_replaced_same_size", "CONTRACT.md §4/§11: a label row edited in place (same size, mtime, inode) is invalid: reported, never applied, exit 1")
 def x1(ctx):
     d = ctx.synth()
@@ -1011,7 +971,6 @@ def x1(ctx):
     ctx.label("human", "--run", run, "--verdict", v0, "--labeller", "tester", env=env, expect_rc=0)
     d1 = ctx.run(r, d["ds"], "--gold-n", "60", "--seed", "3", expect_rc=0)
     before = row_by_run(d1)[run]
-    # flip the verdict inside the stored row, same length
     files = [f for f in os.listdir(r.root) if f.endswith(".jsonl")]
     hit = None
     for f in files:
@@ -1086,7 +1045,7 @@ def x3(ctx):
     rnd = random.Random(4)
     n_files = sum(len(lib.files_under(x)) for x in r.cache_dirs())
     for mode in ("truncate", "flip", "swap", "delete"):
-        ctx.run(r, ctx.base, expect_rc=1)  # warm
+        ctx.run(r, ctx.base, expect_rc=1)
         if mode == "delete":
             r.clear_caches()
         else:
@@ -1118,7 +1077,7 @@ def mg1(ctx):
     for run in gold[5:10]:
         ctx.label("human", "--run", run, "--verdict", "fail", "--labeller", "bob", env=eb, expect_rc=0)
     time.sleep(1.1)
-    ctx.label("human", "--run", gold[2], "--verdict", "fail", "--labeller", "bob", env=eb, expect_rc=0)  # bob relabels alice's run later
+    ctx.label("human", "--run", gold[2], "--verdict", "fail", "--labeller", "bob", env=eb, expect_rc=0)
     ab, ba = ctx.roots("mgAB"), ctx.roots("mgBA")
     for r in (ab, ba):
         shutil.rmtree(r.root)
@@ -1165,8 +1124,6 @@ def t1(ctx):
     return not probs, "; ".join(probs) or f"no ≥ {TH['verbatim']}-char transcript run anywhere; judged root {size / 1024:.0f} KiB"
 
 
-# =============================================================================== SC: scale
-
 @check("SC1_scale_10k", "CONTRACT.md §12: 10,000 items: level 0 ≤ 60 s, level 0,1 ≤ 900 s, re-run ≤ 120 s, RSS ≤ 512 MiB, root ≤ 50 MiB", scale=True)
 def sc1(ctx):
     items = lib.synthetic_items(ctx.base["items"], TH["n_scale"], seed=11)
@@ -1203,18 +1160,13 @@ def sc1(ctx):
                                          f"re-run {t2:.1f}s/{m2_:.0f} MiB, 0 requests; root {size:.1f} MiB")
 
 
-# =============================================================================== Z: roots
-
-
-# =============================================================================== the checklist layer (advisory)
-
 CHECKLIST_FILE = os.path.join(lib.ROOT, "label", "checklist.json")
 
 
 def _checklist_oracle(ctx, it, served_by_state):
     """Expected checklist block of one run from what the stub served for its conversation (YES ≥ 0.7, NO ≤ 0.3)."""
     qs = json.load(open(CHECKLIST_FILE))["questions"]
-    strings = lib.content_strings(it) + [m["event_id"] for m in it["messages"] if m.get("event_id")]  # clones share text, not events
+    strings = lib.content_strings(it) + [m["event_id"] for m in it["messages"] if m.get("event_id")]
     hits = [p for st, p in served_by_state.items()
             if json.loads(st).get("task") == it["task"] and all(x in json.loads(st).get("conversation", "") for x in strings)]
     if not hits:
@@ -1269,7 +1221,6 @@ def c1(ctx):
                 break
         if got.get("verdict") != want["verdict"]:
             probs.append(f"{run}: verdict {got.get('verdict')} want {want['verdict']}")
-    # the protocol: key, model, the seven questions as nouls with the checklist's own text
     for call in c.calls:
         if call["auth"] != f"Bearer {lib.CHECK_KEY}" or call["model"] != "jev-latest":
             probs.append(f"request auth/model {str(call['auth'])[:12]}… {call['model']}")
@@ -1280,7 +1231,6 @@ def c1(ctx):
             break
     if len({json.dumps(x["state"], sort_keys=True) for x in c.calls}) > len(eligible):
         probs.append(f"{c.n_calls} requests for {len(eligible)} eligible runs")
-    # an advisory layer: every label, the gold set and the manifest are what they are without it
     base = ctx.run(r, ctx.base, out=r.out("plain"), expect_rc=(0, 1))
     for f in ("labels.jsonl", "gold.json", "manifest.json"):
         if open(os.path.join(d["dir"], f), "rb").read() != open(os.path.join(base["dir"], f), "rb").read():
@@ -1290,7 +1240,6 @@ def c1(ctx):
         probs.append(f"summary.checklist answered {s.get('answered')} eligible {s.get('eligible')} want {len(eligible)}")
     if "Checklist (advisory" not in (d["card"] or ""):
         probs.append("CARD.md has no checklist line")
-    # replay
     n0 = c.n_calls
     r.clear_caches()
     d2 = ctx.run(r, ctx.base, "--checklist", out=d["dir"] + "-again", env_extra={"AVOS_CHECKLIST_ENV": r.check_env}, expect_rc=(0, 1))
@@ -1319,7 +1268,6 @@ def c2(ctx):
         probs.append("a checklist row was stored for a failed request")
     if open(os.path.join(d["dir"], "labels.jsonl"), "rb").read() != open(os.path.join(base["dir"], "labels.jsonl"), "rb").read():
         probs.append("labels differ when the checklist fails")
-    # transient overload: retried within the run; then the next run answers what the failed one did not
     c.reset(fail_first=2)
     d2 = ctx.run(r, ctx.base, "--checklist", out=r.out("ok"), env_extra={"AVOS_CHECKLIST_ENV": r.check_env}, expect_rc=(0, 1))
     s = (d2["summary"] or {}).get("checklist") or {}
@@ -1398,8 +1346,6 @@ def z(ctx):
     return not probs, "; ".join(probs) or "store, results, ledger and dataset byte-identical"
 
 
-# =============================================================================== HOST
-
 def _host_label_present(ctx):
     p = ctx.ssh(f"test -f {HOST_REPO}/label/bin/label && echo yes")
     if "yes" not in p.stdout:
@@ -1451,7 +1397,6 @@ def _host_setup(ctx):
     p = ctx.ssh(f"cd {HOST_REPO} && sudo python3 retrain/bin/retrain export --out {HOST_TMP}/ds --runs-file {HOST_TMP}/runs.txt > {HOST_TMP}/export.json; echo rc=$?; "
                 f"sudo cat {HOST_TMP}/ds/manifest.json | python3 -c 'import json,sys; m=json.load(sys.stdin); print(json.dumps(m[\"counts\"]))'")
     h = {"runs": runs, "export": p.stdout}
-    # the truth per run from result.json (reward, termination) — summary only, no transcript leaves the host
     cmd = f"""sudo python3 - <<'PY'
 import json, os
 out = {{}}
@@ -1564,7 +1509,6 @@ def host2(ctx):
         probs.append(f"invalid stored rows: {bad[0]}")
     if lib.dummy_key_in(p.stdout) or re.search(r"OPENAI_API_KEY=\S{8,}", p.stdout):
         probs.append("a key-like string on stdout")
-    # re-run: 0 requests, identical
     p2 = ctx.ssh(f"cd {HOST_REPO} && {_host_env()} run --dataset {HOST_TMP}/ds --out {HOST_TMP}/j2 --level 0,1 {args} > /dev/null 2>&1; echo rc=$?; "
                  f"for f in labels.jsonl manifest.json gold.json CARD.md; do sudo cmp -s {HOST_TMP}/j1/$f {HOST_TMP}/j2/$f && echo same $f || echo DIFF $f; done; "
                  f"sudo python3 -c 'import json; a,b=[json.load(open(f\"{HOST_TMP}/\"+d+\"/summary.json\")) for d in (\"j1\",\"j2\")]; [x[\"judge\"].pop(k) for x in (a,b) for k in (\"calls_made\",\"calls_reused\")]; print(\"same summary.json\" if a==b else \"DIFF summary.json\")'; "
@@ -1579,7 +1523,6 @@ def host2(ctx):
 @check("HOST3_blind_view_all", "done test 2: the blind view of every dry-run run carries the transcript and no outcome word", host=True)
 def host3(ctx):
     h = _host_setup(ctx)
-    # the view and the item's own strings are compared on the host (no transcript leaves it); only verdicts come back
     leak_re = lib.LEAK.pattern
     cmd = f"""cd {HOST_REPO} && sudo python3 - <<'PY'
 import json, re, subprocess, os
@@ -1623,8 +1566,6 @@ PY"""
 @check("HOST4_gold_and_human_loop", "done test 2/4 (the user's path): gold set over the dry-run rows, label a few blind, next/status, kappa reads unverified honestly", host=True)
 def host4(ctx):
     h = _host_setup(ctx)
-    # level 0 only over all 80 runs: a real judge pass over 80 runs is the user's spend, not the suite's (HOST2 is
-    # the budgeted judge check). The gold algorithm and the human loop are the same path either way.
     p = ctx.ssh(f"cd {HOST_REPO} && {_host_env()} run --dataset {HOST_TMP}/ds --out {HOST_TMP}/g --level 0 > /dev/null 2>&1; echo rc=$?; "
                 f"sudo cat {HOST_TMP}/g/gold.json", timeout=1800)
     try:
@@ -1651,7 +1592,6 @@ def host4(ctx):
     want = lib.gold_oracle(want_strata, 60, 0)
     if g.get("runs") != want["runs"] or g.get("short") != want["short"]:
         probs.append(f"gold set differs from the algorithm ({len(g.get('runs') or [])} vs {len(want['runs'])})")
-    # label two blind, then next/status
     env = _host_env()
     for run, v in zip(want["runs"][:2], ("pass", "fail")):
         q = ctx.ssh(f"cd {HOST_REPO} && {env} human --run {run} --verdict {v} --labeller tester > /dev/null; echo rc=$?")
@@ -1693,8 +1633,6 @@ def hostz(ctx):
     return not probs, "; ".join(probs) or "no suite process on the host, no ssh master on the laptop"
 
 
-# =============================================================================== runner
-
 def run(args):
     ctx = Ctx()
     ctx.quick = args.quick
@@ -1720,7 +1658,7 @@ def run(args):
                 ok, note = False, f"not implemented: {e}"
             except AssertionError as e:
                 ok, note = False, f"{lib.short(e, 400)}"
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 ok, note = False, f"suite error {type(e).__name__}: {lib.short(e, 200)}"
                 if args.verbose:
                     traceback.print_exc()
@@ -1734,12 +1672,10 @@ def run(args):
         ctx.ssh_close()
         ctx.close()
         if n_fail == 0:
-            shutil.rmtree(ctx.tmp, ignore_errors=True)  # kept on failure for inspection (printed above)
+            shutil.rmtree(ctx.tmp, ignore_errors=True)
     print(f"# {n_pass} passed, {n_fail} failed")
     return 0 if n_fail == 0 else 1
 
-
-# =============================================================================== selftest
 
 def selftest(args):
     import urllib.error
@@ -1752,14 +1688,12 @@ def selftest(args):
 
     tmp = tempfile.mkdtemp(prefix="poc9-selftest-")
     ok("fixtures_frozen", lib.fixture_drift() == [], str(lib.fixture_drift()[:3]))
-    # the environment and POC 8's export over it
     e = lib.build_env(tmp)
     ds = lib.export_dataset(e, "base")
     ok("poc8_export_frozen", ds["manifest"]["dataset_sha256"] == EXPECTED["dataset_sha256"] and ds["manifest"]["counts"] == EXPECTED["counts"],
        f"{ds['manifest']['dataset_sha256'][:12]} counts {ds['manifest']['counts']}")
     runs = lib.runs_of(ds["items"])
     ok("one_item_per_run", len(ds["items"]) == len(runs) == 18 and all(lib.harness_item(ds["items"], r) for r in runs), f"{len(ds['items'])} items / {len(runs)} runs")
-    # level 0 oracle on the planted cases
     l0 = {r: lib.level0_oracle(lib.harness_item(ds["items"], r)) for r in runs}
     clean = sorted(r for r in runs if l0[r]["status"] == "clean")
     ok("level0_clean_set", clean == ["run_retail-0_11", "run_retail-0_12", "run_retail-0_13", "run_retail-0_14", "run_retail-0_15", "run_retail-0_16",
@@ -1773,7 +1707,6 @@ def selftest(args):
     shared = len(runs) - len({lib.content_sha(lib.harness_item(ds["items"], r)) for r in runs})
     ok("fixture_keys_distinct", len(keyed) == len(runs) and shared == 5, f"{len(keyed)} (run, content) keys; {shared} runs share a transcript with another run")
     ok("judged_set", len(judged) == 16 and "run_retail-0_91" not in judged and "run_coding-slugify_2" not in judged, f"{len(judged)} judged")
-    # final rule table
     f = lib.final_oracle
     c = l0["run_retail-0_13"]
     ok("final_rule", f(c, None, None) == {"label": "pass", "rule": "reward", "kept": True} and f(c, "veto", None)["rule"] == "veto"
@@ -1788,8 +1721,7 @@ def selftest(args):
     it_nc = json.loads(json.dumps(it0)); it_nc["host"] = "x"; it_nc["cost"]["usd"] = 1.0; it_nc["evidence"] = "ledger"; it_nc["lineage"]["events"].append("f" * 64)
     it_c = json.loads(json.dumps(it0)); it_c["messages"][3]["content"] = (it_c["messages"][3].get("content") or "") + "!"
     ok("content_sha_key", lib.content_sha(it_nc) == cs and lib.content_sha(it_c) != cs and lib.L.canon_item_id(it_nc) != it0["item_id"]
-       and lib.content_sha(lib.harness_item(ds["items"], "run_retail-50_0")) != cs)  # same transcript, other task
-    # kappa: hand-checked table, perfect agreement, degenerate, small n
+       and lib.content_sha(lib.harness_item(ds["items"], "run_retail-50_0")) != cs)
     k = lib.kappa(20, 5, 10, 15)
     po, pe = 35 / 50, (25 * 30 + 25 * 20) / 2500
     ok("kappa_formula", abs(k["value"] - (po - pe) / (1 - pe)) < 1e-12 and k["status"] == "measured" and abs(k["se"] - (po * (1 - po) / (50 * (1 - pe) ** 2)) ** 0.5) < 1e-12
@@ -1797,14 +1729,12 @@ def selftest(args):
     ok("kappa_edges", lib.kappa(30, 0, 0, 30)["value"] == 1.0 and lib.kappa(50, 0, 0, 0)["status"] == "unverified" and lib.kappa(50, 0, 0, 0)["reason"] == "pe=1"
        and lib.kappa(10, 2, 3, 5)["status"] == "unverified" and lib.kappa(10, 2, 3, 5)["value"] is None and lib.kappa(10, 2, 3, 5)["reason"] == "n=20 < 50")
     ok("kappa_diff_catches", lib.kappa_diff(k, {**k, "value": k["value"] + 1e-6}) and not lib.kappa_diff(k, json.loads(json.dumps(k))))
-    # gold algorithm: deterministic, quotas, fill, clamp
     st = {"disagree": [f"d{i}" for i in range(10)], "passed": [f"p{i}" for i in range(100)], "failed": [f"f{i}" for i in range(30)]}
     g = lib.gold_oracle(st, 60, 0)
     ok("gold_quota_fill", len(g["runs"]) == 60 and {s: len(v) for s, v in g["picked"].items()} == {"disagree": 10, "passed": 30, "failed": 20} and not g["short"]
        and g == lib.gold_oracle(st, 60, 0) and g != lib.gold_oracle(st, 60, 1) and lib.gold_oracle(st, 7, 0)["n"] == 50 and lib.gold_oracle(st, 500, 0)["n"] == 100)
     gs = lib.gold_oracle({"disagree": ["a"], "passed": ["b", "c"], "failed": []}, 60, 0)
     ok("gold_short", gs["n"] == 60 and gs["runs"] == ["a", "b", "c"] and gs["short"] is True and sorted(gs["picked"]["passed"]) == ["b", "c"])
-    # label row canon and problems
     row = {"level": 2, "content_sha256": "c" * 64, "item_id": "a" * 64, "run": "r", "labeller": "human:t", "ts": "2026-10-22T00:00:00Z", "verdict": "pass", "note": None}
     row["label_id"] = lib.canon_label_id(row)
     bad = dict(row, verdict="fail")
@@ -1813,11 +1743,9 @@ def selftest(args):
           "answers": {"policy_followed": True, "right_tools": True, "hallucinated_facts": False, "unsafe_action": True}, "reasons": [], "error": None, "attempts": 1, "usage": None}
     r1["label_id"] = lib.canon_label_id(r1)
     ok("row_verdict_from_answers", "does not follow" in " ".join(lib.row_problems(r1)) and lib.verdict_of(r1["answers"]) == "veto")
-    # verbatim leak oracle
     it = lib.harness_item(ds["items"], "run_retail-0_13")
     s = next(x for x in lib.content_strings(it) if len(x) > 100)
     ok("verbatim_leak", lib.verbatim_leaks("xx " + s[10:75] + " yy", [it]) == ["run_retail-0_13"] and lib.verbatim_leaks(s[10:60], [it]) == [] and lib.verbatim_leaks("nothing here", [it]) == [])
-    # blind-view oracle on POC 8's own (non-blind) view: must leak; on a hand-built blind text: must not
     v = lib.retrain("view", "--run", "run_retail-0_13", env=e.env())
     leaks, _ = lib.blind_leaks(v["out"], it)
     ok("blind_catches_poc8_view", v["rc"] == 0 and {"reward", "passed"} <= set(leaks), str(leaks[:5]))
@@ -1827,7 +1755,6 @@ def selftest(args):
     leaks2, rest = lib.blind_leaks(blind, it)
     ok("blind_accepts_clean_view", leaks2 == [] and lib.view_has_transcript(blind, it) == [], f"{leaks2[:4]} {lib.short(rest, 0)}")
     ok("transcript_check_catches", lib.view_has_transcript(blind.replace(s, ""), it) != [])
-    # stub judge: deterministic, adversarial, counts
     j = lib.Judge().start()
     try:
         j.reset(faults=True, inconsistent=["item2"], always_invalid=["item4"], must_contain=["RUBRIC-TEXT"], quote_reasons=True)
@@ -1877,7 +1804,6 @@ def selftest(args):
         j.set(drift=False, status=401)
         ok("stub_401", call("item1", "a")[0] == 401)
         j.set(status=None)
-        # throughput for the scale bar
         j.reset(faults=False, quote_reasons=False, keep_bodies=False, must_contain=[])
         import concurrent.futures
         t0 = time.perf_counter()
@@ -1887,7 +1813,6 @@ def selftest(args):
         ok("stub_throughput", rps > 2 * TH["n_scale"] * 2 / TH["level01_s"], f"{rps:.0f} req/s (scale bar needs ≥ {2 * TH['n_scale'] * 2 / TH['level01_s']:.0f})")
     finally:
         j.stop()
-    # synthetic items are canonical and distinct
     syn = lib.synthetic_items(ds["items"], 50, seed=7)
     ok("synthetic_items", len({x["item_id"] for x in syn}) == 50 and all(lib.L.canon_item_id(x) == x["item_id"] for x in syn)
        and len({x["run"] for x in syn}) == 50 and 10 < sum(1 for x in syn if x["outcome"]["passed"]) < 40)

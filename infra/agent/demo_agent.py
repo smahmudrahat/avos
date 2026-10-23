@@ -24,8 +24,8 @@ import time
 import urllib.error
 import urllib.request
 
-T0 = float(os.environ["AVOS_T0"])  # the shim's clock just before it started this process
-SVID_DIR = os.environ["AVOS_DIR"]  # /run/avos/<id>, mode 0700, owned by this principal's uid
+T0 = float(os.environ["AVOS_T0"])
+SVID_DIR = os.environ["AVOS_DIR"]
 
 
 def shim(req):
@@ -39,7 +39,6 @@ def shim(req):
 
 
 def fetch_svid():
-    # The SPIRE agent syncs entries from the server every 1 s, so the first tries may find nothing.
     while time.time() - T0 < 30:
         r = subprocess.run(["/opt/spire/bin/spire-agent", "api", "fetch", "x509", "-socketPath", "/run/spire/agent.sock",
                             "-write", SVID_DIR], capture_output=True, text=True)
@@ -84,12 +83,12 @@ def refunds():
 
 
 def egress(host):
-    try:  # straight out of the VM
+    try:
         socket.create_connection((host, 443), timeout=3).close()
         log(f"egress {host} direct: CONNECTED")
     except OSError as e:
         log(f"egress {host} direct: blocked ({e})")
-    c = http.client.HTTPConnection("127.0.0.1", 8090, timeout=10)  # through the gateway, as an HTTPS proxy
+    c = http.client.HTTPConnection("127.0.0.1", 8090, timeout=10)
     c.set_tunnel(host, 443)
     try:
         c.connect()
@@ -114,7 +113,6 @@ def slow_llm():
 
 
 def ticks():
-    # Every 10th tick calls the gateway (one tool call); a 403 is still an answer, only a dead connection is a loss.
     end, seq = time.time() + args.sleep, 0
     while time.time() < end:
         seq += 1

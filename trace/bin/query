@@ -20,7 +20,7 @@ import tempfile
 import zlib
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-import lib_trace as T  # noqa: E402
+import lib_trace as T
 
 BUCKETS = 256
 
@@ -53,7 +53,7 @@ def index(path, rebuild=False):
                         if n != p:
                             parts.setdefault(n, []).append(off)
             except (ValueError, KeyError, TypeError):
-                pass  # not an event: validate reports it
+                pass
             off += len(line)
     groups = {}
     for p, offs in parts.items():
@@ -62,7 +62,7 @@ def index(path, rebuild=False):
     for name, g in groups.items():
         with open(os.path.join(tmp, name), "w") as f:
             json.dump(g, f)
-    json.dump(fp, open(os.path.join(tmp, "fingerprint.json"), "w"))  # last: a half-built index is never valid
+    json.dump(fp, open(os.path.join(tmp, "fingerprint.json"), "w"))
     old = tmp + ".old"
     try:
         os.rename(final, old)
@@ -70,7 +70,7 @@ def index(path, rebuild=False):
         pass
     try:
         os.rename(tmp, final)
-    except OSError:  # another query built it first
+    except OSError:
         shutil.rmtree(tmp, ignore_errors=True)
     shutil.rmtree(old, ignore_errors=True)
     return final
@@ -102,11 +102,10 @@ def fetch(path, p, rebuild=False):
 
 def audit(a):
     evs = fetch(a.file, a.principal)
-    if evs is None:  # never answer from a wrong index: rebuild it from the file, once
+    if evs is None:
         evs = fetch(a.file, a.principal, rebuild=True)
     if evs is None:
         raise ValueError(f"{a.file}: index does not match the file even after a rebuild")
-    # a valid call's decision is by the same principal, so it is in this partition
     by_id = {e["event_id"]: e for e in evs if e["kind"] == "authz.decision"}
     evs.sort(key=lambda e: (e["ts"], e["writer"], e["seq"]))
     for e in evs:

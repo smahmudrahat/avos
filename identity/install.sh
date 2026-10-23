@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# Host, once (sudo): SPIRE binaries in /opt/spire (spire-agent is copied into the guest image by `just image`),
-# the SPIRE Server and the registrar as systemd services. Re-run after changing server.conf or registrar.py.
 set -euo pipefail
 V=1.15.4
-SHA=d8e3ee9a9d48636249484d91af37566dfc0a9d7e71edcbe7acd49cf18bc3c87c # docs/versions.md
+SHA=d8e3ee9a9d48636249484d91af37566dfc0a9d7e71edcbe7acd49cf18bc3c87c
 HERE=$(cd "$(dirname "$0")" && pwd)
 
 if ! /opt/spire/bin/spire-server --version 2>&1 | grep -qx "$V"; then

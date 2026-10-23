@@ -41,7 +41,7 @@ import cedarpy
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "collect"))
-import store  # noqa: E402
+import store
 
 ROOT = "/var/lib/avos"
 JAIL = f"{ROOT}/jail/firecracker"
@@ -56,7 +56,6 @@ HOSTPORT = re.compile(r"[A-Za-z0-9.-]{1,253}:\d{1,5}")
 
 def load_policies():
     text = "\n".join(open(f).read() for f in sorted(glob.glob(f"{HERE}/policies/*.cedar")))
-    # Cedar names policies policy0, policy1, ...; map them to their @id so every decision names its rule.
     ids = {k: p["annotations"].get("id", k) for k, p in json.loads(cedarpy.policies_to_json_str(text))["staticPolicies"].items()}
     return text, ids
 
@@ -82,7 +81,7 @@ def principal(spiffe_id):
     m = SPIFFE.fullmatch(spiffe_id)
     if not m:
         raise PermissionError(f"not an Avos principal: {spiffe_id}")
-    path = (m[2] or "").split("/")[1:]  # ["agent", "A", "sub", "B"]
+    path = (m[2] or "").split("/")[1:]
     kind, name, root = (path[-2], path[-1], path[1]) if path else ("vm", m[1], "")
     return m[1], {"uid": {"type": "Agent", "id": spiffe_id}, "attrs": {"kind": kind, "name": name, "root": root},
                   "parents": []}
@@ -94,7 +93,6 @@ def decide(spiffe_id, action, resource, args):
     r = cedarpy.is_authorized({"principal": f"Agent::{json.dumps(spiffe_id)}", "action": f"Action::{json.dumps(action)}",
                                "resource": resource, "context": args}, POLICIES, [entity])
     allowed = r.decision == cedarpy.Decision.Allow
-    # No matching permit means Cedar's default deny; name it, so a denial always carries a rule.
     ids = [POLICY_IDS.get(p, p) for p in r.diagnostics.reasons] or ([] if allowed else ["default-deny"])
     return allowed, ids, [str(e) for e in r.diagnostics.errors]
 
@@ -104,7 +102,6 @@ def env_file(path):
 
 
 def mint():
-    # The gateway's own server SVID, minted by the host's SPIRE Server; guests verify it with the trust bundle.
     os.makedirs(CERT_DIR, mode=0o700, exist_ok=True)
     subprocess.run([*SPIRE, "x509", "mint", "-spiffeID", GATEWAY_ID, "-ttl", "2h", "-write", CERT_DIR, *SOCK],
                    check=True, capture_output=True)
@@ -130,14 +127,13 @@ def pipe(a, b):
             s.setblocking(False)
             sel.register(s, selectors.EVENT_READ)
         while True:
-            # Bytes a TLS socket has already decrypted and buffered do not wake the selector.
             ready = [s for s in peer if isinstance(s, ssl.SSLSocket) and s.pending()] or \
                 [k.fileobj for k, _ in sel.select()]
             for src in ready:
                 try:
                     data = src.recv(65536)
                 except (ssl.SSLWantReadError, ssl.SSLWantWriteError, BlockingIOError):
-                    continue  # TLS records that carry no data, such as a session ticket
+                    continue
                 if not data:
                     return
                 send_all(peer[src], data)
@@ -165,7 +161,6 @@ def send_all(s, data):
 
 
 def issue_refund(args):
-    # Demo tool (stands in for a payment API the gateway holds credentials for).
     return {"refund_id": f"rf_{secrets.token_hex(3)}", "order_id": args["order_id"], "amount_cents": args["amount_cents"]}
 
 
@@ -187,18 +182,17 @@ def seen(sent, answer):
                 "messages_sha256": [T.content_sha(T.chat_form(m)) for m in msgs],
                 "output_sha256": None if reply is None else T.content_sha(T.chat_form(reply, "assistant"))}
     except (AttributeError, TypeError, KeyError, IndexError):
-        return {}  # not a chat completion: the call is logged without hashes
+        return {}
 
 
 class Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"  # keep-alive: one TLS handshake per forwarded connection, not per call
+    protocol_version = "HTTP/1.1"
 
     def setup(self):
         super().setup()
-        self.connection.do_handshake()  # deferred out of accept(); a bad or expired SVID fails here
+        self.connection.do_handshake()
         san = dict((k, v) for k, v in self.connection.getpeercert().get("subjectAltName", ()) if k == "URI")
         self.spiffe_id = san.get("URI", "")
-        # vm create pins each tap to its guest IP, so the source IP names the VM; its principals hold SVIDs under it.
         m = re.fullmatch(r"172\.16\.(\d+)\.2", self.client_address[0])
         try:
             self.vm_id = json.load(open(f"{JAIL}/vm-{int(m[1]):02d}/identity.json"))["VM_ID"] if m else None
@@ -211,7 +205,7 @@ class Handler(BaseHTTPRequestHandler):
             return False
         n = self.headers.get("X-Avos-Attempt", "")
         self.attempt = int(n) if n.isdigit() else None
-        self.home = store.vm_of(self.spiffe_id)  # the principal's VM: its stream and its counters
+        self.home = store.vm_of(self.spiffe_id)
         store.count(self.home, "a")
         return True
 
@@ -224,7 +218,7 @@ class Handler(BaseHTTPRequestHandler):
         """The allow decision event (calls name it in authz_ref), or None once a deny has been answered."""
         try:
             vm_id, _ = principal(self.spiffe_id)
-            if vm_id != self.vm_id:  # filed under the principal it names, so its audit shows the attempt
+            if vm_id != self.vm_id:
                 self.emit("authz.decision", action=action, resource=resource, args=args, decision="deny",
                           policy_ids=["vm-binding"], errors=[], via_vm=self.vm_id)
                 return self.deny(f"{self.spiffe_id} does not belong to the calling VM ({self.vm_id})", ["vm-binding"], args)
@@ -273,7 +267,6 @@ class Handler(BaseHTTPRequestHandler):
             result = fn(args)
             store.count(self.home, "t")
             call = self.emit("tool.call", via="gateway", tool=m[1], args=args, authz_ref=d["event_id"])
-            # A halt or cut that landed while the tool ran: the result is kept but not delivered.
             c = cut_for(self.spiffe_id)
             self.emit("tool.result", call_ref=call["event_id"], result=result,
                       **({"dropped": True, "receipt": c["receipt"]} if c else {}))
@@ -290,7 +283,6 @@ class Handler(BaseHTTPRequestHandler):
         if not (d := self.allowed("llm.call", f"Model::{json.dumps(model)}", {})):
             return
         t0 = time.time()
-        # Limit: the upstream answer is read whole, so a streamed reply reaches the agent in one piece.
         req = urllib.request.Request(UPSTREAM["OPENAI_BASE_URL"].rstrip("/") + self.path[3:], data=body, method="POST",
                                      headers={"Content-Type": "application/json",
                                               "Authorization": f"Bearer {UPSTREAM['OPENAI_API_KEY']}"})
@@ -306,7 +298,6 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             answer = None
         usage = (answer.get("usage") if isinstance(answer, dict) else None) or {}
-        # A halt or cut that landed while the call was upstream: the answer is not delivered (nor is it kept).
         c = cut_for(self.spiffe_id)
         store.count(self.home, "l")
         self.emit("llm.call", authz_ref=d["event_id"], model=model, status=code, ms=round((time.time() - t0) * 1000),
@@ -317,7 +308,7 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(code, out, ctype)
 
     def do_GET(self):
-        self.close_connection = True  # any body is left unread
+        self.close_connection = True
         self.refuse(405, "tool.call", f"{self.command} is not served; POST or CONNECT", {})
 
     do_HEAD = do_PUT = do_PATCH = do_DELETE = do_GET
@@ -337,7 +328,6 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.flush()
         up.settimeout(None)
-        # Limit: a halt or cut after this point does not close the tunnel (data/poc5/README.md, tech debt).
         pipe(self.connection, up)
         self.close_connection = True
 
@@ -361,7 +351,7 @@ class Server(ThreadingHTTPServer):
         return CTX.wrap_socket(s, server_side=True, do_handshake_on_connect=False), addr
 
     def handle_error(self, request, addr):
-        print(f"{addr[0]}: {sys.exc_info()[1]!r}", flush=True)  # e.g. an expired or foreign SVID at handshake
+        print(f"{addr[0]}: {sys.exc_info()[1]!r}", flush=True)
 
 
 def stats(*vm_ids):
@@ -380,7 +370,7 @@ def stats(*vm_ids):
 def check():
     vm = "spiffe://avoslab.com/vm/vm-01-abcdef"
     refund = 'Tool::"issue_refund"'
-    cases = [  # principal, action, resource, context, expected decision, expected policy
+    cases = [
         (f"{vm}/agent/support", "tool.call", refund, 15000, True, "refund-support"),
         (f"{vm}/agent/support", "tool.call", refund, 48000, False, "default-deny"),
         (f"{vm}/agent/refund-manager", "tool.call", refund, 48000, True, "refund-manager"),
@@ -411,7 +401,7 @@ def check():
 if __name__ == "__main__":
     cmd, args = (sys.argv[1], sys.argv[2:]) if len(sys.argv) > 1 else ("", [])
     if cmd == "serve":
-        UPSTREAM = env_file(f"{ROOT}/gateway.env")  # model API key: on the host only, never in a VM
+        UPSTREAM = env_file(f"{ROOT}/gateway.env")
         CTX = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         CTX.verify_mode = ssl.CERT_REQUIRED
         mint()

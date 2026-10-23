@@ -8,8 +8,7 @@ from collections import defaultdict
 from pathlib import Path
 
 SEED = 300
-HELD_OUT_TARGET = 44          # target: ~70 train / ~44 held-out (of 114, before exclusions)
-# Gold trajectory wrong or disputed; see docs/split-notes.md
+HELD_OUT_TARGET = 44
 EXCLUDE = {
     "64": "#499: exchange on a pending order; wrong action in gold trajectory",
     "105": "#499: gold exchange raises (gift card $17 < $21.10), gold DB == initial DB",
@@ -66,7 +65,6 @@ def main():
         (by_user[u].append(t["id"]) if u else unresolved.append(t["id"]))
     assert not unresolved, f"unresolved users for tasks {unresolved}"
 
-    # Sort for determinism, shuffle with the seed, fill held-out until target reached.
     users = sorted(by_user)
     random.Random(SEED).shuffle(users)
     held, n = [], 0

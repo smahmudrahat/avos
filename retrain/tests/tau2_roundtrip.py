@@ -46,7 +46,7 @@ def main(result_path, traj_path, run, principal):
     problems = []
     try:
         sim = SimulationRun.model_validate(base)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         print(json.dumps({"ok": False, "n": len(rebuilt), "problems": [f"τ² rejects the rebuilt run: {type(e).__name__}: {str(e)[:300]}"]}))
         return 1
     a, b = [norm(m) for m in orig.messages], [norm(m) for m in sim.messages]
@@ -56,7 +56,7 @@ def main(result_path, traj_path, run, principal):
             break
     if len(a) != len(b):
         problems.append(f"length: original {len(a)} rebuilt {len(b)}")
-    def usage(m):  # pinned τ² keeps usage as a dict; be safe either way
+    def usage(m):
         u = getattr(m, "usage", None)
         if u is None:
             return None

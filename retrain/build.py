@@ -20,8 +20,8 @@ from importlib.machinery import SourceFileLoader
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(REPO, "collect"))
-import store  # noqa: E402  (reads AVOS_TRACE_ROOT)
-from store import T  # noqa: E402
+import store
+from store import T
 
 
 def _load(name, path):
@@ -31,8 +31,8 @@ def _load(name, path):
     return mod
 
 
-avos = _load("avos", os.path.join(REPO, "collect", "bin", "avos"))      # M8 per VM (avos.m8)
-ingest = _load("ingest", os.path.join(REPO, "trace", "bin", "ingest"))  # POC 1-6 ledger rows -> events
+avos = _load("avos", os.path.join(REPO, "collect", "bin", "avos"))
+ingest = _load("ingest", os.path.join(REPO, "trace", "bin", "ingest"))
 
 TD = "spiffe://avoslab.com"
 RESULTS = os.environ.get("AVOS_RESULTS_ROOT", "/var/lib/avos/results")
@@ -50,8 +50,6 @@ class Skip(Exception):
         super().__init__(f"{reason}: {detail}" if detail else reason)
         self.reason = reason
 
-
-# ----------------------------------------------------------------------------- sources
 
 def read_json(path):
     with open(path, "rb") as f:
@@ -163,8 +161,6 @@ def pinned():
     return tools, p["llm_agent"]
 
 
-# ----------------------------------------------------------------------------- one run
-
 def locate(src, r):
     """Where a requested run's rows live: {run, vm, job, evidence, witness_path}. Raises Skip("unknown_run")."""
     if not store.SAFE.fullmatch(r or ""):
@@ -259,7 +255,7 @@ def run_items(src, r, tools_by, template, split, redact=None, witness_only=False
     principals = {p for p, es in by_p.items() if any(e["kind"] in ("llm.call", "tool.call") for e in es)}
     if default:
         principals.add(default)
-    if evidence == "witness":  # no host row ever named the harness: its identity may be unknown (null)
+    if evidence == "witness":
         default = agent = agent or (f"{vm_p}/agent/{harness}" if vm_p else None)
         principals = {agent}
     domain, _, tid = (task or "").partition("/")
@@ -280,8 +276,6 @@ def run_items(src, r, tools_by, template, split, redact=None, witness_only=False
                 if harness == "tau2":
                     system = template["SYSTEM_PROMPT"].format(domain_policy=sim["policy"],
                                                              agent_instruction=template["AGENT_INSTRUCTION"])
-                    # The agent and the simulator are the models the witness names; a call to another model under
-                    # the same identity (τ²'s NL-assertion judge, after the conversation) grades it, it is not a turn.
                     info = w.get("info") or {}
                     named = {(info.get(k) or {}).get("llm") for k in ("agent_info", "user_info")} - {None}
                     other = [c for c in ok if named and not any(n == c.get("model") or n.endswith("/" + str(c.get("model")))
@@ -320,7 +314,7 @@ def run_items(src, r, tools_by, template, split, redact=None, witness_only=False
         priced = [c for c in calls if "price" in c or "cost_usd" in c]
         usd = round(sum(c["cost_usd"] for c in priced), 9) if priced and all(
             type(c.get("cost_usd")) in (int, float) for c in priced) else None
-        ints = lambda k: sum(c[k] for c in calls if type(c.get(k)) is int)  # noqa: E731
+        ints = lambda k: sum(c[k] for c in calls if type(c.get(k)) is int)
         lineage_ids = {e["event_id"] for e in pe}
         if p in (agent, vm_p):
             lineage_ids |= {e["event_id"] for k, e in session.items() if k != "label"}
@@ -344,9 +338,9 @@ def run_items(src, r, tools_by, template, split, redact=None, witness_only=False
             "split": split.get(task_id) if task_id else None, "redact": redact.name if redact else None}
 
     items = {}
-    for p in sorted(built, key=lambda p: (-(p or "").count("/"), p or "")):  # children first: parents name their ids
+    for p in sorted(built, key=lambda p: (-(p or "").count("/"), p or "")):
         it = built[p]
-        if broken:  # the store no longer verifies: inspectable, flagged, never trained
+        if broken:
             it["witness"].update(agrees=False, problems=broken + it["witness"]["problems"])
             for m in it["messages"]:
                 m["train"] = False
@@ -368,8 +362,6 @@ def witness_block(present):
 def item_id(d):
     return hashlib.sha256(json.dumps(d, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
 
-
-# ----------------------------------------------------------------------------- messages
 
 def message(role, content, train=False, event_id=None, **extra):
     return order({"role": role, "content": content, **extra, "train": train, "event_id": event_id})
@@ -418,7 +410,7 @@ def tau2_messages(sim, calls, system, tools, evidence):
         msgs.append(cm)
     wit = witness_block(True)
     if evidence == "witness":
-        return [order(m) for m in msgs], {}, wit  # nothing on the host to agree or disagree with
+        return [order(m) for m in msgs], {}, wit
     use = [(k + 1, m) for k, m in enumerate(sim["messages"]) if m.get("usage")]
     rids = [((m.get("raw_data") or {}).get("id")) for _, m in use]
     if calls and all(c.get("response_id") for c in calls) and all(rids):
@@ -521,7 +513,7 @@ def mswe_messages(w, calls, evidence):
     msgs = []
     for m in w["trajectory"]["messages"]:
         if m["role"] not in ("system", "user", "assistant", "tool"):
-            continue  # the harness's own end marker (role "exit"): its status is the outcome, not a message
+            continue
         cm = {"role": m["role"], "content": m.get("content")}
         if m.get("tool_calls"):
             cm["tool_calls"] = [{"id": t.get("id"), "type": "function", "function": {
@@ -552,8 +544,6 @@ def order(m):
     keys = ("role", "content", "tool_calls", "tool_call_id", "error", "train", "event_id", "ts", "usage")
     return {k: m[k] for k in keys if k in m}
 
-
-# ----------------------------------------------------------------------------- redaction
 
 class Redactor:
     def __init__(self, spec):
