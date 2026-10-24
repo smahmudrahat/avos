@@ -279,6 +279,26 @@ answered), `error` (`gateway_timeout`, `upstream_unreachable: …`, `upstream_ba
 A trial is exactly one τ² simulation: the agent runs τ² with `--max-retries 0` (`docs/versions.md`). Without the file the gateway keeps POC 4's single upstream.
 Interface and acceptance suite: `fleet/CONTRACT.md`, `fleet/tests/`; results: `data/poc10/README.md`.
 
-## 11. Planned
-- **Training:** LoRA retraining on the runs the labels keep.
-- **Evaluation:** full held-out runs with pass^k, cost and latency, compared with frontier-model baselines.
+**Policy sampling.** `fleet run --agent-temperature T [--agent-top-p P]` samples the policy (default T 0); the
+simulator and the NL judge stay at T 0. The setting is part of the plan (`agent_sampling` in `fleet.json`, checked on
+resume) and reaches τ² as `AGENT_TEMPERATURE`/`AGENT_TOP_P` through MMDS. Used only to collect more varied train runs.
+
+**Compare** (`fleet compare --a A --b B [--seed S]`): two matrix JSONs of the same split, simulator and judge, paired
+by task. pass^k per task is recomputed from `n`, `c` (a matrix whose stored pass^k disagrees is refused); the
+difference B − A with a paired percentile bootstrap over tasks; M12, M13 and cause differences beside it.
+
+## 11. Retraining (`train/`)
+`train select` builds the training set from `retrain export` / `label run` pairs, one `fleet.json` per pair: an item
+enters only when its label says kept, the fleet's policy role is the model being trained, and the split file, item and
+label all say train; any kept row that contradicts the data refuses the whole command. Each policy turn is rendered
+with the served model's tokenizer and chat template exactly as vLLM rendered it (tool-call arguments parsed to
+objects, tools passed, thinking off) and must reproduce the gateway's `prompt_tokens` and `completion_tokens`; the
+loss mask covers exactly the completion through `<|im_end|>`. `train fit` trains a LoRA adapter on those positions only
+(logits are computed only there), packing a user turn's policy turns into one sequence when each is a token prefix of
+the next. `train merge` folds the adapter into the base safetensors shards (same 775 tensor keys, tokenizer and
+template byte-identical); `train serve-cmd` prints the frozen vLLM command for it under the same served name, so the
+fleet, gateway routes and matrix are unchanged. An all-zero adapter merged this way serves token-identical replies to
+the base. Interface and suite: `train/CONTRACT.md`, `train/tests/`; results: `data/poc12/README.md`.
+
+## 12. Planned
+- **Evaluation:** the same held-out runs with frontier models, cost and pass^k side by side.

@@ -30,7 +30,8 @@ run() {
   stage=create mine=1
 
   created=$("$VM" create "$name" "HARNESS=$harness" "TASK=$task" ${MODEL:+"MODEL=$MODEL"} ${USER_MODEL:+"USER_MODEL=$USER_MODEL"} \
-    ${JUDGE_MODEL:+"JUDGE_MODEL=$JUDGE_MODEL"}) || { rc=$?; [ $rc != 3 ] || mine=; exit $rc; }
+    ${JUDGE_MODEL:+"JUDGE_MODEL=$JUDGE_MODEL"} \
+    ${AGENT_TEMPERATURE:+"AGENT_TEMPERATURE=$AGENT_TEMPERATURE"} ${AGENT_TOP_P:+"AGENT_TOP_P=$AGENT_TOP_P"}) || { rc=$?; [ $rc != 3 ] || mine=; exit $rc; }
   ip=$(grep -oP 'ip=\K\S+' <<< "$created") vm_id=$(grep -oP 'vm_id=\K\S+' <<< "$created")
   ids="\"vm\":\"$name\""
   stage=session

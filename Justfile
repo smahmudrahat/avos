@@ -222,6 +222,9 @@ poc5 n="10":
 trace-check:
     python3 trace/tests/run.py --quick
 
+train-test *args:
+    python3 train/tests/run.py {{args}}
+
 poc6:
     #!/usr/bin/env bash
     set -euo pipefail

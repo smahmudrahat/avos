@@ -1,0 +1,151 @@
+{
+ "format": "avos-retrain-manifest/1",
+ "seed": 0,
+ "redact": null,
+ "split_file": {
+  "path": "data/splits/retail_user_disjoint_v1.json",
+  "sha256": "0853eefa2a3f3b2b8f363e4bf596e7e05b0502a232aa3c4c562c5e0760609c24"
+ },
+ "items": [
+  {
+   "item_id": "26d6e17a6073ef68fe795ff605bd1e03511eeca9968c61461fa757a3c7a58f90",
+   "run": "run_retail-17_10",
+   "principal": "spiffe://avoslab.com/vm/vm-06-97ca8c/agent/tau2",
+   "split": "train",
+   "passed": true,
+   "trace_complete": "complete",
+   "witness_agrees": true,
+   "sft_examples": 7
+  },
+  {
+   "item_id": "d68d2fb0b29b9532527abeaee9962859e2be6a5f3605a1fcd2345cd3a0d77606",
+   "run": "run_retail-17_11",
+   "principal": "spiffe://avoslab.com/vm/vm-06-1d4590/agent/tau2",
+   "split": "train",
+   "passed": true,
+   "trace_complete": "complete",
+   "witness_agrees": true,
+   "sft_examples": 7
+  },
+  {
+   "item_id": "3a127808756528e298f146c0f7f64e54021696580a363f41de4aa668b8d7613f",
+   "run": "run_retail-17_14",
+   "principal": "spiffe://avoslab.com/vm/vm-07-9593f5/agent/tau2",
+   "split": "train",
+   "passed": true,
+   "trace_complete": "complete",
+   "witness_agrees": true,
+   "sft_examples": 7
+  },
+  {
+   "item_id": "4a096ad9247e7705493e27a229f3b543440270f538c2caf546791a4d52eb0349",
+   "run": "run_retail-17_9",
+   "principal": "spiffe://avoslab.com/vm/vm-31-1a5bea/agent/tau2",
+   "split": "train",
+   "passed": true,
+   "trace_complete": "complete",
+   "witness_agrees": true,
+   "sft_examples": 7
+  },
+  {
+   "item_id": "e81420c960c2eee78bf214aaeda262e8d9e361bd8f81f382a3818eadcaf41fa3",
+   "run": "run_retail-51_8",
+   "principal": "spiffe://avoslab.com/vm/vm-33-c010a4/agent/tau2",
+   "split": "train",
+   "passed": true,
+   "trace_complete": "complete",
+   "witness_agrees": true,
+   "sft_examples": 8
+  },
+  {
+   "item_id": "95ffe6fd5652628126afe5fb3c4aceddff6b9acea9e5d2f977f080392c2b60c0",
+   "run": "run_retail-57_10",
+   "principal": "spiffe://avoslab.com/vm/vm-08-c515e6/agent/tau2",
+   "split": "train",
+   "passed": true,
+   "trace_complete": "complete",
+   "witness_agrees": true,
+   "sft_examples": 5
+  },
+  {
+   "item_id": "ec33ca8bef8f26858f5e07825783ddc1b52270f79767664f3a97ef95f3acdb4f",
+   "run": "run_retail-57_9",
+   "principal": "spiffe://avoslab.com/vm/vm-20-e46e84/agent/tau2",
+   "split": "train",
+   "passed": false,
+   "trace_complete": "complete",
+   "witness_agrees": true,
+   "sft_examples": 9
+  },
+  {
+   "item_id": "02551342b169ae28b685669dea605d7f6898c5fa283af9d3d568cffcedde3588",
+   "run": "run_retail-68_11",
+   "principal": "spiffe://avoslab.com/vm/vm-03-809628/agent/tau2",
+   "split": "train",
+   "passed": true,
+   "trace_complete": "complete",
+   "witness_agrees": true,
+   "sft_examples": 8
+  },
+  {
+   "item_id": "3cc7c220fe07d34c65434ecc1ec262734cf098b8ceeaa851fdd273cb06e5bac7",
+   "run": "run_retail-73_72",
+   "principal": "spiffe://avoslab.com/vm/vm-14-0a72a7/agent/tau2",
+   "split": "train",
+   "passed": true,
+   "trace_complete": "complete",
+   "witness_agrees": true,
+   "sft_examples": 8
+  },
+  {
+   "item_id": "90c0d7db7be86f690ff234bec1598a4249693a2ede68e72b7181830e7670f893",
+   "run": "run_retail-73_74",
+   "principal": "spiffe://avoslab.com/vm/vm-33-f1d9dc/agent/tau2",
+   "split": "train",
+   "passed": false,
+   "trace_complete": "complete",
+   "witness_agrees": true,
+   "sft_examples": 7
+  },
+  {
+   "item_id": "ce475d1d234278a2375155fee139d26ad08611455a5f6eb294756bf17ab995f3",
+   "run": "run_retail-77_15",
+   "principal": "spiffe://avoslab.com/vm/vm-13-36f729/agent/tau2",
+   "split": "train",
+   "passed": true,
+   "trace_complete": "complete",
+   "witness_agrees": true,
+   "sft_examples": 8
+  },
+  {
+   "item_id": "4650b9ba68d7b7d3407e7ae145c6854aed7730904ccdde679d4262a7f4cba411",
+   "run": "run_retail-84_10",
+   "principal": "spiffe://avoslab.com/vm/vm-25-f7bb23/agent/tau2",
+   "split": "train",
+   "passed": false,
+   "trace_complete": "complete",
+   "witness_agrees": true,
+   "sft_examples": 6
+  }
+ ],
+ "skipped": [],
+ "counts": {
+  "runs_requested": 12,
+  "runs_exported": 12,
+  "items": 12,
+  "sft_examples": 87,
+  "passed": 9,
+  "failed": 3,
+  "unknown": 0,
+  "train": 12,
+  "held_out": 0,
+  "unsplit": 0,
+  "flagged": 0
+ },
+ "m14": {
+  "train_runs": 12,
+  "train_passed": 9,
+  "kept_run_fraction": 0.75
+ },
+ "dataset_sha256": "367b65759c56bfd566e1672244041a2e6d200b10111ab64abc3b4f5ed73b91cd"
+}

@@ -1,0 +1,797 @@
+#!/usr/bin/env python3
+"""train: LoRA-retrain the policy on its own kept train runs and serve the merged model (POC 12, train/CONTRACT.md).
+
+  train select --out DIR --pair EXPORT LABELS [--pair ...] --fleet FLEET_JSON [...] --policy NAME --tokenizer TOK
+               [--split FILE] [--exclude-task T,...]
+  train fit --data DIR --model MODEL --out FITDIR --gpu-usd-per-h P (--steps N | --epochs E) [hyperparameters]
+  train card --fit FITDIR [--json]
+  train merge --model MODEL --adapter FITDIR/adapter --out CKPT
+  train serve-cmd --model DIR --port PORT
+  train replay --url http://HOST:PORT/v1 --requests FILE --out FILE
+
+select needs transformers 5 (the served tokenizer and chat template); fit and merge need torch, transformers, peft
+and safetensors. The command runs in this interpreter when it has them, else re-executes under $AVOS_TRAIN_PYTHON,
+then ~/train/bin/python, then (select only) `uv run` with pinned transformers. select keeps no cache: every answer
+is recomputed from the sources.
+"""
+import argparse
+import hashlib
+import importlib.util
+import json
+import math
+import os
+import pwd
+import random
+import re
+import shlex
+import shutil
+import sys
+import time
+import urllib.error
+import urllib.request
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
+SPLIT = "data/splits/retail_user_disjoint_v1.json"
+SERVED = "policy-qwen3.5-9b"
+TRANSFORMERS = "transformers==5.19.0"
+GEN = "<think>\n\n</think>\n\n"
+TARGETS = ("q_proj", "k_proj", "v_proj", "o_proj", "in_proj_qkv", "in_proj_z", "in_proj_a", "in_proj_b", "out_proj",
+           "gate_proj", "up_proj", "down_proj")
+COPY = ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "generation_config.json", "vocab.json", "merges.txt")
+
+
+class Fail(Exception):
+    def __init__(self, msg, code=1):
+        super().__init__(msg)
+        self.code = code
+
+
+# ---------------------------------------------------------------- files
+
+def sha_bytes(b):
+    return hashlib.sha256(b).hexdigest()
+
+
+def sha_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def load(path, what, code=2):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError) as e:
+        raise Fail(f"{what} unreadable: {path}: {e}", code)
+
+
+def jsonl(path, what):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return [json.loads(l) for l in f if l.strip()]
+    except (OSError, ValueError) as e:
+        raise Fail(f"{what} unreadable: {path}: {e}", 2)
+
+
+def canonical(obj):
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def ts(t):
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + f".{int(t * 1000) % 1000:03d}Z"
+
+
+def replace_dir(tmp, out):
+    old = None
+    if os.path.lexists(out):
+        old = f"{out}.old.{os.getpid()}"
+        os.rename(out, old)
+    os.rename(tmp, out)
+    if old:
+        shutil.rmtree(old, ignore_errors=True)
+
+
+def write_file(path, data):
+    tmp = f"{path}.tmp.{os.getpid()}"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
+
+
+def real_home():
+    return pwd.getpwuid(os.getuid()).pw_dir
+
+
+# ---------------------------------------------------------------- environment
+
+def stack(gpu):
+    """Run on with the modules this subcommand needs, re-executing under another interpreter when they are missing."""
+    mods = ("torch", "transformers", "peft", "safetensors") if gpu else ("transformers", "jinja2")
+    if sys.version_info >= (3, 12) and all(importlib.util.find_spec(m) for m in mods):
+        import transformers
+        if transformers.__version__.startswith("5."):
+            return
+    if os.environ.get("AVOS_TRAIN_REEXEC"):
+        raise Fail(f"{sys.executable} lacks Python 3.12 with {', '.join(mods)} (transformers 5); set AVOS_TRAIN_PYTHON", 2)
+    env = {**os.environ, "AVOS_TRAIN_REEXEC": "1"}
+    script = os.path.abspath(__file__)
+    for py in (os.environ.get("AVOS_TRAIN_PYTHON"), os.path.join(real_home(), "train", "bin", "python")):
+        if py and os.access(py, os.X_OK):
+            os.execve(py, [py, script] + sys.argv[1:], env)
+    uv = shutil.which("uv")
+    if gpu or not uv:
+        raise Fail(f"no interpreter with {', '.join(mods)}: set AVOS_TRAIN_PYTHON" + ("" if gpu else " or install uv"), 2)
+    env.setdefault("UV_CACHE_DIR", os.path.join(real_home(), ".cache", "uv"))
+    env.setdefault("UV_PYTHON_INSTALL_DIR", os.path.join(real_home(), ".local", "share", "uv", "python"))
+    sys.stdout.flush()
+    os.execve(uv, [uv, "run", "-q", "--no-project", "--python", "3.12", "--with", TRANSFORMERS, "--with", "jinja2",
+                   "python", script] + sys.argv[1:], env)
+
+
+# ---------------------------------------------------------------- select (§2)
+
+def content_sha(item):
+    ms = []
+    for m in item["messages"]:
+        d = {"role": m["role"]}
+        if "content" in m:
+            d["content"] = m["content"]
+        if "tool_call_id" in m:
+            d["tool_call_id"] = m["tool_call_id"]
+        if "tool_calls" in m:
+            d["tool_calls"] = [{"name": t["function"]["name"], "arguments": t["function"]["arguments"]} for t in m["tool_calls"]]
+        ms.append(d)
+    return sha_bytes(canonical({"task": item["task"], "tools": item["tools"], "messages": ms}).encode())
+
+
+def item_hash(item):
+    return sha_bytes(canonical({k: v for k, v in item.items() if k != "item_id"}).encode())
+
+
+def policy_turns(item):
+    return [k for k, m in enumerate(item["messages"]) if m.get("train") is True]
+
+
+def refuse(reason, run, detail=""):
+    raise Fail(f"{reason}: {run}" + (f" ({detail})" if detail else ""))
+
+
+def read_fleet(path):
+    fl = load(path, "fleet.json")
+    if not isinstance(fl, dict) or not isinstance(fl.get("fleet"), str) or not isinstance((fl.get("roles") or {}).get("policy"), str) \
+            or not isinstance((fl.get("split") or {}).get("sha256"), str):
+        raise Fail(f"fleet.json lacks fleet, roles.policy or split.sha256: {path}", 2)
+    return fl
+
+
+def read_pair(i, export, labels, fleet, policy, split_sha, train_ids, exclude, seen):
+    for p, what in ((export, "export"), (labels, "labels")):
+        if not os.path.isdir(p):
+            raise Fail(f"{what} directory missing: {p}", 2)
+    fl = read_fleet(fleet)
+    if fl["roles"]["policy"] != policy:
+        refuse("policy_mismatch", fl["fleet"], f"pair {i}: the fleet's policy role is {fl['roles']['policy']}, --policy is {policy}")
+    if fl["split"]["sha256"] != split_sha:
+        refuse("split_mismatch", fl["fleet"], f"pair {i}: the fleet ran on another split file")
+    man = load(os.path.join(export, "manifest.json"), "export manifest")
+    items = jsonl(os.path.join(export, "trajectories.jsonl"), "trajectories.jsonl")
+    lpath = os.path.join(labels, "labels.jsonl")
+    rows = jsonl(lpath, "labels.jsonl")
+    try:
+        if not isinstance(man, dict) or sha_bytes("\n".join(it["item_id"] for it in items).encode()) != man.get("dataset_sha256"):
+            refuse("dataset_sha256_mismatch", export)
+        if (man.get("split_file") or {}).get("sha256") != split_sha:
+            refuse("split_mismatch", export, "the export was built with another split file")
+        by_run = {}
+        for r in rows:
+            if not isinstance(r.get("final"), dict) or not isinstance(r["final"].get("kept"), bool):
+                raise Fail(f"labels.jsonl row {r.get('run')} has no final.kept", 2)
+            if r["run"] in by_run:
+                refuse("label_duplicate", r["run"])
+            by_run[r["run"]] = r
+        runs = {it["run"] for it in items}
+        for r in rows:
+            if r["run"] not in runs:
+                refuse("label_run_unknown", r["run"], f"pair {i}")
+        selected, rejected, kept = [], [], 0
+        for it in items:
+            run = it["run"]
+            r = by_run.get(run)
+            if r is None:
+                refuse("label_missing", run, f"pair {i}")
+            if item_hash(it) != it["item_id"]:
+                refuse("item_id_mismatch", run, "the item does not hash to its own item_id")
+            if r.get("content_sha256") != content_sha(it):
+                refuse("content_sha256_mismatch", run)
+            if r.get("item_id") != it["item_id"]:
+                refuse("item_id_mismatch", run)
+            if not r["final"]["kept"]:
+                rejected.append({"run": run, "source": i, "reason": "not_kept"})
+                continue
+            kept += 1
+            if it["task_id"] not in train_ids or it["split"] != "train" or r.get("split") != "train":
+                refuse("kept_not_train", run, f"task {it['task_id']}, item split {it['split']}, label split {r.get('split')}")
+            if it["witness"]["agrees"] is not True:
+                refuse("kept_witness_disagrees", run)
+            if it["trace_complete"]["status"] != "complete":
+                refuse("kept_trace_incomplete", run)
+            if it["task_id"] in exclude:
+                rejected.append({"run": run, "source": i, "reason": "excluded_task"})
+                continue
+            turns = policy_turns(it)
+            if not turns:
+                rejected.append({"run": run, "source": i, "reason": "no_policy_turn"})
+                continue
+            for k in turns:
+                u = it["messages"][k].get("usage")
+                if not isinstance(u, dict) or not all(isinstance(u.get(f), int) for f in ("prompt_tokens", "completion_tokens")):
+                    refuse("usage_missing", run, f"message {k}")
+            if it["item_id"] in seen:
+                refuse("duplicate_item", run, f"pairs {seen[it['item_id']]} and {i}")
+            seen[it["item_id"]] = i
+            selected.append((it, turns))
+    except (KeyError, TypeError, AttributeError) as e:
+        raise Fail(f"pair {i}: malformed item or label row: {type(e).__name__} {e}", 2)
+    src = {"export": export, "labels": labels, "dataset_sha256": man["dataset_sha256"], "labels_sha256": sha_file(lpath),
+           "fleet": fleet, "fleet_name": fl["fleet"], "fleet_policy": fl["roles"]["policy"],
+           "items": len(items), "kept": kept, "selected": len(selected), "rejected": len(rejected)}
+    return src, selected, rejected
+
+
+def reduce(m, run, k):
+    d = {"role": m["role"]}
+    if m.get("content") is not None:
+        d["content"] = m["content"]
+    if m.get("tool_calls"):
+        calls = []
+        for t in m["tool_calls"]:
+            try:
+                args = json.loads(t["function"]["arguments"])
+            except (TypeError, ValueError):
+                refuse("token_parity", run, f"message {k}: tool arguments are not JSON")
+            calls.append({"id": t["id"], "type": "function", "function": {"name": t["function"]["name"], "arguments": args}})
+        d["tool_calls"] = calls
+    if m.get("tool_call_id"):
+        d["tool_call_id"] = m["tool_call_id"]
+    return d
+
+
+def render(tok, im_end, it, turns):
+    """The served rendering of every policy turn; refuses any turn whose counts are not the gateway's."""
+    msgs = [reduce(m, it["run"], k) for k, m in enumerate(it["messages"])]
+    out = []
+    for k in turns:
+        u = it["messages"][k]["usage"]
+        kw = {"tools": it["tools"], "enable_thinking": False, "tokenize": False}
+        prompt = tok.apply_chat_template(msgs[:k], add_generation_prompt=True, **kw)
+        full = tok.apply_chat_template(msgs[:k + 1], add_generation_prompt=False, **kw)
+        if not full.startswith(prompt):
+            refuse("token_parity", it["run"], f"message {k}: the turn does not extend its prompt")
+        comp = full[len(prompt):]
+        if comp.endswith("\n"):
+            comp = comp[:-1]
+        p = tok(prompt, add_special_tokens=False)["input_ids"]
+        c = tok(comp, add_special_tokens=False)["input_ids"]
+        if (len(p), len(c)) != (u["prompt_tokens"], u["completion_tokens"]) or not c or c[-1] != im_end:
+            refuse("token_parity", it["run"], f"message {k}: rendered {len(p)}+{len(c)} tokens, gateway {u['prompt_tokens']}+{u['completion_tokens']}")
+        out.append((k, p, c))
+    return out
+
+
+def cmd_select(a):
+    tok_dir = a.tokenizer
+    for f in ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja"):
+        if not os.path.isfile(os.path.join(tok_dir, f)):
+            raise Fail(f"tokenizer directory lacks {f}: {tok_dir}", 2)
+    if len(a.fleet or []) != len(a.pair):
+        raise Fail(f"--fleet is given {len(a.fleet or [])} times for {len(a.pair)} --pair", 2)
+    fleets = [read_fleet(f) and f for f in a.fleet]
+    split_path = a.split or os.path.join(REPO, SPLIT)
+    split = load(split_path, "split file")
+    if not isinstance(split, dict) or not isinstance(split.get("train"), list):
+        raise Fail(f"split file has no train list: {split_path}", 2)
+    split_sha, train_ids = sha_file(split_path), set(split["train"])
+    exclude = sorted({t for t in (a.exclude_task or "").split(",") if t})
+    sources, selected, rejected, seen = [], [], [], {}
+    for i, ((ex, lb), fleet) in enumerate(zip(a.pair, fleets)):
+        src, sel, rej = read_pair(i, ex, lb, fleet, a.policy, split_sha, train_ids, set(exclude), seen)
+        sources.append(src)
+        selected += [(it, turns, i) for it, turns in sel]
+        rejected += rej
+    tok, im_end = None, None
+    if selected:
+        for k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "TRANSFORMERS_NO_ADVISORY_WARNINGS"):
+            os.environ.setdefault(k, "1")
+        stack(gpu=False)
+        from transformers import AutoTokenizer
+        try:
+            tok = AutoTokenizer.from_pretrained(tok_dir)
+        except Exception as e:
+            raise Fail(f"tokenizer unreadable: {tok_dir}: {type(e).__name__}: {e}", 2)
+        im_end = tok.convert_tokens_to_ids("<|im_end|>")
+    else:
+        im_end = json.load(open(os.path.join(tok_dir, "tokenizer.json"), encoding="utf-8")).get("added_tokens", [])
+        im_end = next((t["id"] for t in im_end if t.get("content") == "<|im_end|>"), None)
+    selected.sort(key=lambda s: s[0]["item_id"])
+    parent = os.path.dirname(os.path.abspath(a.out))
+    lines, sel_rows = [], []
+    for it, turns, i in selected:
+        rendered = render(tok, im_end, it, turns)
+        for k, p, c in rendered:
+            ex = {"item_id": it["item_id"], "run": it["run"], "task_id": it["task_id"], "source": i, "turn_index": k,
+                  "prompt_tokens": len(p), "completion_tokens": len(c), "input_ids": p + c, "loss_mask": [0] * len(p) + [1] * len(c)}
+            lines.append(json.dumps(ex, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+        sel_rows.append({"item_id": it["item_id"], "run": it["run"], "task_id": it["task_id"], "source": i, "examples": len(rendered),
+                         "prompt_tokens": sum(len(p) for _, p, _ in rendered), "completion_tokens": sum(len(c) for _, _, c in rendered)})
+    data = b"".join(lines)
+    pt, ct = sum(s["prompt_tokens"] for s in sel_rows), sum(s["completion_tokens"] for s in sel_rows)
+    man = {"format": "avos-train-data/1", "policy": a.policy,
+           "tokenizer": {"path": tok_dir, "tokenizer_sha256": sha_file(os.path.join(tok_dir, "tokenizer.json")),
+                         "chat_template_sha256": sha_file(os.path.join(tok_dir, "chat_template.jinja")), "im_end_id": im_end},
+           "split_file": {"path": a.split or SPLIT, "sha256": split_sha}, "excluded_tasks": exclude, "sources": sources,
+           "selected": sel_rows, "rejected": sorted(rejected, key=lambda r: (r["source"], r["run"])),
+           "counts": {"runs": len(sel_rows), "tasks": len({s["task_id"] for s in sel_rows}), "examples": len(lines),
+                      "prompt_tokens": pt, "completion_tokens": ct, "tokens": pt + ct},
+           "examples_sha256": sha_bytes(data)}
+    os.makedirs(parent, exist_ok=True)
+    tmp = f"{os.path.abspath(a.out)}.tmp.{os.getpid()}"
+    os.makedirs(tmp)
+    try:
+        with open(os.path.join(tmp, "examples.jsonl"), "wb") as f:
+            f.write(data)
+        with open(os.path.join(tmp, "manifest.json"), "w", encoding="utf-8") as f:
+            f.write(json.dumps(man, indent=1, sort_keys=True) + "\n")
+        replace_dir(tmp, a.out)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if a.json:
+        print(json.dumps(man, sort_keys=True))
+    else:
+        c = man["counts"]
+        print(f"selected {c['runs']} runs on {c['tasks']} tasks: {c['examples']} examples, {c['prompt_tokens']}+{c['completion_tokens']} tokens; "
+              f"rejected {len(rejected)}; examples_sha256 {man['examples_sha256']}")
+    return 0
+
+
+# ---------------------------------------------------------------- card (§4)
+
+def card(fitdir):
+    fit = load(os.path.join(fitdir, "fit.json"), "fit.json")
+    try:
+        steps = fit["steps"]
+        try:
+            with open(os.path.join(fitdir, "log.jsonl"), encoding="utf-8") as f:
+                log = [json.loads(l) for l in f if l.strip()]
+        except OSError:
+            log = []
+        except ValueError as e:
+            raise Fail(f"log.jsonl unreadable: {e}")
+        if len(log) != steps:
+            raise Fail(f"log.jsonl has {len(log)} lines for {steps} steps")
+        for n, l in enumerate(log, 1):
+            if l.get("step") != n:
+                raise Fail(f"log.jsonl line {n} is step {l.get('step')}")
+            if isinstance(l.get("loss"), bool) or not isinstance(l.get("loss"), (int, float)) or not math.isfinite(l["loss"]):
+                raise Fail(f"log.jsonl step {n}: loss {l.get('loss')} is not finite")
+        losses = [l["loss"] for l in log]
+        gpu_h = fit["wall_s"] * fit["gpu"]["count"] / 3600
+        d = fit["data"]
+        return {"format": "avos-train-card/1", "note": f"LoRA · {fit['base_model_name']} · {d['runs']} passed runs",
+                "base_model": fit["base_model_name"], "data": d,
+                "hyperparameters": fit["hyperparameters"], "steps": steps, "epochs": fit["epochs"],
+                "loss": {"per_step": losses, "first": losses[0] if losses else None, "last": losses[-1] if losses else None,
+                         "min": min(losses) if losses else None},
+                "wall_s": fit["wall_s"], "gpu_count": fit["gpu"]["count"], "gpu_hours": gpu_h,
+                "gpu_usd_per_h": fit["gpu"]["usd_per_h"], "cost_usd": gpu_h * fit["gpu"]["usd_per_h"]}
+    except (KeyError, TypeError) as e:
+        raise Fail(f"fit.json lacks a field: {type(e).__name__} {e}", 2)
+
+
+def card_text(c):
+    d, lo = c["data"], c["loss"]
+    out = [c["note"], "", f"base model: {c['base_model']}",
+           f"data: runs {d['runs']}, examples {d['examples']}, tokens {d['tokens']}, examples_sha256 {d['examples_sha256']}",
+           f"steps: {c['steps']}", f"epochs: {c['epochs']}", "hyperparameters:"]
+    out += [f"  {k}: {json.dumps(v)}" for k, v in sorted(c["hyperparameters"].items())]
+    out += [f"loss: first {lo['first']}, last {lo['last']}, min {lo['min']}",
+            "loss per step: " + (" ".join(repr(x) for x in lo["per_step"]) or "-"),
+            f"wall_s: {c['wall_s']}", f"gpu_count: {c['gpu_count']}", f"gpu_hours: {c['gpu_hours']}",
+            f"gpu_usd_per_h: {c['gpu_usd_per_h']}", f"cost_usd: {c['cost_usd']}"]
+    return "\n".join(out) + "\n"
+
+
+def cmd_card(a):
+    c = card(a.fit)
+    sys.stdout.write(json.dumps(c, sort_keys=True) + "\n" if a.json else card_text(c))
+    return 0
+
+
+# ---------------------------------------------------------------- fit (§3)
+
+def model_name(model_dir, given):
+    if given:
+        return given
+    m = re.search(r"models--([^/]+)--([^/]+)/snapshots/", os.path.abspath(model_dir) + "/")
+    if m:
+        return f"{m.group(1)}/{m.group(2)}"
+    cfg = load(os.path.join(model_dir, "config.json"), "model config")
+    return cfg.get("_name_or_path") or os.path.basename(os.path.normpath(model_dir))
+
+
+def pack(examples):
+    """Sequences of one item that hold several turns: a turn joins a sequence when its whole prompt + completion is a
+    token prefix of it, so every loss position sees exactly the tokens it saw at generation."""
+    by_item = {}
+    for e in examples:
+        by_item.setdefault(e["item_id"], []).append(e)
+    seqs = []
+    for item in sorted(by_item):
+        own = []
+        for e in sorted(by_item[item], key=lambda e: -e["turn_index"]):
+            ids, P, C = e["input_ids"], e["prompt_tokens"], e["completion_tokens"]
+            for s in own:
+                if len(s["ids"]) >= P + C and s["ids"][:P + C] == ids and all(P >= b or P + C <= a for a, b in s["spans"]):
+                    s["spans"].append((P, P + C))
+                    break
+            else:
+                own.append({"ids": ids, "spans": [(P, P + C)]})
+        seqs += own
+    for s in seqs:
+        s["spans"].sort()
+        s["tokens"] = sum(b - a for a, b in s["spans"])
+    return seqs
+
+
+def batches(seqs, size, cap, seed, epoch):
+    order = list(range(len(seqs)))
+    random.Random(seed * 1000 + epoch).shuffle(order)
+    out, cur, toks = [], [], 0
+    for i in order:
+        n = len(seqs[i]["ids"])
+        if cur and (len(cur) == size or (cap and toks + n > cap)):
+            out.append(cur)
+            cur, toks = [], 0
+        cur.append(i)
+        toks += n
+    return out + ([cur] if cur else [])
+
+
+def lr_at(i, total, base, warmup):
+    w = max(1, math.ceil(warmup * total))
+    if i < w:
+        return base * (i + 1) / w
+    return base * 0.5 * (1 + math.cos(math.pi * (i - w) / max(1, total - w)))
+
+
+def cmd_fit(a):
+    if a.steps is not None and a.steps < 0 or a.epochs is not None and a.epochs <= 0 or a.batch_seqs < 1 or a.gpu_count < 1:
+        raise Fail("--steps ≥ 0, --epochs > 0, --batch-seqs ≥ 1, --gpu-count ≥ 1", 2)
+    epochs = a.epochs if a.steps is None and a.epochs is not None else (2.0 if a.steps is None else None)
+    man_p, ex_p = os.path.join(a.data, "manifest.json"), os.path.join(a.data, "examples.jsonl")
+    if not os.path.isfile(man_p):
+        raise Fail(f"data manifest missing: {man_p}")
+    man = load(man_p, "data manifest", 1)
+    if not os.path.isfile(ex_p) or sha_file(ex_p) != man.get("examples_sha256"):
+        raise Fail(f"examples_sha256 does not match {ex_p}")
+    if not os.path.isfile(os.path.join(a.model, "config.json")):
+        raise Fail(f"model directory has no config.json: {a.model}", 2)
+    if os.path.exists(a.out) and os.listdir(a.out):
+        raise Fail(f"{a.out} exists and is not empty", 2)
+    stack(gpu=True)
+    t_start = time.time()
+    examples = jsonl(ex_p, "examples.jsonl")
+    seqs = pack(examples)
+    long = [len(s["ids"]) for s in seqs if len(s["ids"]) > a.max_len]
+    if long:
+        raise Fail(f"{len(long)} sequences longer than --max-len {a.max_len} (longest {max(long)}); never truncated")
+    per_epoch = len(batches(seqs, a.batch_seqs, a.batch_tokens, a.seed, 0))
+    total = a.steps if a.steps is not None else math.ceil(per_epoch * epochs)
+    targets = list(a.targets.split(","))
+    hp = {"lr": a.lr, "rank": a.rank, "alpha": a.alpha, "dropout": a.dropout, "target_modules": targets,
+          "target_scope": "language model only (no vision tower, no MTP head)", "batch_seqs": a.batch_seqs,
+          "batch_tokens": a.batch_tokens, "max_len": a.max_len, "pad_to": a.pad_to, "seed": a.seed, "precision": "bf16",
+          "optimizer": "adamw (betas 0.9/0.999, eps 1e-8, weight decay 0)", "max_grad_norm": a.max_grad_norm,
+          "schedule": "cosine", "warmup": a.warmup, "loss": "token mean over the completion tokens of the batch",
+          "gradient_checkpointing": "non-reentrant", "packing": "turns of one item whose prompt+completion is a token prefix of a longer turn",
+          "sequences": len(seqs), "epochs": epochs, "steps_requested": a.steps}
+
+    import torch
+    import torch.nn.functional as F
+    from torch.utils.checkpoint import checkpoint
+    from transformers import AutoModelForImageTextToText
+    from peft import LoraConfig, get_peft_model
+
+    random.seed(a.seed)
+    torch.manual_seed(a.seed)
+    torch.cuda.manual_seed_all(a.seed)
+    try:
+        model = AutoModelForImageTextToText.from_pretrained(a.model, dtype=torch.bfloat16, device_map="cuda")
+    except (OSError, ValueError) as e:
+        raise Fail(f"model unreadable: {a.model}: {e}", 2)
+    model.config.use_cache = False
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+    model.enable_input_require_grads()
+    pattern = r".*\.language_model\..*\.(" + "|".join(map(re.escape, targets)) + r")"
+    model = get_peft_model(model, LoraConfig(r=a.rank, lora_alpha=a.alpha, lora_dropout=a.dropout, target_modules=pattern, bias="none"))
+    model.train()
+    lm = model.base_model.model
+    params = [p for p in model.parameters() if p.requires_grad]
+    opt = torch.optim.AdamW(params, lr=a.lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0)
+    pad = examples[0]["input_ids"][-1] if examples else 0
+
+    def head_loss(h, y):
+        return F.cross_entropy(lm.lm_head(h).float(), y, reduction="sum")
+
+    os.makedirs(a.out, exist_ok=True)
+    log = open(os.path.join(a.out, "log.jsonl"), "w", encoding="utf-8")
+    seen_examples, step, epoch, queue = 0, 0, 0, []
+    torch.cuda.reset_peak_memory_stats()
+    while step < total:
+        if not queue:
+            queue = batches(seqs, a.batch_seqs, a.batch_tokens, a.seed, epoch)
+            epoch += 1
+        batch = queue.pop(0)
+        lr = lr_at(step, total, a.lr, a.warmup)
+        for g in opt.param_groups:
+            g["lr"] = lr
+        n_tok = sum(seqs[i]["tokens"] for i in batch)
+        loss_sum = 0.0
+        for i in batch:
+            s = seqs[i]
+            ids = s["ids"] + [pad] * (-len(s["ids"]) % a.pad_to)
+            pos = [j - 1 for x, y in s["spans"] for j in range(x, y)]
+            x = torch.tensor([ids], device="cuda")
+            y = torch.tensor([s["ids"][j + 1] for j in pos], device="cuda")
+            h = lm.model(input_ids=x, use_cache=False).last_hidden_state[0][torch.tensor(pos, device="cuda")]
+            loss = sum(checkpoint(head_loss, h[c:c + 1024], y[c:c + 1024], use_reentrant=False) for c in range(0, len(pos), 1024))
+            (loss / n_tok).backward()
+            loss_sum += loss.item()
+            seen_examples += len(s["spans"])
+        torch.nn.utils.clip_grad_norm_(params, a.max_grad_norm)
+        opt.step()
+        opt.zero_grad(set_to_none=True)
+        step += 1
+        line = {"step": step, "loss": loss_sum / n_tok, "lr": lr, "tokens": n_tok, "elapsed_s": round(time.time() - t_start, 3)}
+        log.write(json.dumps(line) + "\n")
+        log.flush()
+        print(f"step {step}/{total} loss {line['loss']:.4f} lr {lr:.3g} tokens {n_tok} {line['elapsed_s']:.0f} s "
+              f"peak {torch.cuda.max_memory_allocated() / 2 ** 30:.1f} GiB", file=sys.stderr, flush=True)
+    log.close()
+    b_zero = all(not bool(p.detach().any()) for n, p in model.named_parameters() if "lora_B" in n)
+    trainable = sum(p.numel() for p in params)
+    tmp = os.path.join(a.out, f"adapter.tmp.{os.getpid()}")
+    model.save_pretrained(tmp)
+    replace_dir(tmp, os.path.join(a.out, "adapter"))
+    t_end = time.time()
+    started, ended = ts(t_start), ts(t_end)
+    fit = {"format": "avos-train-fit/1", "base_model": a.model, "base_model_name": model_name(a.model, a.base_model_name),
+           "data": {"path": a.data, "examples_sha256": man["examples_sha256"], "runs": man["counts"]["runs"],
+                    "examples": man["counts"]["examples"], "tokens": man["counts"]["tokens"]},
+           "hyperparameters": hp, "steps": step, "epochs": seen_examples / len(examples) if examples else 0.0,
+           "started": started, "ended": ended, "wall_s": (int(t_end * 1000) - int(t_start * 1000)) / 1000,
+           "gpu": {"name": torch.cuda.get_device_name(0), "count": a.gpu_count, "usd_per_h": a.gpu_usd_per_h,
+                   "peak_allocated_gib": round(torch.cuda.max_memory_allocated() / 2 ** 30, 2)},
+           "adapter": {"path": "adapter", "b_all_zero": b_zero, "trainable_params": trainable}}
+    write_file(os.path.join(a.out, "fit.json"), (json.dumps(fit, sort_keys=True) + "\n").encode())
+    c = card(a.out)
+    write_file(os.path.join(a.out, "card.json"), (json.dumps(c, sort_keys=True) + "\n").encode())
+    write_file(os.path.join(a.out, "CARD.md"), card_text(c).encode())
+    print(json.dumps(fit, sort_keys=True) if a.json else card_text(c), end="\n" if a.json else "")
+    return 0
+
+
+# ---------------------------------------------------------------- merge (§5)
+
+def cmd_merge(a):
+    for p, what in ((os.path.join(a.model, "config.json"), "model config"), (os.path.join(a.adapter, "adapter_config.json"), "adapter config"),
+                    (os.path.join(a.adapter, "adapter_model.safetensors"), "adapter weights")):
+        if not os.path.isfile(p):
+            raise Fail(f"{what} missing: {p}", 2)
+    cfg = load(os.path.join(a.adapter, "adapter_config.json"), "adapter config")
+    if cfg.get("peft_type") != "LORA" or cfg.get("use_dora") or cfg.get("modules_to_save") or cfg.get("fan_in_fan_out") \
+            or cfg.get("rank_pattern") or cfg.get("alpha_pattern"):
+        raise Fail("adapter is not a plain LoRA (DoRA, modules_to_save, fan_in_fan_out or per-module ranks)")
+    scale = cfg["lora_alpha"] / (math.sqrt(cfg["r"]) if cfg.get("use_rslora") else cfg["r"])
+    stack(gpu=True)
+    import torch
+    from safetensors import safe_open
+    from safetensors.torch import load_file, save_file
+
+    lora = load_file(os.path.join(a.adapter, "adapter_model.safetensors"))
+    pairs = {}
+    for k, t in lora.items():
+        m = re.fullmatch(r"base_model\.model\.(.+)\.lora_([AB])\.weight", k)
+        if not m:
+            raise Fail(f"adapter tensor {k} is not a LoRA A/B weight")
+        pairs.setdefault(m.group(1) + ".weight", {})[m.group(2)] = t
+    index_p = os.path.join(a.model, "model.safetensors.index.json")
+    if os.path.isfile(index_p):
+        wmap = load(index_p, "safetensors index")["weight_map"]
+    else:
+        with safe_open(os.path.join(a.model, "model.safetensors"), "pt") as f:
+            wmap = {k: "model.safetensors" for k in f.keys()}
+    missing = sorted(set(pairs) - set(wmap))
+    if missing:
+        raise Fail(f"{len(missing)} adapter modules have no base tensor, e.g. {missing[0]}")
+    b_zero = all(not bool(p["B"].any()) for p in pairs.values())
+    out = os.path.abspath(a.out)
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    tmp = f"{out}.tmp.{os.getpid()}"
+    os.makedirs(tmp)
+    try:
+        merged = 0
+        for shard in sorted(set(wmap.values())):
+            with safe_open(os.path.join(a.model, shard), "pt") as f:
+                meta = f.metadata()
+                tensors = {k: f.get_tensor(k) for k in f.keys()}
+            for k, w in tensors.items():
+                if k in pairs:
+                    A, B = pairs[k]["A"].float(), pairs[k]["B"].float()
+                    if (B.shape[0], A.shape[1]) != tuple(w.shape):
+                        raise Fail(f"{k}: LoRA delta {B.shape[0]}x{A.shape[1]} does not fit the base tensor {tuple(w.shape)}")
+                    tensors[k] = (w.float() + scale * (B @ A)).to(w.dtype).contiguous()
+                    merged += 1
+            save_file(tensors, os.path.join(tmp, shard), metadata=meta)
+            with safe_open(os.path.join(tmp, shard), "pt") as f:
+                if set(f.keys()) != set(tensors):
+                    raise Fail(f"{shard}: written key set differs from the base's")
+            del tensors
+        if merged != len(pairs):
+            raise Fail(f"merged {merged} of {len(pairs)} adapter modules")
+        for n in sorted(os.listdir(a.model)):
+            p = os.path.join(a.model, n)
+            if os.path.isfile(p) and not n.endswith(".safetensors") and not n.startswith("adapter_"):
+                shutil.copyfile(p, os.path.join(tmp, n))
+        mj = {"format": "avos-train-merge/1", "base_model": a.model, "adapter": a.adapter, "b_all_zero": b_zero,
+              "merged_modules": merged, "scale": scale, "tensor_keys": len(wmap),
+              "tokenizer_sha256": sha_file(os.path.join(tmp, "tokenizer.json")) if os.path.isfile(os.path.join(tmp, "tokenizer.json")) else None,
+              "chat_template_sha256": sha_file(os.path.join(tmp, "chat_template.jinja")) if os.path.isfile(os.path.join(tmp, "chat_template.jinja")) else None}
+        fit_p = os.path.join(os.path.dirname(os.path.normpath(a.adapter)), "fit.json")
+        if os.path.isfile(fit_p) and load(fit_p, "fit.json").get("adapter", {}).get("b_all_zero") not in (None, b_zero):
+            raise Fail(f"{fit_p} says b_all_zero {not b_zero}, the adapter's B tensors say {b_zero}")
+        with open(os.path.join(tmp, "merge.json"), "w", encoding="utf-8") as f:
+            f.write(json.dumps(mj, sort_keys=True) + "\n")
+        replace_dir(tmp, out)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    print(json.dumps(mj, sort_keys=True) if a.json else f"merged {merged} modules (scale {scale}) into {a.out}; b_all_zero {b_zero}")
+    return 0
+
+
+# ---------------------------------------------------------------- serve-cmd (§6), replay (§7)
+
+def vllm_bin():
+    for p in (os.environ.get("AVOS_VLLM"), shutil.which("vllm"), os.path.join(real_home(), "vllm", "bin", "vllm")):
+        if p and os.access(p, os.X_OK):
+            return p
+    return "vllm"
+
+
+def serve_argv(model, port, name):
+    vllm = vllm_bin()
+    path = os.environ.get("PATH", "")
+    env = [] if os.path.dirname(vllm) in ("", *path.split(os.pathsep)) else ["env", f"PATH={os.path.dirname(vllm)}{os.pathsep}{path}"]
+    return env + [vllm, "serve", model, "--served-model-name", name, "--host", "0.0.0.0", "--port", str(port),
+            "--max-model-len", "32768", "--enable-auto-tool-choice", "--tool-call-parser", "qwen3_coder",
+            "--enable-prefix-caching", "--gpu-memory-utilization", "0.92", "--seed", "300",
+            "--default-chat-template-kwargs", json.dumps({"enable_thinking": False})]
+
+
+def cmd_serve_cmd(a):
+    argv = serve_argv(a.model, a.port, a.served_name)
+    print(json.dumps({"argv": argv}) if a.json else shlex.join(argv))
+    return 0
+
+
+def cmd_replay(a):
+    reqs = jsonl(a.requests, "requests")
+    rows, failed = [], 0
+    for r in reqs:
+        try:
+            body = {"model": SERVED, "prompt": r["prompt"], "max_tokens": r["max_tokens"], "temperature": 0, "seed": 300,
+                    "skip_special_tokens": False}
+            idx = r["index"]
+        except (KeyError, TypeError) as e:
+            raise Fail(f"request lacks {e}", 2)
+        req = urllib.request.Request(a.url.rstrip("/") + "/completions", data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=600) as resp:
+                j = json.loads(resp.read())
+            ch = j["choices"][0]
+            rows.append({"index": idx, "text": ch["text"], "completion_tokens": j["usage"]["completion_tokens"],
+                         "finish_reason": ch["finish_reason"], "status": 200})
+        except urllib.error.HTTPError as e:
+            failed += 1
+            rows.append({"index": idx, "status": e.code, "error": e.read().decode(errors="replace")[:2000]})
+        except (OSError, ValueError, KeyError, IndexError, TypeError) as e:
+            failed += 1
+            rows.append({"index": idx, "status": None, "error": f"{type(e).__name__}: {e}"})
+    write_file(a.out, "".join(json.dumps(x, sort_keys=True, ensure_ascii=False) + "\n" for x in rows).encode())
+    summ = {"requests": len(reqs), "ok": len(reqs) - failed, "failed": failed}
+    print(json.dumps(summ) if a.json else f"{summ['ok']}/{summ['requests']} answered, {failed} failed")
+    return 1 if failed else 0
+
+
+# ---------------------------------------------------------------- cli
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        print(f"train: {message}", file=sys.stderr)
+        sys.exit(2)
+
+
+def main():
+    ap = Parser(prog="train", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True, parser_class=Parser)
+    s = sub.add_parser("select")
+    s.add_argument("--out", required=True)
+    s.add_argument("--pair", nargs=2, action="append", required=True, metavar=("EXPORT_DIR", "LABELS_DIR"))
+    s.add_argument("--fleet", action="append", metavar="FLEET_JSON")
+    s.add_argument("--policy", required=True)
+    s.add_argument("--tokenizer", required=True)
+    s.add_argument("--split")
+    s.add_argument("--exclude-task")
+    s.add_argument("--json", action="store_true")
+    f = sub.add_parser("fit")
+    f.add_argument("--data", required=True)
+    f.add_argument("--model", required=True)
+    f.add_argument("--out", required=True)
+    f.add_argument("--gpu-usd-per-h", type=float, required=True)
+    f.add_argument("--gpu-count", type=int, default=1)
+    g = f.add_mutually_exclusive_group()
+    g.add_argument("--steps", type=int)
+    g.add_argument("--epochs", type=float)
+    f.add_argument("--lr", type=float, default=5e-5)
+    f.add_argument("--rank", type=int, default=16)
+    f.add_argument("--alpha", type=float, default=32)
+    f.add_argument("--dropout", type=float, default=0.0)
+    f.add_argument("--targets", default=",".join(TARGETS))
+    f.add_argument("--warmup", type=float, default=0.05)
+    f.add_argument("--batch-seqs", type=int, default=16)
+    f.add_argument("--batch-tokens", type=int)
+    f.add_argument("--max-len", type=int, default=32768)
+    f.add_argument("--pad-to", type=int, default=512)
+    f.add_argument("--max-grad-norm", type=float, default=1.0)
+    f.add_argument("--seed", type=int, default=300)
+    f.add_argument("--base-model-name")
+    f.add_argument("--json", action="store_true")
+    c = sub.add_parser("card")
+    c.add_argument("--fit", required=True)
+    c.add_argument("--json", action="store_true")
+    m = sub.add_parser("merge")
+    m.add_argument("--model", required=True)
+    m.add_argument("--adapter", required=True)
+    m.add_argument("--out", required=True)
+    m.add_argument("--json", action="store_true")
+    v = sub.add_parser("serve-cmd")
+    v.add_argument("--model", required=True)
+    v.add_argument("--port", type=int, required=True)
+    v.add_argument("--served-name", default=SERVED)
+    v.add_argument("--json", action="store_true")
+    r = sub.add_parser("replay")
+    r.add_argument("--url", required=True)
+    r.add_argument("--requests", required=True)
+    r.add_argument("--out", required=True)
+    r.add_argument("--json", action="store_true")
+    a = ap.parse_args()
+    try:
+        return {"select": cmd_select, "fit": cmd_fit, "card": cmd_card, "merge": cmd_merge, "serve-cmd": cmd_serve_cmd,
+                "replay": cmd_replay}[a.cmd](a)
+    except Fail as e:
+        msg, code = str(e), e.code
+    except Exception as e:
+        msg, code = f"error: {type(e).__name__}: {e}", 1
+    print(f"train: {msg}", file=sys.stderr)
+    if getattr(a, "json", False):
+        print(json.dumps({"error": msg}))
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -6,6 +6,7 @@
   fleet matrix --fleet DIR --prices PRICES.json [--labels PATH] [--json] [--out FILE]   M2 M8 M11 M12 M13 M16
   fleet sweep --out DIR --levels 1,2,... --tasks ... --trials N                   one fleet per level, then m17
   fleet m17 DIR [--json]                                                          M17 from DIR/level_*/
+  fleet compare --a MATRIX_A.json --b MATRIX_B.json [--seed 300] [--json] [--out FILE]   B − A, paired by task
 
 Every trial is one `infra/job run tau2 retail/<task>` with its own SLOT; infra/job claims the run id, the runner
 finds it afterwards by the job.json naming the slot. DIR holds fleet.json, the journal (trials.jsonl, one line per
@@ -145,12 +146,16 @@ class Runner:
                      "tasks": self.tasks, "trials_per_task": a.trials, "concurrency": concurrency, "mem_mib": a.mem_mib, "slots": slots,
                      "split": {"path": a.split, "sha256": sha, "part": a.part}, "roles": roles,
                      "results_root": self.results}
+        if a.agent_temperature or a.agent_top_p is not None:
+            if not 0 <= a.agent_temperature <= 2 or not 0 < (a.agent_top_p if a.agent_top_p is not None else 1) <= 1:
+                raise Fail("0 ≤ --agent-temperature ≤ 2 and 0 < --agent-top-p ≤ 1")
+            self.plan["agent_sampling"] = {"temperature": a.agent_temperature, "top_p": a.agent_top_p}
         self.stopping = None
 
     def check_resume(self, meta):
-        for k in ("tasks", "trials_per_task", "concurrency", "slots", "split", "roles", "results_root"):
-            if meta.get(k) != self.plan[k]:
-                raise Fail(f"{self.out} is a fleet with {k}={json.dumps(meta.get(k))}, not {json.dumps(self.plan[k])}")
+        for k in ("tasks", "trials_per_task", "concurrency", "slots", "split", "roles", "results_root", "agent_sampling"):
+            if meta.get(k) != self.plan.get(k):
+                raise Fail(f"{self.out} is a fleet with {k}={json.dumps(meta.get(k))}, not {json.dumps(self.plan.get(k))}")
 
     def task_dirs(self):
         want = set(self.tasks)
@@ -270,6 +275,7 @@ class Runner:
     def launch(self, slot, task):
         env = {**os.environ, "SLOT": slot, "MEM_MIB": str(self.plan["mem_mib"]), "MODEL": self.plan["roles"]["policy"],
                "USER_MODEL": self.plan["roles"]["simulator"], "JUDGE_MODEL": self.plan["roles"]["nl_judge"],
+               **{f"AGENT_{k.upper()}": str(v) for k, v in self.plan.get("agent_sampling", {}).items() if v is not None},
                "AVOS_RESULTS": self.results, "AVOS_FLEET_RESULTS": self.results}
         with open(os.path.join(self.out, "jobs.log"), "ab") as log:
             p = subprocess.Popen([self.job, "run", "tau2", f"retail/{task}"], env=env, stdin=subprocess.DEVNULL,
@@ -548,11 +554,11 @@ def pass_k(c, n, k):
     return None if n < k else math.comb(c, k) / math.comb(n, k)
 
 
-def ci95(vals):
+def ci95(vals, seed=300):
     T = len(vals)
     if T < 2:
         return U
-    rng = random.Random(300)
+    rng = random.Random(seed)
     means = sorted(statistics.fmean([vals[rng.randrange(T)] for _ in range(T)]) for _ in range(2000))
     return [means[50], means[1949]]
 
@@ -869,6 +875,110 @@ def emit_m17(d, as_json):
     return 0
 
 
+# ---------------------------------------------------------------- compare (train/CONTRACT.md §8)
+
+def trio(va, vb):
+    return {"a": va, "b": vb, "diff": vb - va if num(va) and num(vb) else U}
+
+
+def dig(m, *path):
+    for p in path:
+        m = m.get(p, U) if isinstance(m, dict) else U
+    return m
+
+
+def compare(pa, pb, seed=300):
+    a, b = load(pa, "matrix A"), load(pb, "matrix B")
+    for side, m, p in (("a", a, pa), ("b", b, pb)):
+        if not isinstance(m, dict) or not all(isinstance(m.get(k), dict) for k in ("inputs", "m11", "m12", "m13")) \
+                or not isinstance(m["m11"].get("tasks"), list):
+            raise Fail(f"{p} is not a fleet matrix (needs inputs, m11.tasks, m12, m13)")
+        for t in m["m11"]["tasks"]:
+            if not isinstance(t, dict) or not all(num(t.get(k)) for k in ("n", "c")) or "task" not in t:
+                raise Fail(f"{p}: a task lacks task, n or c: {t}")
+            for k in (1, 4):
+                want, got = pass_k(t["c"], t["n"], k), t.get(f"pass{k}")
+                if (want is None) != (got is None) or want is not None and (not num(got) or abs(got - want) > 1e-9):
+                    raise Fail(f"{side}: task {t['task']} pass{k} {got} is not C(c,{k})/C(n,{k}) of n {t['n']}, c {t['c']}", 1)
+    for path in (("split", "sha256"), ("split", "part"), ("roles", "simulator"), ("roles", "nl_judge")):
+        va, vb = dig(a["inputs"], *path), dig(b["inputs"], *path)
+        if va != vb:
+            raise Fail(f"inputs.{'.'.join(path)} differ: a {va}, b {vb}", 1)
+    ta = {t["task"]: t for t in a["m11"]["tasks"]}
+    tb = {t["task"]: t for t in b["m11"]["tasks"]}
+    paired = [t for t in ta if t in tb]
+    if not paired:
+        raise Fail("no task is in both matrices", 1)
+    out = {"format": "avos-fleet-compare/1", "paired_tasks": paired, "a_only": sorted(set(ta) - set(tb)),
+           "b_only": sorted(set(tb) - set(ta)), "bootstrap": {"seed": seed, "B": 2000, "rule": "paired percentile bootstrap over tasks"}}
+    for side, m in (("a", a), ("b", b)):
+        i = m["inputs"]
+        out[side] = {"fleet": i.get("fleet"), "policy": dig(i, "roles", "policy"), "trials_per_task": i.get("trials_per_task"),
+                     "concurrency": i.get("concurrency"), "tasks": len(m["m11"]["tasks"])}
+    out["warnings"] = sorted(f"{k} differ: a {out['a'][k]}, b {out['b'][k]}" for k in ("trials_per_task", "concurrency")
+                             if out["a"][k] != out["b"][k])
+    rows = []
+    for t in paired:
+        row = {"task": t}
+        for side, src in (("a", ta), ("b", tb)):
+            n, c = src[t]["n"], src[t]["c"]
+            row[side] = {"n": n, "c": c, "pass1": pass_k(c, n, 1), "pass4": pass_k(c, n, 4)}
+        for k in ("pass1", "pass4"):
+            row["d_" + k] = None if row["a"][k] is None or row["b"][k] is None else row["b"][k] - row["a"][k]
+        rows.append(row)
+    out["tasks"] = rows
+    for k in ("pass1", "pass4"):
+        both = [r for r in rows if r["d_" + k] is not None]
+        if both:
+            d = [r["d_" + k] for r in both]
+            out[k] = {"a": statistics.fmean(r["a"][k] for r in both), "b": statistics.fmean(r["b"][k] for r in both),
+                      "diff": statistics.fmean(d), "ci95": ci95(d, seed), "tasks": len(both)}
+        else:
+            out[k] = {"a": U, "b": U, "diff": U, "ci95": U, "tasks": 0}
+    out["m12"] = {f"{role}_usd_per_task": trio(dig(a, "m12", role, "usd_per_task"), dig(b, "m12", role, "usd_per_task"))
+                  for role in ("policy", "simulator", "nl_judge")}
+    out["m12"]["policy_usd_per_successful_task"] = trio(dig(a, "m12", "policy", "usd_per_successful_task"),
+                                                        dig(b, "m12", "policy", "usd_per_successful_task"))
+    out["m13"] = {k: trio(dig(a, "m13", k), dig(b, "m13", k)) for k in ("median_s", "p90_s", "worst_s")}
+    ca, cb = a["m11"].get("causes") or {}, b["m11"].get("causes") or {}
+    out["causes"] = {"a": dict(sorted(ca.items())), "b": dict(sorted(cb.items())),
+                     "diff": {c: cb.get(c, 0) - ca.get(c, 0) for c in sorted(set(ca) | set(cb))}}
+    out["by_class"] = {c: trio((a["m11"].get("by_class") or {}).get(c, 0), (b["m11"].get("by_class") or {}).get(c, 0))
+                       for c in ("agent", "infra")}
+    return out
+
+
+def compare_text(g):
+    a, b = g["a"], g["b"]
+    out = [f"A {a['fleet']} ({a['policy']}, {a['trials_per_task']} trials/task, concurrency {a['concurrency']}, {a['tasks']} tasks)",
+           f"B {b['fleet']} ({b['policy']}, {b['trials_per_task']} trials/task, concurrency {b['concurrency']}, {b['tasks']} tasks)",
+           f"paired {len(g['paired_tasks'])} tasks; A only: {','.join(g['a_only']) or '-'}; B only: {','.join(g['b_only']) or '-'}"]
+    for k, name in (("pass1", "pass^1"), ("pass4", "pass^4")):
+        x = g[k]
+        out += ["", f"{name}  A {fmt(x['a'])}  B {fmt(x['b'])}  B − A {fmt(x['diff'])} ci95 {fmt(x['ci95'])} over {x['tasks']} tasks "
+                    f"({g['bootstrap']['rule']}, seed {g['bootstrap']['seed']}, B {g['bootstrap']['B']})"]
+    out += ["", "per task  n/c A  n/c B  d pass^1  d pass^4"]
+    out += [f"    {t['task']:>4}  {t['a']['n']}/{t['a']['c']}  {t['b']['n']}/{t['b']['c']}  {fmt(t['d_pass1'])}  {fmt(t['d_pass4'])}"
+            for t in g["tasks"]]
+    for block in ("m12", "m13", "by_class"):
+        out += ["", f"{block.upper() if block != 'by_class' else 'causes by class'}  (A, B, B − A)"]
+        out += [f"    {k}: {fmt(v['a'])}, {fmt(v['b'])}, {fmt(v['diff'])}" for k, v in g[block].items()]
+    out += ["", "causes  (A, B, B − A)"]
+    out += [f"    {c}: {g['causes']['a'].get(c, 0)}, {g['causes']['b'].get(c, 0)}, {d:+d}" for c, d in g["causes"]["diff"].items()] or ["    -"]
+    out += [f"warning: {w}" for w in g["warnings"]]
+    return "\n".join(out) + "\n"
+
+
+def cmd_compare(a):
+    g = compare(a.a, a.b, a.seed)
+    js = json.dumps(g, sort_keys=True)
+    if a.out:
+        with open(a.out, "w", encoding="utf-8") as f:
+            f.write(js + "\n")
+    sys.stdout.write(js + "\n" if a.json else compare_text(g))
+    return 0
+
+
 # ---------------------------------------------------------------- cli
 
 class Parser(argparse.ArgumentParser):
@@ -889,6 +999,8 @@ def run_options(p):
     p.add_argument("--policy", default=ROLES["policy"])
     p.add_argument("--simulator", default=ROLES["simulator"])
     p.add_argument("--judge", default=ROLES["nl_judge"])
+    p.add_argument("--agent-temperature", type=float, default=0.0)
+    p.add_argument("--agent-top-p", type=float)
     p.add_argument("--slots")
     p.add_argument("--job")
     p.add_argument("--name")
@@ -910,6 +1022,12 @@ def main():
     m.add_argument("--labels")
     m.add_argument("--json", action="store_true")
     m.add_argument("--out")
+    c = sub.add_parser("compare")
+    c.add_argument("--a", required=True)
+    c.add_argument("--b", required=True)
+    c.add_argument("--seed", type=int, default=300)
+    c.add_argument("--json", action="store_true")
+    c.add_argument("--out")
     k = sub.add_parser("m17")
     k.add_argument("dir")
     k.add_argument("--json", action="store_true")
@@ -917,7 +1035,7 @@ def main():
     try:
         if a.cmd == "m17":
             return emit_m17(a.dir, a.json)
-        return {"run": cmd_run, "sweep": cmd_sweep, "matrix": cmd_matrix}[a.cmd](a)
+        return {"run": cmd_run, "sweep": cmd_sweep, "matrix": cmd_matrix, "compare": cmd_compare}[a.cmd](a)
     except Fail as e:
         print(f"fleet: {e}", file=sys.stderr)
         return e.code

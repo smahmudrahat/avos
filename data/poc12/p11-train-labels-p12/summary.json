@@ -1,0 +1,91 @@
+{
+ "format": "avos-label-summary/1",
+ "dataset": {
+  "path_sha256": null,
+  "dataset_sha256": "6817ca44f4706012bb44c9d336aecee5bcc503c169ae4b8c279bfea53dc8c764",
+  "runs": 520
+ },
+ "levels": [
+  0,
+  1
+ ],
+ "model": "openai/gpt-oss-120b",
+ "rubric_sha256": "14811267ca9d7afba3cb2a853910da23e0c5d784b47b8992bc2db6e08c623989",
+ "seed": 0,
+ "counts": {
+  "labelled": 520,
+  "kept": 178,
+  "dropped": 342,
+  "clean": 504,
+  "not_clean": 16,
+  "by_rule": {
+   "human": 25,
+   "reward": 458,
+   "tau2_384": 13,
+   "veto": 24
+  },
+  "level0_reasons": {
+   "tau2_384": 16
+  },
+  "judged": 520,
+  "judge_unknown": 0,
+  "human_labelled": 60
+ },
+ "judge": {
+  "calls_made": 0,
+  "calls_reused": 1040,
+  "consistency": {
+   "n": 520,
+   "agree": 454,
+   "rate": 0.8730769230769231
+  }
+ },
+ "tiles": {
+  "labelled": "520 / 520 runs labelled",
+  "kept": "kept 178 passed runs → training set · dropped 342 failed"
+ },
+ "m10": {
+  "gold": {
+   "selected": 60,
+   "labelled": 60,
+   "required": 50
+  },
+  "kappa_judge_human": {
+   "n": 60,
+   "a": 24,
+   "b": 13,
+   "c": 1,
+   "d": 22,
+   "po": 0.7666666666666667,
+   "pe": 0.48055555555555557,
+   "value": 0.5508021390374332,
+   "se": 0.10511796684753469,
+   "ci95": [
+    0.3447709240162653,
+    0.7568333540586012
+   ],
+   "status": "measured",
+   "reason": null
+  },
+  "kappa_reward_human": {
+   "n": 57,
+   "a": 14,
+   "b": 8,
+   "c": 9,
+   "d": 26,
+   "po": 0.7017543859649122,
+   "pe": 0.5220067713142506,
+   "value": 0.3760463618802317,
+   "se": 0.12677114954101443,
+   "ci95": [
+    0.12757490877984345,
+    0.62451781498062
+   ],
+   "status": "measured",
+   "reason": null
+  }
+ },
+ "stale_labels": [],
+ "invalid_rows": [],
+ "exit": 0
+}

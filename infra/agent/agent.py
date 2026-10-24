@@ -6,7 +6,8 @@
 
 Config comes from Firecracker MMDS under /avos (set by `vm create`, never written to disk):
 VM_NAME, MODEL, INTERVAL_S; job mode adds HARNESS
-(tau2 | mini-swe-agent), TASK (retail/0 | coding/slugify), JUDGE_MODEL, and optional USER_MODEL, SEED.
+(tau2 | mini-swe-agent), TASK (retail/0 | coding/slugify), JUDGE_MODEL, and optional USER_MODEL, SEED,
+AGENT_TEMPERATURE, AGENT_TOP_P (the policy's sampling; default 0 and unset; the simulator stays at 0).
 Identity (POC 3, from identity/registrar.py vm-up): VM_ID, JOIN_TOKEN, SPIRE_BUNDLE, SPIRE_SERVER, REGISTRAR.
 
 Spawner shim (POC 3): the only way to start a principal, the job's harness included. Each one gets a fresh uid (never
@@ -288,10 +289,12 @@ def tau2_job():
     if not os.path.lexists(f"{data}/tau2"):
         os.symlink(f"{HARNESS_DIR}/tau2-bench/data/tau2", f"{data}/tau2")
     llm_args = json.dumps({"api_base": BASE, "temperature": 0})
+    agent_args = json.dumps({"api_base": BASE, "temperature": float(ENV.get("AGENT_TEMPERATURE", "0")),
+                             **({"top_p": float(ENV["AGENT_TOP_P"])} if ENV.get("AGENT_TOP_P") else {})})
     cmd = [f"{HARNESS_DIR}/tau2-bench/.venv/bin/tau2", "run", "--domain", domain, "--task-ids", task,
            "--num-trials", "1", "--max-concurrency", "1", "--max-retries", "0", "--seed", ENV.get("SEED", "300"),
            "--save-to", "job",
-           "--agent-llm", f"openai/{MODEL}", "--agent-llm-args", llm_args,
+           "--agent-llm", f"openai/{MODEL}", "--agent-llm-args", agent_args,
            "--user-llm", f"openai/{ENV.get('USER_MODEL', MODEL)}", "--user-llm-args", llm_args]
     env = {**HARNESS_ENV, "HOME": WORK, "TAU2_DATA_DIR": data, "TAU2_NL_JUDGE": f"openai/{ENV['JUDGE_MODEL']}"}
     return cmd, env, lambda: f"{data}/simulations/job/results.json"
