@@ -270,8 +270,10 @@ warned). M12 per role from the gateway's `llm.call` tokens × listed prices (pol
 a ceiling; label judge from its own rows, outside the gateway); a missing part or price reads `unverified`. M17
 (`fleet sweep`, `fleet m17`) uses host-side time: trial wall − Σ `llm.call.ms`.
 
-**Routes.** `/var/lib/avos/gateway.routes.json` maps model name → upstream (base URL, name of the gateway.env
-variable that holds its key, or none for a self-hosted vLLM). A model with no route gets one `authz.decision` deny
+**Routes.** `/var/lib/avos/gateway.routes.json` maps model name → upstream (a URL, or base URL plus the name of the
+gateway.env variable that holds its key) or a list of them; with a list, a call from slot `vm-NN` goes to entry
+`NN mod n`, so one trial's conversation stays on one policy server and slots split evenly; each `llm.call` names its
+`upstream`. `gateway.py route [--table F] MODEL SLOT` prints the choice without touching the network. A model with no route gets one `authz.decision` deny
 with `no-route` and a 403; nothing is forwarded. Every `llm.call` also carries `upstream_status` (null when nothing
 answered), `error` (`gateway_timeout`, `upstream_unreachable: …`, `upstream_bad_body`) and the reply's `finish_reason`.
 A trial is exactly one τ² simulation: the agent runs τ² with `--max-retries 0` (`docs/versions.md`). Without the file the gateway keeps POC 4's single upstream.

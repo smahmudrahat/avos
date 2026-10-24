@@ -1,0 +1,167 @@
+fleet p11-train: 8 trials/task at concurrency 32, split train, prices sha256 cf5074348dcc
+
+M2 harness_e2e_pass  520/520 done = 100.0%
+
+M8 trace_completeness  complete 520, incomplete 0, unverified 0; mean ratio 1
+
+M11 pass^1 0.419231 ci95 [0.342308, 0.498077]   pass^4 0.151648 ci95 [0.0843956, 0.226593]   Avg@4 0.419231 ci95 [0.342308, 0.498077]
+    infra-excluded trials 0; tasks short of 4 valid: -; all-infra tasks: -
+    causes (0 agent, 0 infra): -
+    task  trials  n  c  infra  pass^1  pass^4  Avg@4
+       0       8  8  3      0  0.375  0  0.375
+       1       8  8  5      0  0.625  0.0714286  0.625
+       2       8  8  4      0  0.5  0.0142857  0.5
+       3       8  8  2      0  0.25  0  0.25
+       4       8  8  5      0  0.625  0.0714286  0.625
+       5       8  8  0      0  0  0  0
+       6       8  8  4      0  0.5  0.0142857  0.5
+       7       8  8  1      0  0.125  0  0.125
+       8       8  8  1      0  0.125  0  0.125
+       9       8  8  7      0  0.875  0.5  0.875
+      15       8  8  8      0  1  1  1
+      16       8  8  1      0  0.125  0  0.125
+      17       8  8  8      0  1  1  1
+      19       8  8  7      0  0.875  0.5  0.875
+      30       8  8  7      0  0.875  0.5  0.875
+      31       8  8  2      0  0.25  0  0.25
+      32       8  8  1      0  0.125  0  0.125
+      33       8  8  2      0  0.25  0  0.25
+      34       8  8  5      0  0.625  0.0714286  0.625
+      35       8  8  1      0  0.125  0  0.125
+      36       8  8  4      0  0.5  0.0142857  0.5
+      37       8  8  2      0  0.25  0  0.25
+      38       8  8  3      0  0.375  0  0.375
+      39       8  8  3      0  0.375  0  0.375
+      44       8  8  6      0  0.75  0.214286  0.75
+      45       8  8  7      0  0.875  0.5  0.875
+      46       8  8  7      0  0.875  0.5  0.875
+      47       8  8  4      0  0.5  0.0142857  0.5
+      48       8  8  4      0  0.5  0.0142857  0.5
+      50       8  8  8      0  1  1  1
+      51       8  8  3      0  0.375  0  0.375
+      52       8  8  6      0  0.75  0.214286  0.75
+      53       8  8  8      0  1  1  1
+      56       8  8  6      0  0.75  0.214286  0.75
+      57       8  8  2      0  0.25  0  0.25
+      58       8  8  0      0  0  0  0
+      60       8  8  0      0  0  0  0
+      61       8  8  1      0  0.125  0  0.125
+      62       8  8  6      0  0.75  0.214286  0.75
+      63       8  8  2      0  0.25  0  0.25
+      67       8  8  6      0  0.75  0.214286  0.75
+      68       8  8  6      0  0.75  0.214286  0.75
+      71       8  8  0      0  0  0  0
+      72       8  8  1      0  0.125  0  0.125
+      73       8  8  7      0  0.875  0.5  0.875
+      75       8  8  8      0  1  1  1
+      77       8  8  2      0  0.25  0  0.25
+      80       8  8  5      0  0.625  0.0714286  0.625
+      81       8  8  2      0  0.25  0  0.25
+      82       8  8  0      0  0  0  0
+      83       8  8  0      0  0  0  0
+      84       8  8  3      0  0.375  0  0.375
+      92       8  8  2      0  0.25  0  0.25
+      96       8  8  3      0  0.375  0  0.375
+      97       8  8  3      0  0.375  0  0.375
+      98       8  8  0      0  0  0  0
+      99       8  8  2      0  0.25  0  0.25
+     100       8  8  3      0  0.375  0  0.375
+     101       8  8  6      0  0.75  0.214286  0.75
+     102       8  8  2      0  0.25  0  0.25
+     103       8  8  0      0  0  0  0
+     104       8  8  0      0  0  0  0
+     107       8  8  1      0  0.125  0  0.125
+     111       8  8  0      0  0  0  0
+     112       8  8  0      0  0  0  0
+
+M12 cost per role (USD)  role: model [source] calls/ok, prompt+completion tokens -> total, per task, per successful task (basis; token ceiling per task)
+    policy: policy-qwen3.5-9b [gateway] 6430/6428, 50971023+1415597 -> 2.8025, 0.00538942, 0.0128555 (gpu_hours; ceiling 0.0102105)
+    simulator: google/gemma-3-27b-it [gateway] 3218/3218, 4807836+247473 -> 0.555025, 0.00106736, 0.00254599 (tokens; ceiling unverified)
+    nl_judge: deepseek-ai/DeepSeek-V4-Flash-0731 [gateway] 176/176, 985820+64384 -> 0.156042, 0.000300081, 0.00071579 (tokens; ceiling unverified)
+    label_judge: openai/gpt-oss-120b [label rows, outside the gateway] 1040/1040, 8536604+819222 -> 1.77202, 0.00340774, 0.00812855 (tokens; ceiling unverified)
+    policy GPU hosts: g6e.xlarge 2 × 1.861 $/h = 3.722 $/h
+    unattributed: - 0/0, 0+0 -> 0
+
+M13 latency_per_task  n 520, median 138.929 s, p90 230.341 s, worst 734.625 s at concurrency 32
+
+M16 infra_cost_per_trial  2.54016 $/h × 0.752955 h / 520 done = 0.00367813 USD; ratio to best baseline 3.77291
+    baseline aws_agentcore_v2: 0.00622865 USD/trial
+    baseline aws_t3_small_per_vm: 0.000974879 USD/trial
+    baseline gcp_cloud_run: 0.00305644 USD/trial
+
+unverified: m12.label_judge.token_ceiling_usd_per_task, m12.nl_judge.token_ceiling_usd_per_task, m12.simulator.token_ceiling_usd_per_task (+0 per-trial parts)
+warning: 1192 label rows for runs outside this fleet ignored
+=== end p11-train
+fleet p11-heldout: 4 trials/task at concurrency 32, split held_out, prices sha256 cf5074348dcc
+
+M2 harness_e2e_pass  176/176 done = 100.0%
+
+M8 trace_completeness  complete 176, incomplete 0, unverified 0; mean ratio 1
+
+M11 pass^1 0.414773 ci95 [0.318182, 0.522727]   pass^4 0.159091 ci95 [0.0681818, 0.272727]   Avg@4 0.414773 ci95 [0.318182, 0.522727]
+    infra-excluded trials 0; tasks short of 4 valid: -; all-infra tasks: -
+    causes (0 agent, 0 infra): -
+    task  trials  n  c  infra  pass^1  pass^4  Avg@4
+      10       4  4  0      0  0  0  0
+      11       4  4  4      0  1  1  1
+      12       4  4  3      0  0.75  0  0.75
+      13       4  4  3      0  0.75  0  0.75
+      14       4  4  1      0  0.25  0  0.25
+      20       4  4  0      0  0  0  0
+      21       4  4  2      0  0.5  0  0.5
+      22       4  4  0      0  0  0  0
+      23       4  4  2      0  0.5  0  0.5
+      24       4  4  4      0  1  1  1
+      25       4  4  4      0  1  1  1
+      26       4  4  4      0  1  1  1
+      27       4  4  2      0  0.5  0  0.5
+      28       4  4  4      0  1  1  1
+      29       4  4  0      0  0  0  0
+      40       4  4  3      0  0.75  0  0.75
+      41       4  4  0      0  0  0  0
+      42       4  4  0      0  0  0  0
+      43       4  4  0      0  0  0  0
+      54       4  4  0      0  0  0  0
+      55       4  4  2      0  0.5  0  0.5
+      59       4  4  0      0  0  0  0
+      65       4  4  4      0  1  1  1
+      66       4  4  2      0  0.5  0  0.5
+      69       4  4  0      0  0  0  0
+      70       4  4  2      0  0.5  0  0.5
+      74       4  4  1      0  0.25  0  0.25
+      76       4  4  1      0  0.25  0  0.25
+      78       4  4  4      0  1  1  1
+      79       4  4  0      0  0  0  0
+      85       4  4  2      0  0.5  0  0.5
+      86       4  4  0      0  0  0  0
+      87       4  4  2      0  0.5  0  0.5
+      88       4  4  2      0  0.5  0  0.5
+      89       4  4  0      0  0  0  0
+      90       4  4  2      0  0.5  0  0.5
+      93       4  4  1      0  0.25  0  0.25
+      94       4  4  1      0  0.25  0  0.25
+      95       4  4  2      0  0.5  0  0.5
+     106       4  4  2      0  0.5  0  0.5
+     108       4  4  2      0  0.5  0  0.5
+     109       4  4  2      0  0.5  0  0.5
+     110       4  4  0      0  0  0  0
+     113       4  4  3      0  0.75  0  0.75
+
+M12 cost per role (USD)  role: model [source] calls/ok, prompt+completion tokens -> total, per task, per successful task (basis; token ceiling per task)
+    policy: policy-qwen3.5-9b [gateway] 2147/2145, 16464499+444711 -> 1.06289, 0.00603913, 0.0145601 (gpu_hours; ceiling 0.00973384)
+    simulator: google/gemma-3-27b-it [gateway] 1043/1043, 1497899+76300 -> 0.17268, 0.000981136, 0.00236548 (tokens; ceiling unverified)
+    nl_judge: deepseek-ai/DeepSeek-V4-Flash-0731 [gateway] 68/68, 332852+29388 -> 0.0548279, 0.000311522, 0.000751067 (tokens; ceiling unverified)
+    label_judge: unverified [label rows, outside the gateway] unverified/unverified, unverified+unverified -> unverified, unverified, unverified (tokens; ceiling unverified)
+    policy GPU hosts: g6e.xlarge 2 × 1.861 $/h = 3.722 $/h
+    unattributed: - 0/0, 0+0 -> 0
+
+M13 latency_per_task  n 176, median 114.025 s, p90 190.107 s, worst 865.206 s at concurrency 32
+
+M16 infra_cost_per_trial  2.54016 $/h × 0.285569 h / 176 done = 0.00412153 USD; ratio to best baseline 4.95981
+    baseline aws_agentcore_v2: 0.0051121 USD/trial
+    baseline aws_t3_small_per_vm: 0.000830986 USD/trial
+    baseline gcp_cloud_run: 0.00250854 USD/trial
+
+unverified: m12.label_judge.calls, m12.label_judge.completion_tokens, m12.label_judge.model, m12.label_judge.ok, m12.label_judge.prompt_tokens, m12.label_judge.token_ceiling_usd_per_task, m12.label_judge.usd_per_successful_task, m12.label_judge.usd_per_task, m12.label_judge.usd_total, m12.nl_judge.token_ceiling_usd_per_task, m12.simulator.token_ceiling_usd_per_task (+0 per-trial parts)
+=== end p11-heldout
+{"baseline_concurrency": 32, "baseline_host_side_ms": 10908.5, "ceiling_reached": true, "levels": [{"concurrency": 32, "host_side_ms": {"median": 10908.5, "n": 80}, "llm_ms_median": 98003.5, "peak_guest_mem_mib": 16870.6, "skipped": 0, "trials": 80, "wall_ms_median": 114335.0}, {"concurrency": 48, "host_side_ms": {"median": 19019, "n": 79}, "llm_ms_median": 102733, "peak_guest_mem_mib": 25020.5, "skipped": 0, "trials": 80, "wall_ms_median": 115604}], "m17": 32, "rule": "median host-side trial time \u2264 1.05 \u00d7 lowest level"}

@@ -572,22 +572,25 @@ def r7(ctx):
 @check("M12_one_simulation_per_trial", "class D (a trial is exactly one simulation; store = witness)")
 def m12(ctx):
     plan = {"0": ["done_retried_sim", "done_pass", "done_pass", "done_pass"], "1": ["done_witness_tampered", "done_two_sims", "failed_retried_sim", "done_pass"]}
+    # failed_retried_sim: a failed trial keeps τ²'s own cause (agent_agent_error); the witness rule is for done trials only
     fdir, results, runs = lib.build_synthetic_fleet(ctx.tmp, "m12", plan, seed=13)
     g = ctx.matrix_json(fdir)["json"]
     _compare_matrix(ctx, g, fdir)
     by = {runs[t["run"]]: t for t in g["trials"]}
-    for k in ("done_retried_sim", "done_witness_tampered", "done_two_sims", "failed_retried_sim"):
+    if by["failed_retried_sim"]["cause"] != "agent_agent_error" or not by["failed_retried_sim"]["valid"]:
+        raise AssertionError(f"failed trial swallowed by the witness rule: {by['failed_retried_sim']['cause']}")
+    for k in ("done_retried_sim", "done_witness_tampered", "done_two_sims"):
         t = by[k]
         if t["cause"] != "witness_mismatch" or t["cause_class"] != "infra" or t["valid"] or t["passed"] is not None or t["m8"]["status"] != "witness_mismatch":
             raise AssertionError(f"{k}: cause {t['cause']} class {t['cause_class']} valid {t['valid']} passed {t['passed']} m8 {t['m8']}")
     if by["done_retried_sim"]["status"] != "done" or by["done_pass"]["cause"] is not None:
         raise AssertionError("status must stay done for M2; a matching witness has no cause")
     tk = {p["task"]: p for p in g["m11"]["tasks"]}
-    if tk["0"]["n"] != 3 or tk["0"]["infra"] != 1 or tk["1"]["n"] != 1 or g["m11"]["infra_excluded"] != 4:
+    if tk["0"]["n"] != 3 or tk["0"]["infra"] != 1 or tk["1"]["n"] != 2 or g["m11"]["infra_excluded"] != 3:
         raise AssertionError(f"M11 {tk['0']} {tk['1']} excluded {g['m11']['infra_excluded']}")
-    if g["m8"]["complete"] != 4 or g["m8"]["incomplete"] != 4 or g["m2"]["done"] != 7:
+    if g["m8"]["complete"] != 5 or g["m8"]["incomplete"] != 3 or g["m2"]["done"] != 7:
         raise AssertionError(f"M8 {g['m8']} M2 {g['m2']}")
-    return "retried simulation, tampered usage, two simulations, retried+failed → witness_mismatch (infra, excluded, M8 not complete); M2 7/8"
+    return "retried simulation, tampered usage, two simulations → witness_mismatch (infra, excluded, M8 not complete); failed+retried keeps τ²'s agent cause; M2 7/8"
 
 
 def _overlap_per_window(log, runs):
@@ -646,6 +649,56 @@ def r8(ctx):
     if lib.max_overlap(log3) > 4:
         raise AssertionError(f"sweep overall peak {lib.max_overlap(log3)} > 4: levels overlapped or a level overshot")
     return "run: 12 slots / C=3 → peak 3; resume: 18 slots / C=2 → peak 2; sweep 1,2,4 on 10 slots → peaks 1/2/4"
+
+
+@check("M13_empty_reply_is_agent", "class F (τ² infrastructure_error caused by the agent's own reply stays in n)")
+def m13(ctx):
+    plan = {"0": ["failed_empty_reply", "done_pass", "done_pass", "done_pass"],
+            "1": ["failed_empty_reply_after_5xx", "done_pass", "done_pass", "done_pass"],
+            "5": ["failed_judge_length", "done_pass", "done_pass", "done_pass"],
+            "7": ["failed_empty_reply", "failed_empty_reply", "done_pass", "done_pass"]}
+    fdir, results, runs = lib.build_synthetic_fleet(ctx.tmp, "m13", plan, seed=14)
+    g = ctx.matrix_json(fdir)["json"]
+    _compare_matrix(ctx, g, fdir)
+    by = {t["run"]: t for t in g["trials"]}
+    for run, k in runs.items():
+        want = {"failed_empty_reply": ("agent_empty_reply", "agent", True), "failed_empty_reply_after_5xx": ("upstream_5xx", "infra", False),
+                "failed_judge_length": ("sim_infrastructure_error", "infra", False), "done_pass": (None, None, True)}[k]
+        got = (by[run]["cause"], by[run]["cause_class"], by[run]["valid"])
+        if got != want:
+            raise AssertionError(f"{k}: {got}, want {want}")
+    tk = {p["task"]: p for p in g["m11"]["tasks"]}
+    if tk["0"]["n"] != 4 or abs(tk["0"]["pass1"] - 0.75) > 1e-9 or tk["7"]["n"] != 4 or abs(tk["7"]["pass1"] - 0.5) > 1e-9:
+        raise AssertionError(f"empty replies must stay in n as failures: {tk['0']} {tk['7']}")
+    if tk["1"]["n"] != 3 or tk["5"]["n"] != 3 or g["m11"]["infra_excluded"] != 2:
+        raise AssertionError(f"upstream 5xx / judge length before τ²'s error are infra: {tk['1']} {tk['5']} excluded {g['m11']['infra_excluded']}")
+    if g["m11"]["causes"].get("agent_empty_reply") != 3:
+        raise AssertionError(f"causes {g['m11']['causes']}")
+    return "3 empty replies → agent_empty_reply in n (pass^1 0.75 / 0.5); 5xx-then-τ²-error and judge-length-then-τ²-error → infra"
+
+
+@check("M14_timeout_evidence", "class G (a timed-out trial leaves n only when the upstream stalled)")
+def m14(ctx):
+    plan = {"0": ["timeout_agent_looping", "done_pass", "done_pass", "done_pass"],
+            "1": ["timeout_upstream_stalled", "done_pass", "done_pass", "done_pass"],
+            "5": ["timeout", "timeout_no_close_row", "done_pass", "done_pass"],
+            "7": ["timeout_agent_looping", "timeout_agent_looping", "done_pass", "done_pass"]}
+    fdir, results, runs = lib.build_synthetic_fleet(ctx.tmp, "m14", plan, seed=15)
+    g = ctx.matrix_json(fdir)["json"]
+    _compare_matrix(ctx, g, fdir)
+    by = {t["run"]: t for t in g["trials"]}
+    want = {"timeout_agent_looping": ("agent_timeout", "agent", True), "timeout_upstream_stalled": ("harness_timeout", "infra", False),
+            "timeout": ("harness_timeout", "infra", False), "timeout_no_close_row": ("agent_timeout", "agent", True), "done_pass": (None, None, True)}
+    for run, k in runs.items():
+        got = (by[run]["cause"], by[run]["cause_class"], by[run]["valid"])
+        if got != want[k]:
+            raise AssertionError(f"{k}: {got}, want {want[k]}")
+    tk = {p["task"]: p for p in g["m11"]["tasks"]}
+    if tk["0"]["n"] != 4 or abs(tk["0"]["pass1"] - 0.75) > 1e-9 or tk["7"]["n"] != 4 or abs(tk["7"]["pass1"] - 0.5) > 1e-9:
+        raise AssertionError(f"looping agents must stay in n: {tk['0']} {tk['7']}")
+    if tk["1"]["n"] != 3 or tk["5"]["n"] != 3 or g["m11"]["infra_excluded"] != 2:
+        raise AssertionError(f"stalled upstream / no policy rows are infra: {tk['1']} {tk['5']} excluded {g['m11']['infra_excluded']}")
+    return "healthy policy calls until the clock → agent_timeout in n (pass^1 0.75 / 0.5); ≥ 5 min without a successful policy call, or no policy row → harness_timeout excluded"
 
 
 @check("M1_matrix_real_fixtures", "done test 2 (matrix from real run directories)")
@@ -761,6 +814,20 @@ def m4(ctx):
         raise AssertionError(f"M16 without host price: {g['m16']}")
     if g["m2"]["value"] == "unverified" or g["m11"]["pass1"] == "unverified":
         raise AssertionError("M2/M11 need no prices")
+    two = os.path.join(ctx.tmp, "m4_prices_two_gpu.json")
+    pp2 = json.loads(json.dumps(ctx.prices))
+    pp2["hosts"]["gpu"]["count"] = 2
+    lib.write_json(two, pp2)
+    g1 = ctx.matrix_json(fdir)["json"]
+    g2 = ctx.matrix_json(fdir, prices=two)["json"]
+    _compare_matrix(ctx, g2, fdir, prices=pp2)
+    gh = g2["m12"]["policy"]["gpu_hosts"]
+    if gh["count"] != 2 or abs(gh["usd_per_h_total"] - 2 * ctx.prices["hosts"]["gpu"]["usd_per_h"]) > 1e-9 \
+            or abs(g2["m12"]["policy"]["usd_total"] - 2 * g1["m12"]["policy"]["usd_total"]) > 1e-9:
+        raise AssertionError(f"two GPU hosts must double the policy cost and be printed: {gh} {g2['m12']['policy']['usd_total']} vs {g1['m12']['policy']['usd_total']}")
+    text = ctx.fleet("matrix", "--fleet", fdir, "--prices", two, expect_rc=0)["out"]
+    if not re.search(r"\b2\b.{0,40}(host|GPU)|(host|GPU).{0,40}\b2\b", text, re.I):
+        raise AssertionError("text matrix does not show the GPU host count next to the rate")
     partial = os.path.join(ctx.tmp, "m4_prices_partial.json")
     pp = json.loads(json.dumps(ctx.prices))
     del pp["models"][lib.ROLES["simulator"]]
@@ -1049,6 +1116,56 @@ def d1(ctx):
         raise AssertionError(f"m17 with an unverified baseline: {g['m17']}")
     findings.append("no baseline → unverified")
     return "; ".join(findings)
+
+
+def _route(ctx, table, model, slot, remote=False):
+    if remote:
+        p = ctx.ssh(f"cd {HOST_REPO} && sudo /opt/avos/gateway/bin/python gateway/gateway.py route --table {table} '{model}' {slot}", timeout=60)
+        rc, out, err = p.returncode, p.stdout, p.stderr
+    else:
+        r = lib._run([sys.executable, os.path.join(lib.ROOT, "gateway", "gateway.py"), "route", "--table", table, model, slot])
+        rc, out, err = r["rc"], r["out"], r["err"]
+        if "No module named 'cedarpy'" in err:
+            raise lib.SkipCheck("gateway.py needs cedarpy (host only); run with --host")
+    if "Traceback" in err:
+        raise AssertionError(f"traceback from gateway.py route: {lib.short(err.strip().splitlines()[-1], 160)}")
+    try:
+        j = json.loads(out.strip().splitlines()[-1]) if out.strip() else {}
+    except ValueError:
+        raise AssertionError(f"route printed no JSON: {lib.short(out, 120)!r}")
+    return rc, j
+
+
+def _route_cases(ctx, table_path, remote=False):
+    rc, j = _route(ctx, table_path, "m/one", "vm-03", remote)
+    if rc != 0 or j.get("upstream") != "http://a:1/v1":
+        raise AssertionError(f"dict form: {rc} {j}")
+    rc, j = _route(ctx, table_path, "m/single", "vm-04", remote)
+    if rc != 0 or j.get("upstream") != "http://a:1/v1":
+        raise AssertionError(f"list of one: {rc} {j}")
+    for slot, want in (("vm-03", "http://b:2/v1"), ("vm-04", "http://a:1/v1"), ("vm-05", "http://b:2/v1"), ("vm-82", "http://a:1/v1"), ("vm-03-abcdef", "http://b:2/v1")):
+        rc, j = _route(ctx, table_path, "m/two", slot, remote)
+        if rc != 0 or j.get("upstream") != want:
+            raise AssertionError(f"m/two on {slot}: {rc} {j} (want {want}: NN mod 2)")
+    for slot, want in (("vm-03", "http://a:1/v1"), ("vm-04", "http://b:2/v1"), ("vm-05", "http://c:3/v1"), ("vm-06", "http://a:1/v1")):
+        rc, j = _route(ctx, table_path, "m/three", slot, remote)
+        if rc != 0 or j.get("upstream") != want:
+            raise AssertionError(f"m/three on {slot}: {rc} {j} (want {want}: NN mod 3)")
+    rc, j = _route(ctx, table_path, "m/none", "vm-03", remote)
+    if rc != 1 or j.get("upstream") is not None or "no-route" not in json.dumps(j):
+        raise AssertionError(f"unknown model: rc {rc} {j} (want exit 1, upstream null, no-route)")
+    return "dict, list-of-one, two and three upstreams by NN mod n (slot and vm-NN-xxxxxx), unknown → no-route"
+
+
+ROUTE_TABLE = {"m/one": "http://a:1/v1", "m/single": ["http://a:1/v1"], "m/two": ["http://a:1/v1", "http://b:2/v1"],
+               "m/three": ["http://a:1/v1", "http://b:2/v1", "http://c:3/v1"]}
+
+
+@check("G1_route_table_pure", "§8 (route = upstreams[model][NN mod n], pure entry point)")
+def g1(ctx):
+    t = os.path.join(ctx.tmp, "routes.json")
+    lib.write_json(t, ROUTE_TABLE)
+    return _route_cases(ctx, t)
 
 
 @check("Z_fixtures_untouched", "fixtures read-only")
@@ -1366,6 +1483,37 @@ print('ok')
             f"causes {g['m11']['causes']}, = oracle, M8 unverified")
 
 
+@check("H5_two_upstreams_live", "§8 (one trial = one upstream; slots split by NN mod n)", host=True)
+def h5(ctx):
+    ctx.ssh(f"cat > {HOST_TMP}/routes.json", stdin=json.dumps(ROUTE_TABLE))
+    pure = _route_cases(ctx, f"{HOST_TMP}/routes.json", remote=True)
+    out = f"{HOST_TMP}/fleet"
+    lines = [json.loads(l) for l in ctx.ssh(f"sudo cat {out}/trials.jsonl 2>/dev/null").stdout.splitlines() if l.strip()]
+    live = [l for l in lines if not l.get("interrupted")]
+    if not live:
+        raise AssertionError("blocked: H1's fleet directory has no trials to inspect")
+    meta = json.loads(ctx.ssh(f"sudo cat {out}/fleet.json").stdout)
+    policy = meta["roles"]["policy"]
+    seen = {}
+    for l in live:
+        ev = ctx.ssh(f"sudo cat /var/lib/avos/results/{l['run']}/events.jsonl").stdout
+        rows = [json.loads(x) for x in ev.splitlines() if x.strip()]
+        pol = [e for e in rows if e.get("kind") == "llm.call" and e.get("model") == policy and e.get("status") == 200]
+        if not pol:
+            continue
+        ups = {e.get("upstream") for e in pol}
+        if len(ups) != 1 or None in ups:
+            raise AssertionError(f"{l['run']}: policy rows name {sorted(map(str, ups))} upstreams (want exactly one)")
+        p = ctx.ssh(f"cd {HOST_REPO} && sudo /opt/avos/gateway/bin/python gateway/gateway.py route '{policy}' {l['slot']}", timeout=60)
+        want = json.loads(p.stdout.strip().splitlines()[-1]).get("upstream") if p.stdout.strip() else None
+        if want != next(iter(ups)):
+            raise AssertionError(f"{l['run']} on {l['slot']}: rows name {next(iter(ups))}, the live table routes to {want}")
+        seen[l["slot"]] = next(iter(ups))
+    if not seen:
+        raise AssertionError("no trial with policy rows")
+    return f"{pure}; live: {len(seen)} slots, each trial on one upstream equal to the table's route: {seen}"
+
+
 @check("HZ_cleanup", "class B (no leftovers after)", host=True)
 def hz(ctx):
     ctx.host_cleanup()
@@ -1478,6 +1626,9 @@ def main():
                 ok = True
             except lib.NotImplementedCLI as e:
                 ok, msg = False, f"not implemented: {e}"
+            except lib.SkipCheck as e:
+                print(f"SKIP  {cid}  [{target}]  {e}")
+                continue
             except AssertionError as e:
                 ok, msg = False, str(e)
             except subprocess.TimeoutExpired as e:

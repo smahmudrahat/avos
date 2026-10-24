@@ -19,15 +19,19 @@ Kill switch (POC 5): supervisor/ctl.py writes the halted, killed or cut branches
 branch that was halted or cut while its call was in flight is dropped instead of delivered; the call's event
 carries the receipt that dropped it.
 
-Routes (POC 10): /var/lib/avos/gateway.routes.json, {model: {"base_url": url, "key": name of a gateway.env variable
-or null}}, sends each model to its own upstream (self-hosted policy, hosted simulator and judge). A model with no
-route is denied (policy_ids ["no-route"]), never forwarded. Without the file every model goes to gateway.env's
+Routes (POC 10): /var/lib/avos/gateway.routes.json, {model: upstream | [upstream, ...]} with upstream = url or
+{"base_url": url, "key": name of a gateway.env variable or null}, sends each model to its own upstream (self-hosted
+policy, hosted simulator and judge). With a list, a call from slot vm-NN goes to upstreams[NN mod len]: a trial's
+whole conversation stays on one server, slots split evenly; the row names it (`upstream`). A model with no route
+is denied (policy_ids ["no-route"]), never forwarded. Without the file every model goes to gateway.env's
 OPENAI_BASE_URL with OPENAI_API_KEY.
 
   gateway.py serve        mTLS on :8443
   gateway.py check        assert the policy's expected decisions (no host needed)
   gateway.py stats [VM]...   M5 authz_attributable_denials, llm.call totals
+  gateway.py route [--table FILE] MODEL SLOT   the upstream a call from SLOT (vm-NN) would get; no network
 """
+import collections
 import glob
 import json
 import os
@@ -110,16 +114,39 @@ def env_file(path):
 
 
 def load_routes(env, path):
-    """{model: (base_url, key or None)}, or None (every model to the one upstream) when there is no route table."""
+    """{model: [(base_url as written, key or None), ...]}, or None (every model to the one upstream) without a table."""
     if not os.path.exists(path):
         return None
-    return {m: (r["base_url"].rstrip("/"), env[r["key"]] if r.get("key") else None) for m, r in json.load(open(path)).items()}
+
+    def up(r):
+        r = {"base_url": r} if isinstance(r, str) else r
+        return r["base_url"], env[r["key"]] if r.get("key") else None
+    return {m: [up(x) for x in (r if isinstance(r, list) else [r])] for m, r in json.load(open(path)).items()}
 
 
-def route(model):
-    if ROUTE_TABLE is None:
-        return UPSTREAM["OPENAI_BASE_URL"].rstrip("/"), UPSTREAM["OPENAI_API_KEY"]
-    return ROUTE_TABLE.get(model)
+def route(table, model, n):
+    """(base_url, key) for a call from slot vm-<n>, or None when the model has no route."""
+    if table is None:
+        return UPSTREAM["OPENAI_BASE_URL"], UPSTREAM["OPENAI_API_KEY"]
+    ups = table.get(model)
+    return ups[n % len(ups)] if ups else None
+
+
+def route_cli(args):
+    table = ROUTES
+    if args[:1] == ["--table"]:
+        table, args = args[1], args[2:]
+    m = re.fullmatch(r"vm-(\d+)(?:-[0-9a-f]{6})?", args[1]) if len(args) == 2 else None
+    if not m:
+        sys.exit("usage: gateway.py route [--table FILE] MODEL vm-NN")
+    if os.path.exists(table):
+        up = route(load_routes(collections.defaultdict(lambda: None), table), args[0], int(m[1]))
+    else:
+        url = env_file(f"{ROOT}/gateway.env").get("OPENAI_BASE_URL") if os.access(f"{ROOT}/gateway.env", os.R_OK) else None
+        up = (url, None) if url else None
+    print(json.dumps({"model": args[0], "slot": args[1], "upstream": up[0] if up else None,
+                      **({} if up else {"error": "no-route"})}))
+    return 0 if up else 1
 
 
 def mint():
@@ -215,6 +242,7 @@ class Handler(BaseHTTPRequestHandler):
         san = dict((k, v) for k, v in self.connection.getpeercert().get("subjectAltName", ()) if k == "URI")
         self.spiffe_id = san.get("URI", "")
         m = re.fullmatch(r"172\.16\.(\d+)\.2", self.client_address[0])
+        self.slot = int(m[1]) if m else 0
         try:
             self.vm_id = json.load(open(f"{JAIL}/vm-{int(m[1]):02d}/identity.json"))["VM_ID"] if m else None
         except FileNotFoundError:
@@ -305,12 +333,12 @@ class Handler(BaseHTTPRequestHandler):
             model = sent["model"]
         except (ValueError, KeyError, TypeError):
             return self.refuse(400, "llm.call", "body must be JSON with a model", {})
-        up = route(model) if isinstance(model, str) else None
+        up = route(ROUTE_TABLE, model, self.slot) if isinstance(model, str) else None
         if not (d := self.allowed("llm.call", f"Model::{json.dumps(model)}", {}, unrouted=up is None)):
             return
         t0 = time.time()
         base, key = up
-        req = urllib.request.Request(base + self.path[3:], data=body, method="POST",
+        req = urllib.request.Request(base.rstrip("/") + self.path[3:], data=body, method="POST",
                                      headers={"Content-Type": "application/json",
                                               **({"Authorization": f"Bearer {key}"} if key else {})})
         error = None
@@ -339,7 +367,7 @@ class Handler(BaseHTTPRequestHandler):
         store.count(self.home, "l")
         self.emit("llm.call", authz_ref=d["event_id"], model=model, status=code, ms=round((time.time() - t0) * 1000),
                   prompt_tokens=usage.get("prompt_tokens"), completion_tokens=usage.get("completion_tokens"),
-                  upstream_status=upstream, error=error, finish_reason=finish,
+                  upstream=base, upstream_status=upstream, error=error, finish_reason=finish,
                   dropped=bool(c), **({"receipt": c["receipt"]} if c else {}), **seen(sent, answer))
         if c:
             return self.deny(f"{c['state']} by {c['receipt']}", [c["state"], c["receipt"]], {})
@@ -437,10 +465,15 @@ def check():
     routes = f"/tmp/avos-routes-check-{os.getpid()}.json"
     json.dump({"p/9b": {"base_url": "http://10.0.0.9:8000/v1/", "key": None}, "s/27b": {"base_url": "https://h/v1", "key": "K"}},
               open(routes, "w"))
-    assert load_routes({"K": "k"}, routes) == {"p/9b": ("http://10.0.0.9:8000/v1", None), "s/27b": ("https://h/v1", "k")}
-    assert load_routes({}, routes + ".none") is None
+    t = load_routes({"K": "k"}, routes)
+    assert t == {"p/9b": [("http://10.0.0.9:8000/v1/", None)], "s/27b": [("https://h/v1", "k")]}
+    json.dump({"one": "http://a/v1", "two": ["http://a/v1", {"base_url": "http://b/v1", "key": "K"}]}, open(routes, "w"))
+    t = load_routes({"K": "k"}, routes)
+    assert [route(t, "one", n) for n in (3, 4)] == [("http://a/v1", None)] * 2
+    assert [route(t, "two", n)[0] for n in (3, 4, 5)] == ["http://b/v1", "http://a/v1", "http://b/v1"]
+    assert route(t, "none", 3) is None and load_routes({}, routes + ".none") is None
     os.remove(routes)
-    print(f"policy check: {len(cases)} decisions as expected; kill switch matches by path prefix; routes load")
+    print(f"policy check: {len(cases)} decisions as expected; kill switch matches by path prefix; routes by slot")
 
 
 if __name__ == "__main__":
@@ -457,5 +490,7 @@ if __name__ == "__main__":
         check()
     elif cmd == "stats":
         stats(*args)
+    elif cmd == "route":
+        sys.exit(route_cli(args))
     else:
         sys.exit(__doc__)

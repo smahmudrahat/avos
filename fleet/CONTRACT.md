@@ -201,7 +201,7 @@ status). `ok` = rows with `status == 200`. Tokens are summed over `ok` rows only
 ## 5. Failure causes
 
 Exactly one cause for every trial whose `status` is not `done`; `null` for a done trial, except `role_mismatch`
-(rule 6) and `witness_mismatch` (rule 6b), the two causes a `done` trial can carry (it stays `done` for M2, is excluded from M11 as infra, and
+(rule 6) and `witness_mismatch` (rule 6b), the two causes a `done` trial can carry. A trial leaves the pass^k denominator only when the evidence shows something other than the agent failed (rules 1–5, 6, 6b, 7–10, 11–12); τ²'s `infrastructure_error` alone is not that evidence when the agent's own reply caused it (rule 6a), and a harness timeout alone is not either (rule 10a) (it stays `done` for M2, is excluded from M11 as infra, and
 `passed` is null). Derived only from the trial directory and the fleet's declared roles. First rule that
 matches, top to bottom:
 
@@ -216,12 +216,14 @@ matches, top to bottom:
 | 4d | `gateway_5xx_unattributed` | **agent** | any other `status ≥ 500` row (no `upstream_status`/`error` evidence, e.g. rows written before §8's fields existed): without evidence the trial is not excluded |
 | 5 | `upstream_4xx` | infra | an `llm.call` row with `400 ≤ status < 500` |
 | 6 | `role_mismatch` | infra | `events.jsonl` readable and holds ≥ 1 `llm.call`, and either a `status: 200` row names a model that is none of the fleet's three roles, or no `status: 200` row names the policy model (the roles never reached the VM, or a default model answered) |
-| 6b | `witness_mismatch` | infra | `result.json` readable and not **one** simulation whose messages carrying `usage` equal, in order and in `(prompt_tokens, completion_tokens)`, the trial's `status: 200` `llm.call` rows of the policy and simulator models (NL-judge rows are not messages): τ² retried the simulation (`max_retries` 3 at the pinned commit), the witness was edited, or two simulations were saved. A trial is exactly one conversation; applies to every status, a `done` trial stays `done` for M2, is excluded from M11 (counted in `infra`), `passed` null, and its `m8.status` reads `witness_mismatch` (counted under `m8.incomplete`), never plain `complete`. |
+| 6a | `agent_empty_reply` | **agent** | `status: failed`, `termination_reason: infrastructure_error`, and the error text (`job.json.error` or `result.json` `simulations[0].info.error`) matches `AssistantMessage must have either content or tool_calls`, while the trial's last policy `llm.call` is a clean 200 (`status 200`, `upstream_status 200`, `error null`) or there is no policy row at all: the model answered, its reply was unusable (e.g. every token in a reasoning field). τ² calls that infrastructure; it is the agent's, and the trial stays in `n` as a failure. The pattern list grows only with a dated reason here. |
+| 6b | `witness_mismatch` | infra | **`done` trials only**: `result.json` readable and not **one** simulation whose messages carrying `usage` equal, in order and in `(prompt_tokens, completion_tokens)`, the trial's `status: 200` `llm.call` rows of the policy and simulator models (NL-judge rows are not messages): τ² retried the simulation (`max_retries` 3 at the pinned commit), the witness was edited, or two simulations were saved. A trial is exactly one conversation; a failed trial keeps its own cause (rules 6a, 7–14), a `done` trial stays `done` for M2, is excluded from M11 (counted in `infra`), `passed` null, and its `m8.status` reads `witness_mismatch` (counted under `m8.incomplete`), never plain `complete`. |
 | 7 | `vm_create_failed` | infra | `job.json` `status: aborted, stage: create` |
 | 8 | `session_open_failed` | infra | `status: aborted, stage: session` |
 | 9 | `harness_aborted` | infra | `status: aborted` with any other stage (`harness`, `unknown`, …) |
-| 9b | `agent_length` | agent | a `status: 200` row with `finish_reason: "length"` (the policy ran into a token limit; whatever τ² then reported, the trial stays in `n`) |
-| 10 | `harness_timeout` | infra | `status: failed, http: "timeout"` |
+| 9b | `agent_length` | agent | a `status: 200` row of the **policy** model with `finish_reason: "length"` (the policy ran into a token limit; whatever τ² then reported, the trial stays in `n`). A judge or simulator row with `length` is not the agent's: the trial falls through to rule 12. |
+| 10 | `harness_timeout` | infra | `status: failed, http: "timeout"` (infra/job's `TIMEOUT_S` expired) **and the policy upstream stalled**: `events.jsonl` unreadable, no policy `llm.call` row, no policy row with `status 200`, or the last policy `status 200` row ends ≥ **300 s** before the trial's end (`session.close.ts`, else the last row's `ts`). 300 s = 10× the worst healthy policy call seen in POC 10 (~30 s). |
+| 10a | `agent_timeout` | **agent** | `status: failed, http: "timeout"` otherwise: the policy kept answering (a successful call within the last 300 s) until the clock ran out, i.e. a long failing conversation (an agent looping on tools). Stays in `n` as a failure: at concurrency 32 the worst done trial took 1,050 s, so trials hitting 1,200 s are as often the agent as a slow model, and excluding them would raise pass^k for exactly the configurations that loop. |
 | 11 | `harness_http_error` | infra | `status: failed`, `http` present and ≠ `"200"` |
 | 12 | `sim_<reason>` | infra | `status: failed`, `termination_reason` ∈ `user_error`, `timeout`, `infrastructure_error`, `unexpected_error` (e.g. `sim_user_error`) |
 | 13 | `agent_<reason>` | agent | `status: failed`, `termination_reason` ∈ `agent_error`, `too_many_errors`, `context_window_exceeded`, `max_steps`, `agent_stop`, `user_stop` |
@@ -234,10 +236,15 @@ skips them (the trial also reads `llm: "unverified"`).
 ## 6. Prices file
 
 Read on the run day, never a constant in code. Any section may be absent; what depends on it reads `unverified`.
+`hosts.gpu` describes **every GPU host that served the policy during the run**: `usd_per_h` is the rate of one
+such host and `count` how many ran (a run may use two); the policy's cost basis is `usd_per_h × count × fleet
+wall hours`. The matrix prints `m12.policy.gpu_hosts = {"name", "usd_per_h", "count", "usd_per_h_total"}` next to
+the cost (text and JSON) so a single-host rate on a two-host run is visible, not silent.
 
 ```
 {"read_on": "YYYY-MM-DD",
- "hosts": {"fleet": {"name": str, "usd_per_h": number}, "gpu": {"name": str, "usd_per_h": number}},
+ "hosts": {"fleet": {"name": str, "usd_per_h": number},
+           "gpu": {"name": str, "usd_per_h": number, "count": int ≥ 1 (default 1)}},
  "models": {<model>: {"prompt_per_mtok": number, "completion_per_mtok": number, "currency": "USD"}},
  "baselines": {<name>: {"kind": "vm", "usd_per_h": n, "min_s": n, "boot_s": n}
              | {<name>: {"kind": "serverless", "usd_per_vcpu_h": n, "usd_per_gb_h": n, "vcpu": n, "gb": n, "min_s": n}}}
@@ -285,6 +292,14 @@ file next to it; format is the solver's). Observable contract:
   `choices[0].finish_reason`, `null` without one). A `status: 200` row has `upstream_status: 200` and a non-null
   `finish_reason`. These are what §5 tells an upstream failure, the gateway's own timeout and a truncated
   generation apart; a row without them cannot exclude a trial from M11.
+- **Several upstreams per model.** The route table maps a model to one upstream (today's form) or to a list of
+  upstreams; a list of one behaves like the single form. A call from slot `vm-NN` (or identity `vm-NN-xxxxxx`)
+  for a model with `n` upstreams goes to `upstreams[NN mod n]`, so a trial's whole conversation stays on one
+  server and slots split evenly. Every `llm.call` row carries `upstream` (the chosen upstream's URL as written in
+  the table; `null` only when the model had no route). Pure entry point for the tests:
+  `gateway.py route [--table FILE] MODEL SLOT` → stdout `{"model", "slot", "upstream": <url>|null}`, exit 0 when
+  routed, exit 1 with `"error": "no-route"` when not; `--table` is a JSON file `{model: url | [url, ...]}` (the
+  live table when omitted). The command touches no network and no host state.
 - No key leaves the host; no key appears in any run directory, journal, matrix or sweep output.
 
 ## 9. What the tests' fake `infra/job` does (the runner may rely on nothing more from the real one)

@@ -37,7 +37,9 @@ ROLES = {"policy": "Qwen/Qwen3-30B-A3B-Instruct-2507", "simulator": "google/gemm
          "nl_judge": "deepseek-ai/DeepSeek-V4-Flash-0731"}
 INFRA_REASONS = ("user_error", "timeout", "infrastructure_error", "unexpected_error")
 AGENT_REASONS = ("agent_error", "too_many_errors", "context_window_exceeded", "max_steps", "agent_stop", "user_stop")
-AGENT_CLASS = {"unknown", "gateway_timeout", "gateway_5xx_unattributed"}
+AGENT_CLASS = {"unknown", "gateway_timeout", "gateway_5xx_unattributed", "agent_empty_reply", "agent_timeout"}
+STALL_MS = 300_000
+EMPTY_REPLY = "AssistantMessage must have either content or tool_calls"
 U = "unverified"
 RULE = "median host-side trial time ≤ 1.05 × lowest level"
 
@@ -410,6 +412,32 @@ def witness_mismatch(d, rows, roles):
     return w != g
 
 
+def empty_reply(job, d, rows, roles):
+    """τ² called the agent's own unusable reply (no content, no tool calls) an infrastructure_error: its error names
+    the AssistantMessage, and the last policy call was a clean 200 (or there is no policy row)."""
+    if job.get("termination_reason") != "infrastructure_error":
+        return False
+    text = str(job.get("error") or "")
+    try:
+        with open(os.path.join(d, "result.json"), encoding="utf-8") as f:
+            text += " " + str(json.load(f)["simulations"][0].get("info", {}).get("error") or "")
+    except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError):
+        pass
+    if EMPTY_REPLY not in text:
+        return False
+    pol = [e for e in rows or [] if e.get("kind") == "llm.call" and e.get("model") == roles["policy"]]
+    return not pol or (pol[-1].get("status") == 200 and pol[-1].get("upstream_status", 200) == 200 and not pol[-1].get("error"))
+
+
+def upstream_stalled(rows, roles):
+    """A timed-out trial is infra only when the policy stalled: no successful policy call in its last 300 s."""
+    ok = [e for e in rows or [] if e.get("kind") == "llm.call" and e.get("model") == roles["policy"] and e.get("status") == 200]
+    if not ok:
+        return True
+    end = next((e["ts"] for e in rows if e.get("kind") == "session.close"), None) or max(e["ts"] for e in rows)
+    return parse_ts(end) - parse_ts(ok[-1]["ts"]) >= STALL_MS
+
+
 def cause_of(status, job, rows, roles, d):
     if status == "missing":
         return "no_job_json"
@@ -433,18 +461,20 @@ def cause_of(status, job, rows, roles, d):
             return "upstream_4xx"
     if rows is not None and role_mismatch(rows, roles):
         return "role_mismatch"
-    if witness_mismatch(d, rows, roles):
+    if status == "failed" and empty_reply(job, d, rows, roles):
+        return "agent_empty_reply"
+    if status == "done" and witness_mismatch(d, rows, roles):
         return "witness_mismatch"
     if status == "done":
         return None
     if rows is not None and any(e.get("kind") == "llm.call" and e.get("status") == 200 and e.get("finish_reason") == "length"
-                                for e in rows):
+                                and e.get("model") == roles["policy"] for e in rows):
         return "agent_length"
     if status == "aborted":
         return {"create": "vm_create_failed", "session": "session_open_failed"}.get(job.get("stage"), "harness_aborted")
     http = job.get("http")
     if http == "timeout":
-        return "harness_timeout"
+        return "harness_timeout" if upstream_stalled(rows, roles) else "agent_timeout"
     if http is not None and str(http) != "200":
         return "harness_http_error"
     tr = job.get("termination_reason")
@@ -614,14 +644,18 @@ def matrix(fdir, prices_path, labels=None):
         tok = price(m, a["prompt_tokens"], a["completion_tokens"], a["calls"])
         if role == "policy":
             g = hosts.get("gpu") if isinstance(hosts.get("gpu"), dict) else {}
-            total = g["usd_per_h"] * wh if num(g.get("usd_per_h")) and wh is not None else U
+            cnt = g.get("count", 1)
+            ok = num(g.get("usd_per_h")) and isinstance(cnt, int) and not isinstance(cnt, bool) and cnt >= 1
+            gpu = {"name": g.get("name", U), "usd_per_h": g["usd_per_h"] if ok else U, "count": cnt if ok else U,
+                   "usd_per_h_total": g["usd_per_h"] * cnt if ok else U}
+            total = g["usd_per_h"] * cnt * wh if ok and wh is not None else U
             basis, ceiling = "gpu_hours", tok / ntr if tok != U and ntr else U
         else:
             total, basis, ceiling = tok, "tokens", U
         pt, succ = per_task_cost(total)
         m12[role] = {"model": m, "source": "gateway", "outside_gateway": False, **a, "usd_total": total,
                      "usd_per_task": pt, "usd_per_successful_task": succ, "basis": basis,
-                     "token_ceiling_usd_per_task": ceiling}
+                     "token_ceiling_usd_per_task": ceiling, **({"gpu_hosts": gpu} if role == "policy" else {})}
     lj = {"model": U, "source": "label rows", "outside_gateway": True, "calls": U, "ok": U, "prompt_tokens": U,
           "completion_tokens": U, "usd_total": U, "usd_per_task": U, "usd_per_successful_task": U, "basis": "tokens",
           "token_ceiling_usd_per_task": U}
@@ -749,6 +783,8 @@ def matrix_text(g):
                    f"{fmt(x['calls'])}/{fmt(x['ok'])}, {fmt(x['prompt_tokens'])}+{fmt(x['completion_tokens'])} -> "
                    f"{fmt(x['usd_total'])}, {fmt(x['usd_per_task'])}, {fmt(x['usd_per_successful_task'])} "
                    f"({x['basis']}; ceiling {fmt(x['token_ceiling_usd_per_task'])})")
+    h = m12["policy"]["gpu_hosts"]
+    out.append(f"    policy GPU hosts: {fmt(h['name'])} {fmt(h['count'])} × {fmt(h['usd_per_h'])} $/h = {fmt(h['usd_per_h_total'])} $/h")
     u = m12["unattributed"]
     out.append(f"    unattributed: {', '.join(u['models']) or '-'} {u['calls']}/{u['ok']}, "
                f"{u['prompt_tokens']}+{u['completion_tokens']} -> {fmt(u['usd_total'])}")

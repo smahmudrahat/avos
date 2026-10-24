@@ -9,6 +9,7 @@ import json
 import math
 import os
 import random
+import re
 import shutil
 import statistics
 import subprocess
@@ -32,11 +33,17 @@ LABEL_MODEL = "openai/gpt-oss-120b"
 INFRA_REASONS = ("user_error", "timeout", "infrastructure_error", "unexpected_error")
 AGENT_REASONS = ("agent_error", "too_many_errors", "context_window_exceeded", "max_steps", "agent_stop", "user_stop")
 B_BOOT, SEED_BOOT = 2000, 300
-AGENT_CLASS = {"unknown", "gateway_timeout", "gateway_5xx_unattributed"}
+AGENT_CLASS = {"unknown", "gateway_timeout", "gateway_5xx_unattributed", "agent_empty_reply", "agent_timeout"}
+STALL_MS = 300_000   # no successful policy call in the last 5 min of a timed-out trial = the upstream stalled
+EMPTY_REPLY = re.compile(r"AssistantMessage must have either content or tool_calls")
 
 
 class NotImplementedCLI(Exception):
     """A contract path is missing: the check reports FAIL 'not implemented: <path>'."""
+
+
+class SkipCheck(Exception):
+    """The check cannot run here (reports SKIP with the reason), e.g. a host-only dependency."""
 
 
 # ---------------------------------------------------------------- process helpers
@@ -230,6 +237,8 @@ def llm_row(i, vm_id, model, status, ms, pt, ct, t_ms, host="ip-172-31-44-187", 
          "model": model, "status": status, "ms": ms, "dropped": False,
          "prompt_tokens": pt if status == 200 else None, "completion_tokens": ct if status == 200 else None}
     if not legacy:
+        m = re.match(r"vm-(\d+)", vm_id)
+        r["upstream"] = f"https://upstream-{int(m[1]) % 2}.example/v1" if m else "https://upstream-0.example/v1"
         r["upstream_status"] = status if upstream_status == "same" else upstream_status
         r["error"] = error
         r["finish_reason"] = ("stop" if status == 200 else None) if finish_reason == "auto" else finish_reason
@@ -289,6 +298,11 @@ def write_run(results, run, task, spec, rnd, roles=ROLES, slot="vm-01", t_start_
             seq += 1
             events.append(llm_row(seq, vm_id, m, s, ms, pt, ct, t, **(row[5] if len(row) > 5 else {})))
             t += 30
+        if spec.get("end_gap_ms") is not None:
+            t += spec["end_gap_ms"]
+            events.append({"event_id": f"{t:012x}-close", "kind": "session.close", "ts": ts_of(t), "writer": f"ip-172-31-44-187/job/{vm_id}",
+                           "seq": 2, "host": "ip-172-31-44-187", "principal": f"spiffe://avoslab.com/vm/{vm_id}", "vm_id": vm_id,
+                           "run": run, "status": status, "wall_ms": wall})
         text = "".join(json.dumps(e, separators=(",", ":")) + "\n" for e in events)
         if spec.get("events") == "truncate":
             text = text[: len(text) - 40]
@@ -319,7 +333,8 @@ def write_run(results, run, task, spec, rnd, roles=ROLES, slot="vm-01", t_start_
             elif spec.get("witness") == "tampered" and msgs:
                 msgs[0]["usage"]["completion_tokens"] += 1
             sim = {"reward_info": ({"reward": job["reward"]} if job["reward"] is not None else None),
-                   "termination_reason": job["termination_reason"], "messages": msgs}
+                   "termination_reason": job["termination_reason"], "messages": msgs,
+                   "info": {"error": job["error"]} if job.get("error") else None}
             sims = [sim, dict(sim)] if spec.get("witness") == "two_sims" else [sim]
             write_json(os.path.join(d, "result.json"), {"simulations": sims})
         else:
@@ -364,6 +379,13 @@ def KINDS(roles=ROLES):
         "done_witness_tampered": {"status": "done", "reward": 1.0, "witness": "tampered"},
         "done_two_sims": {"status": "done", "reward": 1.0, "witness": "two_sims"},
         "failed_retried_sim": {"status": "failed", "reward": None, "termination_reason": "agent_error", "witness": "retried"},
+        "failed_empty_reply": {"status": "failed", "reward": None, "termination_reason": "infrastructure_error",
+                               "error": "AssistantMessage must have either content or tool_calls. Got AssistantMessage(role='assistant', content=None, is_final_chu"},
+        "failed_empty_reply_after_5xx": {"status": "failed", "reward": None, "termination_reason": "infrastructure_error",
+                                         "error": "AssistantMessage must have either content or tool_calls. Got AssistantMessage(...)",
+                                         "extra_rows": [(p, 502, 900, 0, 0)]},
+        "failed_judge_length": {"status": "failed", "reward": None, "termination_reason": "infrastructure_error",
+                                "extra_rows": [(roles["nl_judge"], 200, 3000, 2000, 4000, {"finish_reason": "length"})]},
         "done_length": {"status": "done", "reward": 0.0, "termination_reason": "max_steps", "extra_rows": [(p, 200, 90_000, 8000, 32000, {"finish_reason": "length"})]},
         "failed_ctx": {"status": "failed", "reward": None, "termination_reason": "context_window_exceeded"},
         "failed_agent_error": {"status": "failed", "reward": None, "termination_reason": "agent_error"},
@@ -377,7 +399,13 @@ def KINDS(roles=ROLES):
         "aborted_session": {"status": "aborted", "stage": "session", "exit_code": 1, "wall_ms": 9000},
         "aborted_harness": {"status": "aborted", "stage": "harness", "exit_code": 143},
         "aborted_unknown": {"status": "aborted", "stage": "unknown", "exit_code": -1},
-        "timeout": {"status": "failed", "http": "timeout", "wall_ms": 1_200_000},
+        "timeout": {"status": "failed", "http": "timeout", "wall_ms": 1_200_000, "rows": []},
+        "timeout_agent_looping": {"status": "failed", "http": "timeout", "wall_ms": 1_200_000, "end_gap_ms": 20_000,
+                                  "rows": [(p, 200, 4000, 6000, 300)] * 40 + [(s_, 200, 2000, 2000, 100) for s_ in [s]] * 5},
+        "timeout_upstream_stalled": {"status": "failed", "http": "timeout", "wall_ms": 1_200_000, "end_gap_ms": 700_000,
+                                     "rows": [(p, 200, 4000, 6000, 300)] * 10},
+        "timeout_no_close_row": {"status": "failed", "http": "timeout", "wall_ms": 1_200_000,
+                                 "rows": [(p, 200, 4000, 6000, 300)] * 10},
         "http_500": {"status": "failed", "http": "500"},
         "denied": {"status": "failed", "reward": None, "termination_reason": "infrastructure_error", "denies": [["default-deny"]]},
         "unrouted": {"status": "failed", "reward": None, "termination_reason": "infrastructure_error",
@@ -402,13 +430,15 @@ EXPECTED_CAUSE = {
     "failed_404": "upstream_4xx", "failed_5xx": "upstream_5xx", "failed_gateway_timeout": "gateway_timeout",
     "failed_unreachable": "upstream_unreachable", "failed_5xx_legacy": "gateway_5xx_unattributed", "failed_length": "agent_length",
     "failed_length_then_timeout": "gateway_timeout", "done_length": None, "done_retried_sim": "witness_mismatch",
-    "done_witness_tampered": "witness_mismatch", "done_two_sims": "witness_mismatch", "failed_retried_sim": "witness_mismatch", "failed_ctx": "agent_context_window_exceeded",
+    "failed_empty_reply": "agent_empty_reply", "failed_empty_reply_after_5xx": "upstream_5xx", "failed_judge_length": "sim_infrastructure_error",
+    "done_witness_tampered": "witness_mismatch", "done_two_sims": "witness_mismatch", "failed_retried_sim": "agent_agent_error", "failed_ctx": "agent_context_window_exceeded",
     "failed_agent_error": "agent_agent_error", "failed_too_many_errors": "agent_too_many_errors",
     "failed_user_error": "sim_user_error", "failed_tau2_timeout": "sim_timeout",
     "failed_infra_no_rows": "sim_infrastructure_error", "failed_unexpected": "sim_unexpected_error",
     "failed_unknown_reason": "unknown", "aborted_create": "vm_create_failed", "aborted_session": "session_open_failed",
     "aborted_harness": "harness_aborted", "aborted_unknown": "harness_aborted", "timeout": "harness_timeout",
-    "http_500": "harness_http_error", "denied": "authz_denied", "unrouted": "model_unrouted",
+    "http_500": "harness_http_error", "timeout_agent_looping": "agent_timeout", "timeout_upstream_stalled": "harness_timeout",
+    "timeout_no_close_row": "agent_timeout", "denied": "authz_denied", "unrouted": "model_unrouted",
     "unrouted_then_timeout": "model_unrouted", "no_job": "no_job_json", "truncated_events": None, "garbage_events": None,
     "truncated_404": "sim_infrastructure_error", "no_events": None, "no_completeness": None, "incomplete_trace": None,
     "unverified_trace": None, "unattributed_model": "role_mismatch",
@@ -579,6 +609,44 @@ def witness_mismatch(d, rows, roles):
     return w != s
 
 
+def error_text(job, d):
+    t = str(job.get("error") or "") if job else ""
+    if d:
+        try:
+            info = read_json(os.path.join(d, "result.json"))["simulations"][0].get("info") or {}
+            t += " " + str(info.get("error") or "")
+        except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError):
+            pass
+    return t
+
+
+def empty_reply(job, d, rows, roles):
+    """τ² raised on the agent's own reply: its error names the malformed AssistantMessage and the last policy call
+    was a clean 200 (the model answered; what it answered was unusable)."""
+    if not job or job.get("termination_reason") != "infrastructure_error" or not EMPTY_REPLY.search(error_text(job, d)):
+        return False
+    pol = [e for e in (rows or []) if e.get("kind") == "llm.call" and e.get("model") == roles["policy"]]
+    if not pol:
+        return True   # no row evidence against the agent: τ²'s text names its reply, so it stays in n
+    last = pol[-1]
+    return last.get("status") == 200 and last.get("upstream_status", 200) == 200 and not last.get("error")
+
+
+def upstream_stalled(rows, roles):
+    """A timed-out trial left n only when the policy upstream stalled: no policy row at all, or no successful policy
+    call within STALL_MS of the trial's end (session.close ts, else the last row's ts)."""
+    if rows is None:
+        return True
+    pol = [e for e in rows if e.get("kind") == "llm.call" and e.get("model") == roles["policy"]]
+    if not pol:
+        return True
+    ok = [e for e in pol if e.get("status") == 200]
+    if not ok:
+        return True
+    end = next((e["ts"] for e in rows if e.get("kind") == "session.close"), None) or max(e["ts"] for e in rows)
+    return parse_ts(end) - parse_ts(ok[-1]["ts"]) >= STALL_MS
+
+
 def assign_cause(status, job, rows, roles, d=None):
     if status == "missing":
         return "no_job_json"
@@ -602,18 +670,21 @@ def assign_cause(status, job, rows, roles, d=None):
             return "upstream_4xx"
     if rows is not None and role_mismatch(rows, roles):
         return "role_mismatch"
-    if d and witness_mismatch(d, rows, roles):
+    if status == "failed" and empty_reply(job, d, rows, roles):
+        return "agent_empty_reply"
+    if status == "done" and d and witness_mismatch(d, rows, roles):
         return "witness_mismatch"
     if status == "done":
         return None
-    if rows is not None and any(e.get("kind") == "llm.call" and e.get("status") == 200 and e.get("finish_reason") == "length" for e in rows):
+    if rows is not None and any(e.get("kind") == "llm.call" and e.get("status") == 200 and e.get("finish_reason") == "length"
+                                and e.get("model") == roles["policy"] for e in rows):
         return "agent_length"
     if status == "aborted":
         stage = job.get("stage")
         return {"create": "vm_create_failed", "session": "session_open_failed"}.get(stage, "harness_aborted")
     http = job.get("http")
     if http == "timeout":
-        return "harness_timeout"
+        return "harness_timeout" if upstream_stalled(rows, roles) else "agent_timeout"
     if http is not None and str(http) != "200":
         return "harness_http_error"
     tr = job.get("termination_reason")
@@ -738,7 +809,11 @@ def matrix_oracle(fleet_dir, prices, labels=None):
         tok = price(m, a["prompt_tokens"], a["completion_tokens"], a["calls"])
         if role == "policy":
             g = hosts.get("gpu", {})
-            total = g["usd_per_h"] * wall_h if isinstance(g.get("usd_per_h"), (int, float)) and wall_h is not None else "unverified"
+            cnt = g.get("count", 1)
+            rate_ok = isinstance(g.get("usd_per_h"), (int, float)) and isinstance(cnt, int) and cnt >= 1
+            total = g["usd_per_h"] * cnt * wall_h if rate_ok and wall_h is not None else "unverified"
+            gpu_hosts = {"name": g.get("name", "unverified"), "usd_per_h": g["usd_per_h"] if rate_ok else "unverified",
+                         "count": cnt if rate_ok else "unverified", "usd_per_h_total": g["usd_per_h"] * cnt if rate_ok else "unverified"}
             basis = "gpu_hours"
             ceiling = tok / ntr if tok != "unverified" and ntr else "unverified"
         else:
@@ -746,6 +821,8 @@ def matrix_oracle(fleet_dir, prices, labels=None):
         pt, succ = per_task_cost(total)
         m12[role] = {"model": m, "source": "gateway", "outside_gateway": False, **a, "usd_total": total, "usd_per_task": pt,
                      "usd_per_successful_task": succ, "basis": basis, "token_ceiling_usd_per_task": ceiling}
+        if role == "policy":
+            m12[role]["gpu_hosts"] = gpu_hosts
     # label judge
     lj = {"model": "unverified", "source": "label rows", "outside_gateway": True, "calls": "unverified", "ok": "unverified",
           "prompt_tokens": "unverified", "completion_tokens": "unverified", "usd_total": "unverified",
@@ -1074,6 +1151,14 @@ def selftest():
     assert assign_cause("aborted", {"stage": "harness"}, [], ROLES) == "harness_aborted"
     assert assign_cause("aborted", {"stage": "unknown"}, None, ROLES) == "harness_aborted"
     assert assign_cause("failed", {"http": "timeout"}, [], ROLES) == "harness_timeout"
+    assert assign_cause("failed", {"http": "timeout"}, None, ROLES) == "harness_timeout"
+    pol_ok = [llm_row(i, "v", ROLES["policy"], 200, 4000, 100, 10, T0_MS + i * 5000) for i in range(1, 6)]
+    close = lambda gap: {"kind": "session.close", "ts": ts_of(T0_MS + 5 * 5000 + gap)}
+    assert assign_cause("failed", {"http": "timeout"}, pol_ok + [close(10_000)], ROLES) == "agent_timeout"
+    assert assign_cause("failed", {"http": "timeout"}, pol_ok + [close(STALL_MS)], ROLES) == "harness_timeout"
+    assert assign_cause("failed", {"http": "timeout"}, pol_ok, ROLES) == "agent_timeout"
+    sim_only = [llm_row(1, "v", ROLES["simulator"], 200, 10, 5, 5, T0_MS)]
+    assert assign_cause("failed", {"http": "timeout"}, sim_only, ROLES) == "role_mismatch"
     assert assign_cause("failed", {"http": "500"}, [], ROLES) == "harness_http_error"
     assert assign_cause("failed", {"http": "200", "termination_reason": "user_error"}, [], ROLES) == "sim_user_error"
     assert assign_cause("failed", {"http": "200", "termination_reason": "infrastructure_error"}, None, ROLES) == "sim_infrastructure_error"
@@ -1089,6 +1174,12 @@ def selftest():
     assert assign_cause("done", {"http": "200"}, [], ROLES) is None and assign_cause("done", {"http": "200"}, None, ROLES) is None
     assert assign_cause("done", {"http": "200"}, okp + rows5, ROLES) is None            # retried 5xx on a done trial
     assert assign_cause("failed", {"http": "200", "termination_reason": "agent_error"}, oks, ROLES) == "role_mismatch"
+    er = {"http": "200", "termination_reason": "infrastructure_error", "error": "AssistantMessage must have either content or tool_calls. Got AssistantMessage(x"}
+    assert assign_cause("failed", er, okp, ROLES) == "agent_empty_reply"
+    assert assign_cause("failed", er, okp + rows5, ROLES) == "upstream_5xx"
+    assert assign_cause("failed", er, [], ROLES) == "agent_empty_reply"
+    jl = [llm_row(1, "v", ROLES["nl_judge"], 200, 10, 5, 5, T0_MS, finish_reason="length")]
+    assert assign_cause("failed", {"http": "200", "termination_reason": "infrastructure_error"}, okp + jl, ROLES) == "sim_infrastructure_error"
     # a done trial with a retried 5xx has no cause; truncated events skip the gateway rules
     assert read_events(os.path.join(FIX_RESULTS, "run_retail-0_27", "events.jsonl"))[0]["kind"] == "vm.boot"
     # the synthetic kinds produce exactly the expected causes
@@ -1124,7 +1215,11 @@ def selftest():
         write_labels(lab, [(100, 10)], runs=["run_other-1_0"])
         m3 = matrix_oracle(fdir, read_json(PRICES), lab)
         assert m3["m12"]["label_judge"]["calls"] == 0 and m3["m12"]["label_judge"]["usd_total"] == 0.0
-        for k in ("done_retried_sim", "done_witness_tampered", "done_two_sims", "failed_retried_sim"):
+        assert by[tk["failed_empty_reply"]]["cause_class"] == "agent" and by[tk["failed_empty_reply"]]["valid"]
+        assert by[tk["timeout_agent_looping"]]["valid"] and not by[tk["timeout_upstream_stalled"]]["valid"] and not by[tk["timeout"]]["valid"]
+        assert m["m12"]["policy"]["gpu_hosts"]["count"] == 1 and m["m12"]["policy"]["gpu_hosts"]["usd_per_h_total"] == m["m12"]["policy"]["gpu_hosts"]["usd_per_h"]
+        assert by[tk["failed_retried_sim"]]["cause"] == "agent_agent_error"
+        for k in ("done_retried_sim", "done_witness_tampered", "done_two_sims"):
             t = by[tk[k]]
             assert t["cause"] == "witness_mismatch" and t["cause_class"] == "infra" and not t["valid"] and t["passed"] is None, k
             assert t["m8"]["status"] == "witness_mismatch", t["m8"]
