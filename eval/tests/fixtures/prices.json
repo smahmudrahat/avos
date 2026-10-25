@@ -1,0 +1,68 @@
+{
+ "baselines": {
+  "aws_agentcore_v2": {
+   "gb": 2,
+   "kind": "serverless",
+   "min_s": 0,
+   "usd_per_gb_h": 0.0169,
+   "usd_per_vcpu_h": 0.1276,
+   "vcpu": 1
+  },
+  "aws_t3_small_per_vm": {
+   "boot_s": 29.8,
+   "kind": "vm",
+   "min_s": 60,
+   "usd_per_h": 0.0208
+  },
+  "gcp_cloud_run": {
+   "gb": 2,
+   "kind": "serverless",
+   "min_s": 60,
+   "usd_per_gb_h": 0.0072,
+   "usd_per_vcpu_h": 0.0648,
+   "vcpu": 1
+  }
+ },
+ "hosts": {
+  "fleet": {
+   "name": "m8i.12xlarge",
+   "usd_per_h": 2.54016
+  },
+  "gpu": {
+   "count": 2,
+   "name": "g6e.xlarge",
+   "usd_per_h": 1.861
+  }
+ },
+ "models": {
+  "claude-opus-5-5": {
+   "cache_read_per_mtok": 0.2,
+   "cache_write_per_mtok": 5.0,
+   "completion_per_mtok": 20.0,
+   "currency": "USD",
+   "listed_on": "2026-10-24",
+   "prompt_per_mtok": 4.0
+  },
+  "deepseek-ai/DeepSeek-V4-Flash-0731": {
+   "completion_per_mtok": 0.28,
+   "currency": "USD",
+   "prompt_per_mtok": 0.14
+  },
+  "google/gemma-3-27b-it": {
+   "completion_per_mtok": 0.3,
+   "currency": "USD",
+   "prompt_per_mtok": 0.1
+  },
+  "openai/gpt-oss-120b": {
+   "completion_per_mtok": 0.6,
+   "currency": "USD",
+   "prompt_per_mtok": 0.15
+  },
+  "policy-qwen3.5-9b": {
+   "completion_per_mtok": 0.15,
+   "currency": "USD",
+   "prompt_per_mtok": 0.1
+  }
+ },
+ "read_on": "2026-10-24"
+}

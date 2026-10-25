@@ -26,6 +26,13 @@ whole conversation stays on one server, slots split evenly; the row names it (`u
 is denied (policy_ids ["no-route"]), never forwarded. Without the file every model goes to gateway.env's
 OPENAI_BASE_URL with OPENAI_API_KEY.
 
+Route kinds (POC 13): an object upstream may say "kind": "anthropic" and then must carry its pinned "key", "effort"
+(low|medium|high|max), "max_tokens" and "cache"; a missing pin is a bad route (serve refuses to start). Such a call
+is translated from OpenAI chat to Anthropic's Messages API and back (one upstream request, never retried; a non-2xx
+answer goes back as it is); the row adds what was sent (route_kind, effort, max_tokens, cache, dropped_fields), the
+billed usage and the raw stop_reason. Hashes stay on the OpenAI shapes the VM sent and got. Without "kind" (or
+"openai") the call is forwarded byte for byte, as before.
+
   gateway.py serve        mTLS on :8443
   gateway.py check        assert the policy's expected decisions (no host needed)
   gateway.py stats [VM]...   M5 authz_attributable_denials, llm.call totals
@@ -113,21 +120,38 @@ def env_file(path):
     return dict(line.split("=", 1) for line in open(path).read().splitlines() if "=" in line)
 
 
+EFFORTS = ("low", "medium", "high", "max")
+
+
+def pins(model, r):
+    """An anthropic upstream's pinned settings; ValueError names the model when one is missing (never defaulted)."""
+    if r.get("kind", "openai") == "openai":
+        return None
+    if r.get("kind") != "anthropic" or not isinstance(r.get("key"), str) or r.get("effort") not in EFFORTS \
+            or type(r.get("max_tokens")) is not int or r["max_tokens"] < 1 or type(r.get("cache")) is not bool:
+        raise ValueError(f"bad-route: {model} needs kind anthropic with key, effort, max_tokens and cache")
+    return {"effort": r["effort"], "max_tokens": r["max_tokens"], "cache": r["cache"]}
+
+
+def parse_routes(env, table):
+    def up(m, r):
+        r = {"base_url": r} if isinstance(r, str) else r
+        return r["base_url"], env[r["key"]] if r.get("key") else None, pins(m, r)
+    return {m: [up(m, x) for x in (r if isinstance(r, list) else [r])] for m, r in table.items()}
+
+
 def load_routes(env, path):
-    """{model: [(base_url as written, key or None), ...]}, or None (every model to the one upstream) without a table."""
+    """{model: [(base_url as written, key or None, pins or None), ...]}, or None (every model to the one upstream)
+    without a table. pins is None for an OpenAI-compatible upstream."""
     if not os.path.exists(path):
         return None
-
-    def up(r):
-        r = {"base_url": r} if isinstance(r, str) else r
-        return r["base_url"], env[r["key"]] if r.get("key") else None
-    return {m: [up(x) for x in (r if isinstance(r, list) else [r])] for m, r in json.load(open(path)).items()}
+    return parse_routes(env, json.load(open(path)))
 
 
 def route(table, model, n):
-    """(base_url, key) for a call from slot vm-<n>, or None when the model has no route."""
+    """(base_url, key, pins) for a call from slot vm-<n>, or None when the model has no route."""
     if table is None:
-        return UPSTREAM["OPENAI_BASE_URL"], UPSTREAM["OPENAI_API_KEY"]
+        return UPSTREAM["OPENAI_BASE_URL"], UPSTREAM["OPENAI_API_KEY"], None
     ups = table.get(model)
     return ups[n % len(ups)] if ups else None
 
@@ -140,11 +164,18 @@ def route_cli(args):
     if not m:
         sys.exit("usage: gateway.py route [--table FILE] MODEL vm-NN")
     if os.path.exists(table):
-        up = route(load_routes(collections.defaultdict(lambda: None), table), args[0], int(m[1]))
+        raw = json.load(open(table))
+        try:
+            t = parse_routes(collections.defaultdict(lambda: None), {args[0]: raw[args[0]]} if args[0] in raw else {})
+        except (ValueError, KeyError, TypeError, AttributeError):
+            print(json.dumps({"model": args[0], "slot": args[1], "upstream": None, "error": "bad-route"}))
+            return 1
+        up = route(t, args[0], int(m[1]))
     else:
         url = env_file(f"{ROOT}/gateway.env").get("OPENAI_BASE_URL") if os.access(f"{ROOT}/gateway.env", os.R_OK) else None
-        up = (url, None) if url else None
-    print(json.dumps({"model": args[0], "slot": args[1], "upstream": up[0] if up else None,
+        up = (url, None, None) if url else None
+    kind = {} if not up else {"kind": "anthropic", **up[2]} if up[2] else {"kind": "openai"}
+    print(json.dumps({"model": args[0], "slot": args[1], "upstream": up[0] if up else None, **kind,
                       **({} if up else {"error": "no-route"})}))
     return 0 if up else 1
 
@@ -231,6 +262,80 @@ def seen(sent, answer):
                 "output_sha256": None if reply is None else T.content_sha(T.chat_form(reply, "assistant"))}
     except (AttributeError, TypeError, KeyError, IndexError):
         return {}
+
+
+FINISH = {"end_turn": "stop", "stop_sequence": "stop", "tool_use": "tool_calls", "max_tokens": "length", "refusal": "content_filter"}
+USAGE = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
+
+
+def text_blocks(c):
+    """OpenAI content (string, parts or null) as Messages text blocks; never an empty one."""
+    parts = [{"type": "text", "text": c}] if isinstance(c, str) else [p for p in c or [] if p.get("type") == "text"]
+    return [{"type": "text", "text": p["text"]} for p in parts if p.get("text")]
+
+
+def to_messages(sent, pin):
+    """An OpenAI chat request as a Messages request with the route's pins, and the client fields not forwarded.
+    Consecutive same-role turns merge (τ² sends one tool message per call); tool results lead their user turn."""
+    system, out = [], []
+
+    def push(role, blocks):
+        if out and out[-1]["role"] == role:
+            out[-1]["content"] += blocks
+        else:
+            out.append({"role": role, "content": blocks})
+
+    for m in sent["messages"]:
+        r = m["role"]
+        if r == "system":
+            system += text_blocks(m.get("content"))
+        elif r == "tool":
+            c = m.get("content")
+            push("user", [{"type": "tool_result", "tool_use_id": m["tool_call_id"], **({"content": c} if c else {})}])
+        elif r == "assistant":
+            push("assistant", text_blocks(m.get("content")) + [
+                {"type": "tool_use", "id": t["id"], "name": t["function"]["name"], "input": json.loads(t["function"]["arguments"] or "{}")}
+                for t in m.get("tool_calls") or []])
+        else:
+            push("user", text_blocks(m.get("content")))
+    for m in out:
+        if m["role"] == "user":
+            m["content"].sort(key=lambda b: b["type"] != "tool_result")
+    body = {"model": sent["model"], "max_tokens": pin["max_tokens"], "output_config": {"effort": pin["effort"]}, "messages": out}
+    if pin["cache"]:
+        body["cache_control"] = {"type": "ephemeral"}
+    if system:
+        body["system"] = "\n\n".join(b["text"] for b in system)
+    if sent.get("tools"):
+        body["tools"] = [{"name": t["function"]["name"], **({"description": t["function"]["description"]} if "description" in t["function"] else {}),
+                          "input_schema": t["function"].get("parameters") or {"type": "object", "properties": {}}} for t in sent["tools"]]
+    if sent.get("tool_choice") in ("auto", "none"):
+        body["tool_choice"] = {"type": sent["tool_choice"]}
+    kept = {"model", "messages", "tools"} | ({"tool_choice"} if "tool_choice" in body else set())
+    return body, sorted(set(sent) - kept)
+
+
+def to_chat(a, model):
+    """A Messages reply as an OpenAI chat completion: text joined, tool_use as tool_calls, thinking left out."""
+    text = "".join(b.get("text", "") for b in a["content"] if b.get("type") == "text")
+    calls = [{"id": b["id"], "type": "function", "function": {"name": b["name"], "arguments": json.dumps(b["input"])}}
+             for b in a["content"] if b.get("type") == "tool_use"]
+    u = a.get("usage") or {}
+    pt = sum(u.get(k) or 0 for k in USAGE[:3])
+    ct = u.get("output_tokens") or 0
+    msg = {"role": "assistant", "content": text or (None if calls else "")}
+    if calls:
+        msg["tool_calls"] = calls
+    stop = a.get("stop_reason")
+    return {"id": a.get("id"), "object": "chat.completion", "model": model, "created": int(time.time()),
+            "choices": [{"index": 0, "message": msg, "finish_reason": FINISH.get(stop, stop)}],
+            "usage": {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct}}
+
+
+def billed(a):
+    """The upstream's usage as recorded: the four billed counts and thinking tokens, null when not sent."""
+    u = (a or {}).get("usage") or {}
+    return {**{k: u.get(k) for k in USAGE}, "thinking_tokens": (u.get("output_tokens_details") or {}).get("thinking_tokens")}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -334,19 +439,32 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, KeyError, TypeError):
             return self.refuse(400, "llm.call", "body must be JSON with a model", {})
         up = route(ROUTE_TABLE, model, self.slot) if isinstance(model, str) else None
+        base, key, pin = up or (None, None, None)
+        if pin:
+            try:
+                msgs, dropped = to_messages(sent, pin)
+            except (ValueError, KeyError, TypeError, AttributeError) as e:
+                return self.refuse(400, "llm.call", f"chat request not translatable: {type(e).__name__}", {})
         if not (d := self.allowed("llm.call", f"Model::{json.dumps(model)}", {}, unrouted=up is None)):
             return
         t0 = time.time()
-        base, key = up
-        req = urllib.request.Request(base.rstrip("/") + self.path[3:], data=body, method="POST",
-                                     headers={"Content-Type": "application/json",
-                                              **({"Authorization": f"Bearer {key}"} if key else {})})
-        error = None
+        if pin:
+            req = urllib.request.Request(base.rstrip("/") + "/v1/messages", data=json.dumps(msgs).encode(), method="POST",
+                                         headers={"Content-Type": "application/json", "x-api-key": key,
+                                                  "anthropic-version": "2023-06-01"})
+        else:
+            req = urllib.request.Request(base.rstrip("/") + self.path[3:], data=body, method="POST",
+                                         headers={"Content-Type": "application/json",
+                                                  **({"Authorization": f"Bearer {key}"} if key else {})})
+        error, hdrs = None, {}
         try:
             with urllib.request.urlopen(req, timeout=600) as r:
                 code, out, ctype = r.status, r.read(), r.headers.get("Content-Type", "application/json")
         except urllib.error.HTTPError as e:
             code, out, ctype = e.code, e.read(), "application/json"
+            if pin:
+                ctype = e.headers.get("Content-Type", ctype)
+                hdrs = {"Retry-After": e.headers["retry-after"]} if e.headers.get("retry-after") else {}
         except TimeoutError:
             code, error = 504, "gateway_timeout"
         except OSError as e:
@@ -358,6 +476,22 @@ class Handler(BaseHTTPRequestHandler):
             answer = json.loads(out)
         except ValueError:
             answer, error = None, error or "upstream_bad_body"
+        extra = {}
+        if pin:
+            ok = upstream is not None and 200 <= upstream < 300
+            raw = answer if ok and isinstance(answer, dict) and isinstance(answer.get("content"), list) else None
+            if ok and raw is None:
+                code, error = 502, "upstream_bad_body"
+                out, ctype, answer = json.dumps({"error": error}).encode(), "application/json", None
+            elif raw is not None:
+                try:
+                    answer = to_chat(raw, model)
+                    out = json.dumps(answer).encode()
+                except (KeyError, TypeError, AttributeError, ValueError):
+                    code, error, raw = 502, "upstream_bad_body", None
+                    out, ctype, answer = json.dumps({"error": error}).encode(), "application/json", None
+            extra = {"route_kind": "anthropic", **pin, "dropped_fields": dropped, "usage": billed(raw),
+                     "stop_reason": raw.get("stop_reason") if raw else None}
         usage = (answer.get("usage") if isinstance(answer, dict) else None) or {}
         try:
             finish = answer["choices"][0].get("finish_reason")
@@ -368,10 +502,10 @@ class Handler(BaseHTTPRequestHandler):
         self.emit("llm.call", authz_ref=d["event_id"], model=model, status=code, ms=round((time.time() - t0) * 1000),
                   prompt_tokens=usage.get("prompt_tokens"), completion_tokens=usage.get("completion_tokens"),
                   upstream=base, upstream_status=upstream, error=error, finish_reason=finish,
-                  dropped=bool(c), **({"receipt": c["receipt"]} if c else {}), **seen(sent, answer))
+                  dropped=bool(c), **({"receipt": c["receipt"]} if c else {}), **seen(sent, answer), **extra)
         if c:
             return self.deny(f"{c['state']} by {c['receipt']}", [c["state"], c["receipt"]], {})
-        self.reply(code, out, ctype)
+        self.reply(code, out, ctype, hdrs)
 
     def do_GET(self):
         self.close_connection = True
@@ -397,10 +531,12 @@ class Handler(BaseHTTPRequestHandler):
         pipe(self.connection, up)
         self.close_connection = True
 
-    def reply(self, code, obj, ctype="application/json"):
+    def reply(self, code, obj, ctype="application/json", headers=None):
         body = obj if isinstance(obj, bytes) else json.dumps(obj).encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -466,21 +602,43 @@ def check():
     json.dump({"p/9b": {"base_url": "http://10.0.0.9:8000/v1/", "key": None}, "s/27b": {"base_url": "https://h/v1", "key": "K"}},
               open(routes, "w"))
     t = load_routes({"K": "k"}, routes)
-    assert t == {"p/9b": [("http://10.0.0.9:8000/v1/", None)], "s/27b": [("https://h/v1", "k")]}
+    assert t == {"p/9b": [("http://10.0.0.9:8000/v1/", None, None)], "s/27b": [("https://h/v1", "k", None)]}
     json.dump({"one": "http://a/v1", "two": ["http://a/v1", {"base_url": "http://b/v1", "key": "K"}]}, open(routes, "w"))
     t = load_routes({"K": "k"}, routes)
-    assert [route(t, "one", n) for n in (3, 4)] == [("http://a/v1", None)] * 2
+    assert [route(t, "one", n) for n in (3, 4)] == [("http://a/v1", None, None)] * 2
     assert [route(t, "two", n)[0] for n in (3, 4, 5)] == ["http://b/v1", "http://a/v1", "http://b/v1"]
     assert route(t, "none", 3) is None and load_routes({}, routes + ".none") is None
+    a = {"base_url": "https://a", "key": "K", "kind": "anthropic", "effort": "medium", "max_tokens": 16000, "cache": True}
+    json.dump({"c": a}, open(routes, "w"))
+    assert route(load_routes({"K": "k"}, routes), "c", 1) == ("https://a", "k", {"effort": "medium", "max_tokens": 16000, "cache": True})
+    for bad in ({**a, "effort": None}, {k: v for k, v in a.items() if k != "cache"}, {**a, "kind": "other"}):
+        json.dump({"c": bad}, open(routes, "w"))
+        try:
+            load_routes({"K": "k"}, routes)
+            raise AssertionError(bad)
+        except ValueError:
+            pass
     os.remove(routes)
-    print(f"policy check: {len(cases)} decisions as expected; kill switch matches by path prefix; routes by slot")
+    body, dropped = to_messages({"model": "c", "temperature": 0, "tool_choice": "required", "messages": [
+        {"role": "system", "content": "S"}, {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "t1", "function": {"name": "f", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "r"}, {"role": "user", "content": "ok"}]}, a)
+    assert dropped == ["temperature", "tool_choice"] and body["system"] == "S" and [m["role"] for m in body["messages"]] == ["user", "assistant", "user"]
+    assert [b["type"] for b in body["messages"][2]["content"]] == ["tool_result", "text"] and body["messages"][1]["content"][0]["input"] == {}
+    r = to_chat({"id": "msg_1", "content": [{"type": "thinking"}, {"type": "tool_use", "id": "t", "name": "f", "input": {"x": 1}}],
+                 "stop_reason": "tool_use", "usage": {"input_tokens": 3, "cache_read_input_tokens": 4, "output_tokens": 5}}, "c")
+    assert r["choices"][0]["message"]["content"] is None and r["choices"][0]["finish_reason"] == "tool_calls" and r["usage"]["prompt_tokens"] == 7
+    print(f"policy check: {len(cases)} decisions as expected; kill switch matches by path prefix; routes by slot; anthropic pins and translation")
 
 
 if __name__ == "__main__":
     cmd, args = (sys.argv[1], sys.argv[2:]) if len(sys.argv) > 1 else ("", [])
     if cmd == "serve":
         UPSTREAM = env_file(f"{ROOT}/gateway.env")
-        ROUTE_TABLE = load_routes(UPSTREAM, ROUTES)
+        try:
+            ROUTE_TABLE = load_routes(UPSTREAM, ROUTES)
+        except ValueError as e:
+            sys.exit(f"gateway: {e}")
         CTX = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         CTX.verify_mode = ssl.CERT_REQUIRED
         mint()

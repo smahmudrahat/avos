@@ -277,6 +277,28 @@ gateway.env variable that holds its key) or a list of them; with a list, a call 
 with `no-route` and a 403; nothing is forwarded. Every `llm.call` also carries `upstream_status` (null when nothing
 answered), `error` (`gateway_timeout`, `upstream_unreachable: …`, `upstream_bad_body`) and the reply's `finish_reason`.
 A trial is exactly one τ² simulation: the agent runs τ² with `--max-retries 0` (`docs/versions.md`). Without the file the gateway keeps POC 4's single upstream.
+
+**Route kinds.** An object upstream is `kind: "openai"` (the default: the request is forwarded byte for byte, as
+above) or `kind: "anthropic"`, which must also carry its pinned `effort`, `max_tokens` and `cache` (a missing one is a
+bad route; the gateway will not start). For an anthropic route the gateway translates the VM's OpenAI chat request
+into one `POST <base_url>/v1/messages` (system message → `system`, tool calls → `tool_use`, consecutive tool messages
+→ one user turn of `tool_result` blocks, tools → `input_schema`) with the route's `output_config.effort`,
+`max_tokens` and top-level `cache_control`; the client's `temperature`, `top_p`, `seed`, `max_tokens`, forced
+`tool_choice` and anything else the Messages API does not take are not sent and are listed on the row. The reply goes
+back as a chat completion (text joined, `tool_use` → `tool_calls`, thinking left out, `prompt_tokens` = input + cache
+write + cache read). A non-2xx answer goes back as it is (status, body, `retry-after`); a 2xx that is not a Messages
+reply is a 502 `upstream_bad_body`. One VM request is one upstream request, never retried. τ², LiteLLM and the agent
+are unchanged; the hashes stay on the OpenAI shapes (`docs/trace.md` §5). `gateway.py route` prints the kind and
+the pins, never the key. `fleet run` copies the policy's route (kind, upstream, pins) into `fleet.json`
+(`policy_route`, read from `$AVOS_GATEWAY_ROUTES`, checked on resume; for an open policy also `served`, the
+checkpoint `root` each upstream's `GET /models` reports under the policy name, asked before any trial, so a fleet
+that would run the wrong weights is refused before it starts), and `fleet matrix` of an anthropic policy
+refuses a run whose 200 policy rows show another effort or `max_tokens`, lack a usage count, or whose calls another
+model answered. M12 of such a policy is the recorded usage × the dated list prices with cache rates (`basis:
+tokens`, per trial in `trials[].llm.by_model[policy].usd`), beside the uncached ceiling (every prompt token at the
+input price). A closed model (`claude-`/`anthropic/` names, a non-openai route) never trains: `retrain export` marks
+such items with `policy_model`, `label run` gives them `closed_policy` (never kept) and `train select` refuses them
+by name.
 Interface and acceptance suite: `fleet/CONTRACT.md`, `fleet/tests/`; results: `data/poc10/README.md`.
 
 **Policy sampling.** `fleet run --agent-temperature T [--agent-top-p P]` samples the policy (default T 0); the
@@ -286,6 +308,18 @@ resume) and reaches τ² as `AGENT_TEMPERATURE`/`AGENT_TOP_P` through MMDS. Used
 **Compare** (`fleet compare --a A --b B [--seed S]`): two matrix JSONs of the same split, simulator and judge, paired
 by task. pass^k per task is recomputed from `n`, `c` (a matrix whose stored pass^k disagrees is refused); the
 difference B − A with a paired percentile bootstrap over tasks; M12, M13 and cause differences beside it.
+
+**M15** (`fleet m15 --retrained M ... --closed M ... [--seed 300] [--bar-x 0.75] [--bar-y 5]`): one or more matrix
+JSONs per arm, all of the same task set, split, simulator and judge, one policy per arm, no session twice. Trials are
+pooled per task (n, c summed); pass^k = C(c,k)/C(n,k), a task with n < 4 after pooling is listed and left out of
+pass^4, never 0. X = retrained pass^4 ÷ closed pass^4 and Y = closed cost per task ÷ retrained cost per task (per
+trial: the token bill, or GPU-hours spread evenly), each with a paired percentile bootstrap over tasks that
+recomputes the ratio per resample (resamples with a zero denominator counted, the interval then null), beside the
+pass^4 difference and every session's own values. Each arm must be provable from its sessions: `--closed` only a closed name on an
+anthropic route; `--retrained` only an open route whose recorded served root is one checkpoint, not `--base-root`.
+A session from before roots were recorded is used only with `--assert-served FLEET=retrained` and printed
+"asserted, not recorded". A bar passes when the interval's low end clears it, fails when
+the high end is below it, and is unresolved otherwise.
 
 ## 11. Retraining (`train/`)
 `train select` builds the training set from `retrain export` / `label run` pairs, one `fleet.json` per pair: an item
@@ -301,4 +335,3 @@ fleet, gateway routes and matrix are unchanged. An all-zero adapter merged this 
 the base. Interface and suite: `train/CONTRACT.md`, `train/tests/`; results: `data/poc12/README.md`.
 
 ## 12. Planned
-- **Evaluation:** the same held-out runs with frontier models, cost and pass^k side by side.

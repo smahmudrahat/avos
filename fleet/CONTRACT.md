@@ -33,6 +33,12 @@ no network, no environment variable). Contents:
  "split": {"path": <as given>, "sha256": <sha of the file>, "part": "train"|"held_out"},
  "roles": {"policy": <model>, "simulator": <model>, "nl_judge": <model>},   three distinct names
  "results_root": <absolute path>,          where infra/job writes run directories
+ "policy_route": {"kind": "openai"|"anthropic", "upstream": <url>|[url, ...]|null, + "effort", "max_tokens",
+                  "cache" for anthropic, "served": [{"upstream", "id", "root"}]|null for openai},
+                  the policy's gateway route from $AVOS_GATEWAY_ROUTES (POC 13; part of the plan). `served` is each
+                  upstream's GET <base_url>/models root for the policy name, asked before any trial
+                  (Bearer key from $AVOS_GATEWAY_ENV as the gateway sends it; never recorded); unreachable, no
+                  such model, no root or two roots → exit 1 `policy_unverified`, nothing run
  "sessions": [{"started": TS, "ended": TS|null, "pid": int}, ...],   one per `fleet run` invocation, in order
  "status": "running"|"stopped"|"done",
  "peak_guest_mem_mib": number|null}        peak over the run of Σ resident memory of the live VMs (null when not measured)
@@ -186,6 +192,16 @@ status). `ok` = rows with `status == 200`. Tokens are summed over `ok` rows only
   `"unverified"`; `0.0` when there are none), never folded into a role. Any missing price, host price or a `pass1` of 0/`unverified` → that field
   `"unverified"`; exception: a token-priced role or `unattributed` with **0 calls** has `usd_total 0.0` (nothing
   was spent, no price needed), while ≥ 1 call without a price is `"unverified"`. Tolerance 1e-9.
+  **Token-priced policy** (`policy_route.kind` `"anthropic"`, POC 13): the matrix is refused (exit 1,
+  `effort_mismatch`/`max_tokens_mismatch`/`usage_missing`/`policy_mismatch` naming the run) unless every 200 policy
+  row carries the pinned effort, `max_tokens` and the four billed usage counts as integers (`thinking_tokens` may be
+  null; such rows are counted in `m12.policy.thinking_tokens_missing`) and no trial was answered by another
+  model; `m12.policy` then has `basis: "tokens"`, `usage` (the five sums), `usd_total` = Σ usage × the model's
+  `prompt_per_mtok`/`cache_write_per_mtok`/`cache_read_per_mtok`/`completion_per_mtok`, `uncached_ceiling_usd_per_task`
+  (= `token_ceiling_usd_per_task`, every prompt token at the input price), `price` (the entry as read) and no
+  `gpu_hosts`; each trial's `llm.by_model[policy]` gains `usage` and `usd`. A closed-named policy without
+  `policy_route` is exit 2. `inputs.policy_route` copies `fleet.json`'s. Details and `fleet m15` (with
+  `--base-root ROOT`, `--assert-served FLEET=retrained` for sessions that predate `served`): `eval/CONTRACT.md` §2–§5.
 - `m13`: over `done` trials' `wall_ms`: `{"n", "median_s", "p90_s", "worst_s", "concurrency"}`; median = the
   usual (mean of the two middle values when even), p90 = `sorted[ceil(0.9·n) − 1]`, `"unverified"` when `n == 0`.
 - `m16`: `{"host_usd_per_h", "fleet_wall_h", "completed": done trials, "value": host_usd_per_h × fleet_wall_h /
@@ -245,7 +261,8 @@ the cost (text and JSON) so a single-host rate on a two-host run is visible, not
 {"read_on": "YYYY-MM-DD",
  "hosts": {"fleet": {"name": str, "usd_per_h": number},
            "gpu": {"name": str, "usd_per_h": number, "count": int ≥ 1 (default 1)}},
- "models": {<model>: {"prompt_per_mtok": number, "completion_per_mtok": number, "currency": "USD"}},
+ "models": {<model>: {"prompt_per_mtok": number, "completion_per_mtok": number, "currency": "USD",
+                      "cache_write_per_mtok"?: number, "cache_read_per_mtok"?: number, "listed_on"?: "YYYY-MM-DD"}},
  "baselines": {<name>: {"kind": "vm", "usd_per_h": n, "min_s": n, "boot_s": n}
              | {<name>: {"kind": "serverless", "usd_per_vcpu_h": n, "usd_per_gb_h": n, "vcpu": n, "gb": n, "min_s": n}}}
 ```
@@ -300,6 +317,10 @@ file next to it; format is the solver's). Observable contract:
   `gateway.py route [--table FILE] MODEL SLOT` → stdout `{"model", "slot", "upstream": <url>|null}`, exit 0 when
   routed, exit 1 with `"error": "no-route"` when not; `--table` is a JSON file `{model: url | [url, ...]}` (the
   live table when omitted). The command touches no network and no host state.
+- **Route kinds** (POC 13). An object upstream may carry `"kind": "anthropic"` with its pinned `key`, `effort`,
+  `max_tokens` and `cache` (all required, else `gateway.py route` exits 1 `bad-route` and `serve` will not
+  start); `gateway.py route` then also prints `kind` and the pins. Such calls are translated to Anthropic's
+  Messages API and back; open routes are unchanged byte for byte (`eval/CONTRACT.md` §1).
 - No key leaves the host; no key appears in any run directory, journal, matrix or sweep output.
 
 ## 9. What the tests' fake `infra/job` does (the runner may rely on nothing more from the real one)

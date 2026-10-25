@@ -335,7 +335,8 @@ def run_items(src, r, tools_by, template, split, redact=None, witness_only=False
                         "exit": end_ev["event_id"] if end_ev else None,
                         "label": next((e["event_id"] for e in pe if e["kind"] == "label"), None),
                         "events": sorted(lineage_ids)},
-            "split": split.get(task_id) if task_id else None, "redact": redact.name if redact else None}
+            "split": split.get(task_id) if task_id else None, "redact": redact.name if redact else None,
+            **({"policy_model": pm} if (pm := closed_policy(calls, msgs)) else {})}
 
     items = {}
     for p in sorted(built, key=lambda p: (-(p or "").count("/"), p or "")):
@@ -352,6 +353,14 @@ def run_items(src, r, tools_by, template, split, redact=None, witness_only=False
                                        for k in ("reward", "passed", "termination_reason")}} for q in kids]
         items[p] = {"item_id": item_id(it), **it}
     return run, items, default
+
+
+def closed_policy(calls, msgs):
+    """The closed model (eval/CONTRACT.md §4) the gateway recorded for a call that answered one of this item's
+    assistant turns, or None. Only such items carry policy_model, so open exports keep their bytes and item ids."""
+    ids = {m.get("event_id") for m in msgs if m["role"] == "assistant"}
+    return next((m for m in sorted({str(c.get("model")) for c in calls if c["event_id"] in ids})
+                 if m.startswith(("claude-", "anthropic/"))), None)
 
 
 def witness_block(present):

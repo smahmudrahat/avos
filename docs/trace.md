@@ -24,7 +24,7 @@ and cannot collide: `seq` never repeats within a writer, and the writer name sta
 | `session.open` / `session.close` | the VM | `run`, `harness`, `task` / `run`, `status`, `wall_ms` | `infra/job` |
 | `agent.spawn` / `agent.exit` | the agent | `spiffe_id`, `parent`, `name` / `spiffe_id`, `exit_reason` | registrar |
 | `authz.decision` | the caller | `action`, `resource`, `args`, `decision`, `policy_ids`, `errors` | gateway |
-| `llm.call` | the caller | `authz_ref`, `model`, `status`, `ms`, `prompt_tokens`, `completion_tokens`, `dropped`, `receipt` if dropped; `response_id`, `system_sha256`, `tools_sha256`, `messages_sha256`, `output_sha256` (§5); `price`, `cost_usd`; merged: `role`, `guest_ts`, `input`, `output` | gateway (+ harness content) |
+| `llm.call` | the caller | `authz_ref`, `model`, `status`, `ms`, `prompt_tokens`, `completion_tokens`, `dropped`, `receipt` if dropped; `response_id`, `system_sha256`, `tools_sha256`, `messages_sha256`, `output_sha256` (§5); `price`, `cost_usd`; anthropic routes add `route_kind`, `effort`, `max_tokens`, `cache`, `dropped_fields`, `usage`, `stop_reason` (§5); merged: `role`, `guest_ts`, `input`, `output` | gateway (+ harness content) |
 | `tool.call` / `tool.result` | the caller | `via`, `tool`, `authz_ref` (gateway), `call_id` (harness), `args` / `call_ref`, `result`, `error` | gateway or harness |
 | `net.connect` | the caller | `authz_ref`, `dest` | gateway |
 | `fs.write` | the writing process | `path` | (reserved; no emitter yet) |
@@ -94,6 +94,16 @@ fields of its own on the wire. Nothing here needs content capture, and nothing o
 (`messages_sha256` is a list, so it does not reuse POC 6's `input_sha256`, a string. The 14 calls of
 `run_retail-0_15` carry a pre-release form of these fields, hashes of the raw wire messages under `input_sha256`
 as a list; the schema accepts it and §10 compares only what that form allows.)
+
+**Closed-model calls** (since POC 13, routes of `kind: "anthropic"`). The row carries what was sent and what was
+billed, whatever the status: `route_kind` (`"anthropic"`), `effort`, `max_tokens`, `cache` (the route's pins, sent
+on every call), `dropped_fields` (sorted client fields not forwarded, e.g. `temperature`), `usage`
+(`input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `output_tokens` with thinking included,
+`thinking_tokens`; a count the upstream did not send is `null`, all `null` without a 2xx reply) and `stop_reason`
+(the upstream's raw value; `finish_reason` is the mapped one the VM got). `prompt_tokens` is input + cache write +
+cache read, `completion_tokens` is `output_tokens`. The hashes are computed exactly as for an open model, over the
+OpenAI-shaped request the VM sent and reply it got, and `response_id` is the upstream's `msg_…` id. Open routes keep
+today's row, key for key.
 
 ## 6. Tamper evidence
 Within a writer, file order must equal `seq` order: each event's `seq` is greater than the previous one of that writer

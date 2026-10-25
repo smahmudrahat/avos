@@ -7,6 +7,9 @@
   fleet sweep --out DIR --levels 1,2,... --tasks ... --trials N                   one fleet per level, then m17
   fleet m17 DIR [--json]                                                          M17 from DIR/level_*/
   fleet compare --a MATRIX_A.json --b MATRIX_B.json [--seed 300] [--json] [--out FILE]   B − A, paired by task
+  fleet m15 --retrained MATRIX.json [...] --closed MATRIX.json [...] [--base-root ROOT] [--assert-served FLEET=retrained]
+            [--seed 300] [--bar-x 0.75] [--bar-y 5] [--json]
+                                                                                  X, Y: sessions pooled per task
 
 Every trial is one `infra/job run tau2 retail/<task>` with its own SLOT; infra/job claims the run id, the runner
 finds it afterwards by the job.json naming the slot. DIR holds fleet.json, the journal (trials.jsonl, one line per
@@ -27,6 +30,8 @@ import statistics
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from collections import Counter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -43,6 +48,9 @@ STALL_MS = 300_000
 EMPTY_REPLY = "AssistantMessage must have either content or tool_calls"
 U = "unverified"
 RULE = "median host-side trial time ≤ 1.05 × lowest level"
+ROUTES = os.environ.get("AVOS_GATEWAY_ROUTES") or "/var/lib/avos/gateway.routes.json"
+USAGE = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens", "thinking_tokens")
+CLOSED = ("claude-", "anthropic/")  # closed-weight model names (eval/CONTRACT.md §4); grows only with a dated reason there
 
 
 class Fail(Exception):
@@ -112,6 +120,70 @@ def task_of(run):
 
 # ---------------------------------------------------------------- run
 
+def policy_route(model, first_slot):
+    """The policy's entry in the gateway's route table as `gateway.py route` picks it for the first slot: kind,
+    upstream (url, or every url of a list) and, for anthropic, the pinned settings. Never the key."""
+    if not os.path.exists(ROUTES):
+        return {"kind": "openai", "upstream": None, "served": None}
+    table = load(ROUTES, "gateway route table")
+    ups = table.get(model) if isinstance(table, dict) else None
+    if ups is None:
+        return {"kind": "openai", "upstream": None, "served": None}
+    ups = [{"base_url": u} if isinstance(u, str) else u for u in (ups if isinstance(ups, list) else [ups])]
+    if not ups or not all(isinstance(u, dict) for u in ups):
+        raise Fail(f"{ROUTES}: the route of {model} is not a url or an object")
+    pick = ups[int(first_slot[3:]) % len(ups)]
+    urls = [u.get("base_url") for u in ups]
+    r = {"kind": pick.get("kind", "openai"), "upstream": urls[0] if len(urls) == 1 else urls}
+    if r["kind"] != "openai":
+        r.update({k: pick.get(k) for k in ("effort", "max_tokens", "cache")})
+    else:
+        r["served"] = [served(u.get("base_url"), model, u.get("key")) for u in ups]
+        if len({x["root"] for x in r["served"]}) > 1:
+            raise Fail(f"policy_unverified: the upstreams of {model} report different checkpoints: "
+                       + ", ".join(f"{x['upstream']} {x['root']}" for x in r["served"]), 1)
+    return r
+
+
+def bearer(url, var):
+    """The upstream's key, read as the gateway reads it (the variable `key` names in gateway.env); never printed."""
+    if not var:
+        return {}
+    env = os.environ.get("AVOS_GATEWAY_ENV") or "/var/lib/avos/gateway.env"
+    try:
+        with open(env, encoding="utf-8") as f:
+            vals = dict(l.split("=", 1) for l in f.read().splitlines() if "=" in l)
+    except OSError:
+        raise Fail(f"policy_unverified: {url}: the gateway env file {env} is unreadable (run as root)", 1)
+    if not vals.get(var):
+        raise Fail(f"policy_unverified: {url}: the gateway env file {env} lacks this upstream's key variable", 1)
+    return {"Authorization": f"Bearer {vals[var]}"}
+
+
+def served(base, model, var=None):
+    """Which checkpoint an OpenAI-compatible (vLLM) upstream serves under the policy's name: its GET /models `root`,
+    asked with the upstream's key as the gateway sends it."""
+    url = str(base).rstrip("/") + "/models"
+    req = urllib.request.Request(url, headers=bearer(url, var))
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read()).get("data")
+        entry = next((m for m in data if isinstance(m, dict) and m.get("id") == model), None)
+    except urllib.error.HTTPError as e:
+        raise Fail(f"policy_unverified: {url}: HTTP {e.code}" + (" (the key was refused or not sent)" if e.code in (401, 403) else ""), 1)
+    except (OSError, ValueError, AttributeError, TypeError) as e:
+        raise Fail(f"policy_unverified: {url}: {type(e).__name__}: {e}", 1)
+    root = (entry or {}).get("root")
+    if entry is None or not (root is None or isinstance(root, str)):
+        raise Fail(f"policy_unverified: {url} serves no {model} (models: "
+                   + ", ".join(str(m.get("id")) for m in data if isinstance(m, dict)) + ")", 1)
+    return {"upstream": base, "id": model, "root": root}  # root null: a hosted provider names no checkpoint
+
+
+def closed(model):
+    return isinstance(model, str) and model.startswith(CLOSED)
+
+
 def split_tasks(path, part, tasks):
     p = path if os.path.exists(path) else os.path.join(REPO, path)
     split = load(p, "split")
@@ -145,7 +217,7 @@ class Runner:
         self.plan = {"fleet": name or os.path.basename(self.out), "harness": "tau2", "domain": "retail",
                      "tasks": self.tasks, "trials_per_task": a.trials, "concurrency": concurrency, "mem_mib": a.mem_mib, "slots": slots,
                      "split": {"path": a.split, "sha256": sha, "part": a.part}, "roles": roles,
-                     "results_root": self.results}
+                     "results_root": self.results, "policy_route": policy_route(a.policy, slots[0])}
         if a.agent_temperature or a.agent_top_p is not None:
             if not 0 <= a.agent_temperature <= 2 or not 0 < (a.agent_top_p if a.agent_top_p is not None else 1) <= 1:
                 raise Fail("0 ≤ --agent-temperature ≤ 2 and 0 < --agent-top-p ≤ 1")
@@ -153,7 +225,8 @@ class Runner:
         self.stopping = None
 
     def check_resume(self, meta):
-        for k in ("tasks", "trials_per_task", "concurrency", "slots", "split", "roles", "results_root", "agent_sampling"):
+        for k in ("tasks", "trials_per_task", "concurrency", "slots", "split", "roles", "results_root", "agent_sampling",
+                  "policy_route"):
             if meta.get(k) != self.plan.get(k):
                 raise Fail(f"{self.out} is a fleet with {k}={json.dumps(meta.get(k))}, not {json.dumps(self.plan.get(k))}")
 
@@ -573,6 +646,72 @@ def wall_h(meta, lines):
     return total / 3_600_000 if meta.get("sessions") else None
 
 
+def usd(u, p):
+    """One row's (or one trial's) bill at list price with the cache rates; U without them."""
+    if not isinstance(p, dict) or not all(num(p.get(k)) for k in ("prompt_per_mtok", "completion_per_mtok", "cache_write_per_mtok",
+                                                                  "cache_read_per_mtok")):
+        return U
+    return (u["input_tokens"] * p["prompt_per_mtok"] + u["cache_creation_input_tokens"] * p["cache_write_per_mtok"]
+            + u["cache_read_input_tokens"] * p["cache_read_per_mtok"] + u["output_tokens"] * p["completion_per_mtok"]) / 1e6
+
+
+def billed_trials(results, trials, roles, pr, price):
+    """A token-priced (closed) policy: every 200 policy row must carry the fleet's pinned effort and max_tokens and the
+    five usage counts, and every trial that called a model must have been answered by the policy and no outsider;
+    otherwise the whole matrix is refused. Each trial's policy entry gains its usage sums and its bill."""
+    pol = roles["policy"]
+    for t in trials:
+        if t["llm"] == U:
+            continue
+        rows = read_events(os.path.join(results, t["run"], "events.jsonl")) or []
+        calls = [e for e in rows if e.get("kind") == "llm.call"]
+        sums, missing = dict.fromkeys(USAGE, 0), 0
+        for e in calls:
+            if e.get("model") != pol or e.get("status") != 200:
+                continue
+            for k, why in (("effort", "effort_mismatch"), ("max_tokens", "max_tokens_mismatch")):
+                if e.get(k) != pr.get(k):
+                    raise Fail(f"{why}: run {t['run']}: llm.call {e.get('event_id')} has {k} {json.dumps(e.get(k))}, "
+                               f"fleet.json pins {json.dumps(pr.get(k))}", 1)
+            u = e.get("usage")
+            if not isinstance(u, dict) or not all(type(u.get(k)) is int for k in USAGE[:4]) \
+                    or u.get("thinking_tokens") is not None and type(u["thinking_tokens"]) is not int:
+                raise Fail(f"usage_missing: run {t['run']}: llm.call {e.get('event_id')} usage {json.dumps(u)}", 1)
+            for k in USAGE[:4]:
+                sums[k] += u[k]
+            if u.get("thinking_tokens") is None:
+                missing += 1
+            else:
+                sums["thinking_tokens"] += u["thinking_tokens"]
+        ok = {str(e.get("model")) for e in calls if e.get("status") == 200}
+        if calls and (pol not in ok or ok - set(roles.values())):
+            other = sorted(ok - set(roles.values()))
+            raise Fail(f"policy_mismatch: run {t['run']}: model {other[0] if other else None} "
+                       f"({'answered instead of' if other else 'no 200 from'} the policy {pol})", 1)
+        b = t["llm"]["by_model"].setdefault(pol, {"calls": 0, "ok": 0, "prompt_tokens": 0, "completion_tokens": 0, "ms": 0})
+        b["usage"], b["usd"], b["thinking_tokens_missing"] = sums, usd(sums, price), missing
+
+
+def token_policy(m, a, trials, p, ntr, pass1):
+    """M12 of a token-priced policy from its rows' usage and the dated list prices; the uncached ceiling prices every
+    prompt token at the input rate."""
+    sums, bills, missing = dict.fromkeys(USAGE, 0), [], 0
+    for t in trials:
+        b = t["llm"]["by_model"].get(m) if t["llm"] != U else None
+        if b:
+            sums = {k: sums[k] + b["usage"][k] for k in USAGE}
+            bills.append(b["usd"])
+            missing += b["thinking_tokens_missing"]
+    plain = isinstance(p, dict) and all(num(p.get(k)) for k in ("prompt_per_mtok", "completion_per_mtok"))
+    total = U if not plain or U in bills else sum(bills)
+    pt = total / ntr if total != U and ntr else U
+    ceiling = (a["prompt_tokens"] * p["prompt_per_mtok"] + a["completion_tokens"] * p["completion_per_mtok"]) / 1e6 / ntr \
+        if plain and ntr else U
+    return {"model": m, "source": "gateway", "outside_gateway": False, **a, "usage": sums, "thinking_tokens_missing": missing, "usd_total": total,
+            "usd_per_task": pt, "usd_per_successful_task": pt / pass1 if pt != U and pass1 != U and pass1 > 0 else U,
+            "basis": "tokens", "uncached_ceiling_usd_per_task": ceiling, "token_ceiling_usd_per_task": ceiling, "price": p}
+
+
 def matrix(fdir, prices_path, labels=None):
     meta, lines = fleet_meta(fdir)
     prices = load(prices_path, "prices")
@@ -591,6 +730,14 @@ def matrix(fdir, prices_path, labels=None):
         if trials[-1]["status"] == "missing":
             warnings.append(f"{ln['run']}: no job.json (counted as a trial, cause no_job_json)")
     trials.sort(key=lambda t: t["run"])
+    pr = meta.get("policy_route")
+    if pr is None and closed(roles["policy"]):
+        raise Fail(f"{fdir}: fleet.json of closed policy {roles['policy']} has no policy_route")
+    tokens = isinstance(pr, dict) and pr.get("kind") == "anthropic"
+    models = prices.get("models") if isinstance(prices.get("models"), dict) else {}
+    pm = models.get(roles["policy"])
+    if tokens:
+        billed_trials(meta["results_root"], trials, roles, pr, pm)
     ntr = len(trials)
     done = [t for t in trials if t["status"] == "done"]
     m2 = {"done": len(done), "trials": ntr, "value": len(done) / ntr if ntr else U}
@@ -616,7 +763,6 @@ def matrix(fdir, prices_path, labels=None):
     m11["causes"] = dict(sorted(Counter(t["cause"] for t in trials if t["cause"]).items()))
     m11["by_class"] = {k: sum(t["cause_class"] == k for t in trials) for k in ("agent", "infra")}
 
-    models = prices.get("models") if isinstance(prices.get("models"), dict) else {}
     hosts = prices.get("hosts") if isinstance(prices.get("hosts"), dict) else {}
     wh = wall_h(meta, lines)
     pass1 = m11["pass1"]
@@ -648,6 +794,9 @@ def matrix(fdir, prices_path, labels=None):
         m = roles[role]
         a = agg.get(m, zero)
         tok = price(m, a["prompt_tokens"], a["completion_tokens"], a["calls"])
+        if role == "policy" and tokens:
+            m12[role] = token_policy(m, a, trials, pm, ntr, pass1)
+            continue
         if role == "policy":
             g = hosts.get("gpu") if isinstance(hosts.get("gpu"), dict) else {}
             cnt = g.get("count", 1)
@@ -734,7 +883,7 @@ def matrix(fdir, prices_path, labels=None):
            "warnings": sorted(warnings),
            "inputs": {"fleet": meta.get("fleet"), "trials_per_task": meta.get("trials_per_task"),
                       "concurrency": meta.get("concurrency"), "roles": roles, "prices_sha256": sha_file(prices_path),
-                      "split": meta.get("split")}}
+                      "split": meta.get("split"), **({"policy_route": pr} if pr is not None else {})}}
     paths = []
 
     def walk(o, p):
@@ -789,8 +938,14 @@ def matrix_text(g):
                    f"{fmt(x['calls'])}/{fmt(x['ok'])}, {fmt(x['prompt_tokens'])}+{fmt(x['completion_tokens'])} -> "
                    f"{fmt(x['usd_total'])}, {fmt(x['usd_per_task'])}, {fmt(x['usd_per_successful_task'])} "
                    f"({x['basis']}; ceiling {fmt(x['token_ceiling_usd_per_task'])})")
-    h = m12["policy"]["gpu_hosts"]
-    out.append(f"    policy GPU hosts: {fmt(h['name'])} {fmt(h['count'])} × {fmt(h['usd_per_h'])} $/h = {fmt(h['usd_per_h_total'])} $/h")
+    h = m12["policy"].get("gpu_hosts")
+    if h:
+        out.append(f"    policy GPU hosts: {fmt(h['name'])} {fmt(h['count'])} × {fmt(h['usd_per_h'])} $/h = {fmt(h['usd_per_h_total'])} $/h")
+    else:
+        u = m12["policy"]["usage"]
+        out.append(f"    policy billed usage: input {u['input_tokens']}, cache write {u['cache_creation_input_tokens']}, cache read "
+                   f"{u['cache_read_input_tokens']}, output {u['output_tokens']} (thinking {u['thinking_tokens']}); uncached "
+                   f"ceiling {fmt(m12['policy']['uncached_ceiling_usd_per_task'])} per task")
     u = m12["unattributed"]
     out.append(f"    unattributed: {', '.join(u['models']) or '-'} {u['calls']}/{u['ok']}, "
                f"{u['prompt_tokens']}+{u['completion_tokens']} -> {fmt(u['usd_total'])}")
@@ -979,6 +1134,207 @@ def cmd_compare(a):
     return 0
 
 
+# ---------------------------------------------------------------- m15 (eval/CONTRACT.md §5)
+
+def ratio(num_vals, den_vals, bar, seed=300):
+    """mean(num) / mean(den) over the same tasks, with a paired percentile interval that resamples tasks and
+    recomputes the ratio; resamples whose denominator is 0 are counted, never inf."""
+    T = len(num_vals)
+    r = {"value": None, "ci95": None, "bar": bar, "tasks": T, "undefined_resamples": 0}
+    if not T:
+        return {**r, "verdict": "unresolved", "reason": "no_tasks"}
+    rng, ratios = random.Random(seed), []
+    for _ in range(2000):
+        idx = [rng.randrange(T) for _ in range(T)]
+        d = statistics.fmean(den_vals[i] for i in idx)
+        if d == 0:
+            r["undefined_resamples"] += 1
+        else:
+            ratios.append(statistics.fmean(num_vals[i] for i in idx) / d)
+    ratios.sort()
+    if not r["undefined_resamples"]:
+        r["ci95"] = [ratios[50], ratios[1949]]
+    den = statistics.fmean(den_vals)
+    if den == 0:
+        return {**r, "verdict": "unresolved", "reason": "zero_denominator"}
+    r["value"] = statistics.fmean(num_vals) / den
+    if r["ci95"] is None:
+        return {**r, "verdict": "unresolved", "reason": "ratio_undefined_in_bootstrap"}
+    lo, hi = r["ci95"]
+    return {**r, "verdict": "pass" if lo >= bar else "fail" if hi < bar else "unresolved"}
+
+
+def session(path):
+    """One fleet-matrix file: the facts M15 reads, its per-trial policy cost (None when one cannot be read)."""
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+        m = json.loads(raw)
+    except (OSError, ValueError) as e:
+        raise Fail(f"session unreadable: {path}: {e}")
+    try:
+        i, tasks, pol, ntr, trials = m["inputs"], m["m11"]["tasks"], m["m12"]["policy"], m["m2"]["trials"], m["trials"]
+        policy = i["roles"]["policy"]
+        by_task = {str(t["task"]): t for t in tasks}
+        for t in tasks:
+            for k in (1, 4):
+                want, got = pass_k(t["c"], t["n"], k), t.get(f"pass{k}")
+                if (want is None) != (got is None) or want is not None and (not num(got) or abs(got - want) > 1e-9):
+                    raise Fail(f"pass_k_mismatch: {path}: task {t['task']} pass{k} {got} is not C(c,{k})/C(n,{k}) of n {t['n']}, c {t['c']}", 1)
+        if pol.get("basis") == "tokens":
+            cost = [(str(t["task"]), dig(t, "llm", "by_model", policy, "usd")) for t in trials]
+        else:
+            each = pol.get("usd_total") / ntr if num(pol.get("usd_total")) and ntr else U
+            cost = [(str(t["task"]), each) for t in trials]
+    except (KeyError, TypeError, AttributeError) as e:
+        raise Fail(f"not_a_matrix: {path}: {type(e).__name__} {e}", 1)
+    pr = i.get("policy_route") if isinstance(i.get("policy_route"), dict) else None
+    served_ = [x for x in (pr or {}).get("served") or [] if isinstance(x, dict)]
+    roots = sorted({x.get("root") for x in served_}, key=str)
+    return {"path": path, "sha": hashlib.sha256(raw).hexdigest(), "inputs": i, "tasks": by_task, "policy": policy, "route": pr,
+            "roots": roots,
+            "cost": [(t, c if num(c) else None) for t, c in cost],
+            "row": {"fleet": i.get("fleet"), "path": path, "policy": policy, "trials": ntr, "pass1": m["m11"].get("pass1"),
+                    "pass4": m["m11"].get("pass4"), "usd_per_task": pol.get("usd_per_task"), "basis": pol.get("basis")}}
+
+
+def provenance(arms, base_root, asserted):
+    """Each arm must be provable from its sessions: closed = a closed name on an anthropic route; retrained = an open
+    route whose recorded served root is one checkpoint that is not the base. A session from before roots were recorded
+    counts only when the operator asserts it, and is reported so."""
+    claims = []
+    for a in asserted:
+        fleet, _, arm = a.partition("=")
+        if arm != "retrained":
+            raise Fail(f"--assert-served {a}: only FLEET=retrained can be asserted")
+        if fleet not in [s["inputs"].get("fleet") for s in arms["retrained"]]:
+            raise Fail(f"--assert-served {a}: no --retrained session is fleet {fleet}")
+        claims.append(fleet)
+    for s in arms["closed"]:
+        if not closed(s["policy"]) or (s["route"] or {}).get("kind") != "anthropic":
+            raise Fail(f"closed_arm_not_closed: {s['inputs'].get('fleet')} ({s['path']}): policy {s['policy']}, route kind "
+                       f"{(s['route'] or {}).get('kind')}", 1)
+        s["row"].update(provenance="recorded", served_root=None)
+    for s in arms["retrained"]:
+        f = s["inputs"].get("fleet")
+        if closed(s["policy"]) or (s["route"] or {}).get("kind", "openai") != "openai":
+            raise Fail(f"retrained_arm_not_open: {f} ({s['path']}): policy {s['policy']}, route kind {(s['route'] or {}).get('kind')}", 1)
+        if None in s["roots"]:
+            raise Fail(f"served_root_missing: {f} ({s['path']}) recorded its upstream's model list without a checkpoint root "
+                       "(a hosted provider); it cannot prove the retrained weights, assertion or not", 1)
+        if s["roots"] and f in claims:
+            raise Fail(f"assertion_not_needed: {f} records its served checkpoint {s['roots']}", 1)
+        if not s["roots"] and f not in claims:
+            raise Fail(f"provenance_missing: {f} ({s['path']}) records no served checkpoint; name it with --assert-served {f}=retrained", 1)
+        s["row"].update(provenance="recorded" if s["roots"] else "asserted, not recorded",
+                        served_root=s["roots"][0] if len(s["roots"]) == 1 else None)
+    rec = [s for s in arms["retrained"] if s["roots"]]
+    if rec and base_root is None:
+        raise Fail("--base-root ROOT is required: recorded retrained sessions are checked against the base checkpoint")
+    roots = sorted({r for s in rec for r in s["roots"]})
+    for s in rec:
+        if base_root in s["roots"]:
+            raise Fail(f"retrained_is_base: {s['inputs'].get('fleet')} served {base_root}, the base checkpoint", 1)
+    if len(roots) > 1:
+        raise Fail(f"retrained_checkpoint_mismatch: retrained sessions served {roots}", 1)
+    return {"base_root": base_root, "assertions": [{"fleet": f, "arm": "retrained", "status": "asserted, not recorded"} for f in claims]}
+
+
+def m15(retrained, closed_, seed=300, bar_x=0.75, bar_y=5.0, base_root=None, asserted=()):
+    arms = {"retrained": [session(p) for p in retrained], "closed": [session(p) for p in closed_]}
+    prov = provenance(arms, base_root, asserted)
+    every = arms["retrained"] + arms["closed"]
+    names = lambda ss: [s["path"] for s in ss]
+    for k in ("fleet", "sha"):
+        seen = {}
+        for s in every:
+            v = s["inputs"].get("fleet") if k == "fleet" else s["sha"]
+            if v in seen:
+                raise Fail(f"duplicate_session: {seen[v]} and {s['path']} are the same session ({k})", 1)
+            seen[v] = s["path"]
+    for arm, ss in arms.items():
+        if len({s["policy"] for s in ss}) > 1:
+            raise Fail(f"policy_mismatch: the {arm} sessions name {sorted({s['policy'] for s in ss})}: {names(ss)}", 1)
+    for why, get in (("task_sets_differ", lambda s: sorted(s["tasks"])), ("split_mismatch", lambda s: (dig(s["inputs"], "split", "sha256"), dig(s["inputs"], "split", "part"))),
+                     ("simulator_mismatch", lambda s: dig(s["inputs"], "roles", "simulator")), ("judge_mismatch", lambda s: dig(s["inputs"], "roles", "nl_judge"))):
+        bad = [s["path"] for s in every if get(s) != get(every[0])]
+        if bad:
+            raise Fail(f"{why}: {every[0]['path']} vs {', '.join(bad)}", 1)
+    ids = list(every[0]["tasks"])
+    ids.sort(key=lambda t: (0, int(t), t) if t.isdigit() else (1, 0, t))
+    out = {"format": "avos-m15/1", "bootstrap": {"seed": seed, "B": 2000, "rule": "paired percentile bootstrap over tasks"},
+           "tasks": ids, "arms": {}}
+    pk, costs = {}, {}
+    for arm, ss in arms.items():
+        nc = {t: [sum(s["tasks"][t][k] for s in ss) for k in ("n", "c", "trials")] for t in ids}
+        p = {k: {t: pass_k(nc[t][1], nc[t][0], k) for t in ids} for k in (1, 4)}
+        spent = {t: [c for s in ss for task, c in s["cost"] if task == t] for t in ids}
+        readable = all(c is not None for s in ss for _, c in s["cost"])
+        costs[arm] = {t: statistics.fmean(v) for t, v in spent.items() if v} if readable else None
+        pk[arm] = p
+        pooled = {}
+        for k in (1, 4):
+            vals = [p[k][t] for t in ids if p[k][t] is not None]
+            pooled[f"pass{k}"] = statistics.fmean(vals) if vals else U
+            pooled[f"pass{k}_ci95"] = ci95(vals, seed) if vals else U
+        cv = list(costs[arm].values()) if costs[arm] else []
+        pooled["usd_per_task"] = statistics.fmean(cv) if cv else U
+        pooled["usd_per_successful_task"] = pooled["usd_per_task"] / pooled["pass1"] \
+            if pooled["usd_per_task"] != U and pooled["pass1"] != U and pooled["pass1"] > 0 else U
+        pooled["trials"] = sum(v[2] for v in nc.values())
+        out["arms"][arm] = {"sessions": [s["row"] for s in ss], "pooled": pooled,
+                            "per_task": {t: {"n": nc[t][0], "c": nc[t][1]} for t in ids},
+                            "tasks_short_4": [t for t in ids if p[4][t] is None]}
+    both = [t for t in ids if pk["retrained"][4][t] is not None and pk["closed"][4][t] is not None]
+    r4, c4 = [pk["retrained"][4][t] for t in both], [pk["closed"][4][t] for t in both]
+    d4 = [a - b for a, b in zip(r4, c4)]
+    out["diff_pass4"] = {"value": statistics.fmean(d4) if d4 else U, "ci95": ci95(d4, seed) if d4 else U, "tasks": len(both)}
+    out["x"] = ratio(r4, c4, bar_x, seed)
+    if costs["retrained"] is None or costs["closed"] is None:
+        out["y"] = {"value": None, "ci95": None, "bar": bar_y, "tasks": 0, "undefined_resamples": 0, "verdict": "unresolved",
+                    "reason": "cost_unverified"}
+    else:
+        cb = [t for t in ids if t in costs["retrained"] and t in costs["closed"]]
+        out["y"] = ratio([costs["closed"][t] for t in cb], [costs["retrained"][t] for t in cb], bar_y, seed)
+    out["provenance"] = prov
+    out["warnings"] = sorted(f"{k} differ between sessions: " + ", ".join(f"{s['row']['fleet']} {s['inputs'].get(k)}" for s in every)
+                             for k in ("trials_per_task", "concurrency") if len({s["inputs"].get(k) for s in every}) > 1)
+    return out
+
+
+def m15_text(g):
+    pv = g["provenance"]
+    out = [f"M15 over {len(g['tasks'])} tasks ({g['bootstrap']['rule']}, seed {g['bootstrap']['seed']}, B {g['bootstrap']['B']})"]
+    for arm in ("retrained", "closed"):
+        a = g["arms"][arm]
+        p = a["pooled"]
+        out += ["", f"{arm}: pooled {p['trials']} trials, pass^1 {fmt(p['pass1'])} ci95 {fmt(p['pass1_ci95'])}, "
+                    f"pass^4 {fmt(p['pass4'])} ci95 {fmt(p['pass4_ci95'])}, usd/task {fmt(p['usd_per_task'])}, "
+                    f"usd/successful task {fmt(p['usd_per_successful_task'])}; tasks short of 4: {','.join(a['tasks_short_4']) or '-'}"]
+        out += [f"    session {s['fleet']} ({s['policy']}, {s['basis']}; {s['provenance']}"
+                + (f", served {s['served_root']}" if s["served_root"] else "") + f"): {s['trials']} trials, pass^1 {fmt(s['pass1'])}, "
+                f"pass^4 {fmt(s['pass4'])}, usd/task {fmt(s['usd_per_task'])}" for s in a["sessions"]]
+    d = g["diff_pass4"]
+    out += ["", f"pass^4 retrained − closed {fmt(d['value'])} ci95 {fmt(d['ci95'])} over {d['tasks']} tasks"]
+    for k, name in (("x", "X = retrained pass^4 / closed pass^4"), ("y", "Y = closed usd/task / retrained usd/task")):
+        x = g[k]
+        out.append(f"{name}  {fmt(x['value'])} ci95 {fmt(x['ci95'])} over {x['tasks']} tasks ≥ {fmt(x['bar'])} → {x['verdict']}"
+                   + (f" ({x['reason']})" if x.get("reason") else ""))
+    out.append(f"base checkpoint {pv['base_root'] or '-'}; asserted, not recorded: {', '.join(x['fleet'] for x in pv['assertions']) or '-'}")
+    out += [f"warning: {w}" for w in g["warnings"]]
+    return "\n".join(out) + "\n"
+
+
+def cmd_m15(a):
+    g = m15(a.retrained, a.closed, a.seed, a.bar_x, a.bar_y, a.base_root, a.assert_served or ())
+    js = json.dumps(g, sort_keys=True)
+    if a.out:
+        with open(a.out, "w", encoding="utf-8") as f:
+            f.write(js + "\n")
+    sys.stdout.write(js + "\n" if a.json else m15_text(g))
+    return 0
+
+
 # ---------------------------------------------------------------- cli
 
 class Parser(argparse.ArgumentParser):
@@ -1028,6 +1384,16 @@ def main():
     c.add_argument("--seed", type=int, default=300)
     c.add_argument("--json", action="store_true")
     c.add_argument("--out")
+    q = sub.add_parser("m15")
+    q.add_argument("--retrained", action="append", required=True, metavar="MATRIX")
+    q.add_argument("--closed", action="append", required=True, metavar="MATRIX")
+    q.add_argument("--base-root")
+    q.add_argument("--assert-served", action="append", metavar="FLEET=retrained")
+    q.add_argument("--seed", type=int, default=300)
+    q.add_argument("--bar-x", type=float, default=0.75)
+    q.add_argument("--bar-y", type=float, default=5.0)
+    q.add_argument("--json", action="store_true")
+    q.add_argument("--out")
     k = sub.add_parser("m17")
     k.add_argument("dir")
     k.add_argument("--json", action="store_true")
@@ -1035,7 +1401,7 @@ def main():
     try:
         if a.cmd == "m17":
             return emit_m17(a.dir, a.json)
-        return {"run": cmd_run, "sweep": cmd_sweep, "matrix": cmd_matrix, "compare": cmd_compare}[a.cmd](a)
+        return {"run": cmd_run, "sweep": cmd_sweep, "matrix": cmd_matrix, "compare": cmd_compare, "m15": cmd_m15}[a.cmd](a)
     except Fail as e:
         print(f"fleet: {e}", file=sys.stderr)
         return e.code

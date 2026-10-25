@@ -66,7 +66,9 @@ item without a row → `label_missing` (every exported run must have a verdict);
 `manifest.dataset_sha256` differs from the SHA-256 of the item_ids joined by `\n` in file order →
 `dataset_sha256_mismatch`; an export whose `manifest.split_file.sha256` differs from the SHA-256 of `--split` →
 `split_mismatch`; a pair's `fleet.json` whose `split.sha256` differs from the SHA-256 of `--split` →
-`split_mismatch`; a pair's `fleet.json` whose `roles.policy` differs from `--policy` → `policy_mismatch`, stderr
+`split_mismatch`; a pair's `fleet.json` whose `roles.policy` is a closed model or whose `policy_route.kind` is not
+`openai`, or an item whose `policy_model` is closed (POC 13, `eval/CONTRACT.md` §4) → `closed_policy` naming the model,
+checked before everything else and whatever `--policy` says; a pair's `fleet.json` whose `roles.policy` differs from `--policy` → `policy_mismatch`, stderr
 naming the fleet (`fleet`), its role and `--policy` (rev. 1); the same `item_id` selected from two pairs →
 `duplicate_item`; a policy turn without `usage` → `usage_missing`; a policy turn whose rendering does not reproduce
 the gateway's counts (below) → `token_parity`.

@@ -161,6 +161,9 @@ witness's; a message's `event_id` names the stored event that vouches for it (th
 - `children`: every principal whose `agent.spawn.parent` is this principal, with its item's `item_id` and
   outcome summary (store-only children: nulls). `parent` is the `agent.spawn.parent` (VM items: null).
 - `redact`: the hook name when one was given (§8); content differs, so `item_id` differs.
+- `policy_model` (POC 13, only when it applies): the closed model (`claude-…`/`anthropic/…`, `eval/CONTRACT.md` §4)
+  the gateway recorded for a call matched to one of the item's assistant messages. Absent on every other item, so
+  open exports keep their bytes and `item_id`s; `label run` never keeps such an item and `train select` refuses it.
 
 ## 6. `export`
 

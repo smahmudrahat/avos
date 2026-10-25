@@ -168,6 +168,26 @@ def read_fleet(path):
     return fl
 
 
+CLOSED = ("claude-", "anthropic/")  # closed-weight model names (eval/CONTRACT.md §4); grows only with a dated reason there
+
+
+def closed(model):
+    return isinstance(model, str) and model.startswith(CLOSED)
+
+
+def fence(pairs, fleets):
+    """Closed-model outputs never train: refuse a fleet whose policy is closed (by name or by its route kind) or any
+    item whose policy calls a closed model answered, before anything else is checked or rendered."""
+    for (export, _), path in zip(pairs, fleets):
+        fl = read_fleet(path)
+        kind = (fl.get("policy_route") or {}).get("kind", "openai")
+        if closed(fl["roles"]["policy"]) or kind != "openai":
+            refuse("closed_policy", fl["fleet"], f"the fleet's policy {fl['roles']['policy']} is a closed model (route kind {kind})")
+        for it in jsonl(os.path.join(export, "trajectories.jsonl"), "trajectories.jsonl"):
+            if closed(it.get("policy_model")):
+                refuse("closed_policy", it.get("run"), f"its policy calls were answered by {it['policy_model']}")
+
+
 def read_pair(i, export, labels, fleet, policy, split_sha, train_ids, exclude, seen):
     for p, what in ((export, "export"), (labels, "labels")):
         if not os.path.isdir(p):
@@ -290,6 +310,10 @@ def cmd_select(a):
     if len(a.fleet or []) != len(a.pair):
         raise Fail(f"--fleet is given {len(a.fleet or [])} times for {len(a.pair)} --pair", 2)
     fleets = [read_fleet(f) and f for f in a.fleet]
+    for ex, lb in a.pair:
+        if not os.path.isdir(ex):
+            raise Fail(f"export directory missing: {ex}", 2)
+    fence(a.pair, fleets)
     split_path = a.split or os.path.join(REPO, SPLIT)
     split = load(split_path, "split file")
     if not isinstance(split, dict) or not isinstance(split.get("train"), list):

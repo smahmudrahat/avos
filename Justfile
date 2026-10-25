@@ -225,6 +225,9 @@ trace-check:
 train-test *args:
     python3 train/tests/run.py {{args}}
 
+eval-test *args:
+    python3 eval/tests/run.py {{args}}
+
 poc6:
     #!/usr/bin/env bash
     set -euo pipefail

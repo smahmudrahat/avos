@@ -527,7 +527,12 @@ def m10(rows, gold_runs):
             "kappa_judge_human": kappa(*tabs["judge"]), "kappa_reward_human": kappa(*tabs["reward"])}
 
 
-def final(l0, l1, l2):
+CLOSED = ("claude-", "anthropic/")  # closed-weight model names (eval/CONTRACT.md §4); grows only with a dated reason there
+
+
+def final(l0, l1, l2, policy_model=None):
+    if isinstance(policy_model, str) and policy_model.startswith(CLOSED):
+        return "fail", "closed_policy"
     if not l0["structural_ok"]:
         return "fail", "level0"
     if l2 and (l0["passed"] is True or not l0["reward_informative"]):
@@ -682,6 +687,7 @@ def cmd_run(a):
     want = set(a.run or [])
 
     rows, framings, checks, unanswered, store, judge, checker = {}, {}, {}, {}, Store(ROOT), None, None
+    policy_of = {}
     reused = check_reused = 0
     pending, ex = {}, None
 
@@ -728,6 +734,7 @@ def cmd_run(a):
             c_sha = content_key(it)
             rows[run] = {"run": run, "item_id": it["item_id"], "content_sha256": c_sha, "task": it["task"],
                          "task_id": it.get("task_id"), "split": it.get("split"), "level0": level0(it)}
+            policy_of[run] = it.get("policy_model")
             if not judged(it):
                 continue
             if a.checklist:
@@ -788,7 +795,7 @@ def cmd_run(a):
                 stale.append({"run": run, "label_id": x["label_id"], "labelled_content_sha256": x["content_sha256"],
                               "current_content_sha256": r["content_sha256"], "labelled_item_id": x["item_id"],
                               "current_item_id": r["item_id"], "labeller": x["labeller"]})
-        label, rule = final(r["level0"], l1, l2)
+        label, rule = final(r["level0"], l1, l2, policy_of[run])
         out_rows.append({**r, "level1": l1, "level2": l2, "final": {"label": label, "rule": rule, "kept": label == "pass"},
                          "stratum": stratum(r["level0"], l1)})
     views = {run: {"run": run, "content_sha256": rows[run]["content_sha256"], **checklist_view(checks[run], questions),

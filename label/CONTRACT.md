@@ -185,6 +185,8 @@ One line per labelled run, sorted by run id, `json.dumps(row, ensure_ascii=False
 **Disagreement rule** (statement: reward decides pass/fail; the judge can veto a pass; the user settles vetoes in
 the gold set; flagged or incomplete items are never labelled clean). In this order, the first that applies:
 
+0. the item's `policy_model` is a closed model (POC 13, `eval/CONTRACT.md` §4) → `fail`, rule `closed_policy`,
+   whatever the reward, judge or human label.
 1. `level0.structural_ok` false → `fail`, rule `level0`.
 2. a current human label exists and (`level0.passed` is true or `level0.reward_informative` is false) → the human's
    verdict, rule `human`.
