@@ -80,7 +80,7 @@ function build(root, cfg, speed) {
   root.classList.add("player");
   root.innerHTML = `
     <div class="p-bar">
-      <div class="p-id"><b>Replay</b> recorded session · ${R.events[0].ts.slice(0, 10)} · ×${speed.toFixed(1)}</div>
+      <div class="p-id"><b>Replay</b>recorded session of ${R.events[0].ts.slice(0, 10)}, at ${speed.toFixed(1)}× speed</div>
       <ol class="p-beats"><li>Control</li><li>Trace</li><li>Retrain</li><li>Score</li></ol>
       <div class="p-counters">
         <div><span data-c="agents">0</span><small>agents live</small></div>
@@ -94,7 +94,7 @@ function build(root, cfg, speed) {
       <section class="p-panel p-tree"><h3>Agent tree</h3>
         <div class="p-legend"><i class="k-microVM"></i>microVM <i class="k-agent"></i>agent <i class="k-subagent"></i>subagent</div>
         <ul class="tree"></ul><div class="p-receipt" hidden></div></section>
-      <section class="p-panel p-trace"><h3>Trace · <span class="p-scope">all agents</span> <em class="p-count">0 events</em></h3><ol class="stream"></ol></section>
+      <section class="p-panel p-trace"><h3>Trace of <span class="p-scope">all agents</span> <em class="p-count">0 events</em></h3><ol class="stream"></ol></section>
       <section class="p-panel p-right">
         <div class="p-sub p-label"><h3>Label</h3><div class="lab"></div><p class="p-note"></p></div>
         <div class="p-sub p-retrain"><h3>Retrain</h3><svg class="loss" viewBox="0 0 200 70" preserveAspectRatio="none"><path/></svg>
@@ -115,14 +115,14 @@ function build(root, cfg, speed) {
       const what = (e.resource || "").replace(/^\w+::/, "").replace(/"/g, "");
       const amt = e.amount_cents != null ? ` $${(e.amount_cents / 100).toFixed(2)}` : "";
       const deny = e.decision === "deny";
-      return [`${e.decision} · ${what}${amt}${deny ? ` · ${(e.policy_ids || []).join(", ")}` : ""}`, deny ? "bad" : ""];
+      return [`${e.decision} ${what}${amt}${deny ? ` (${(e.policy_ids || []).join(", ")})` : ""}`, deny ? "bad" : ""];
     }
     if (e.kind === "tool.call") return [`${e.tool || "tool"} ran`, ""];
-    if (e.kind === "llm.call") return [`${(e.model || "").split("/").pop()} · ${e.status} · ${e.prompt_tokens ?? 0}+${e.completion_tokens ?? 0} tok · ${e.ms ?? 0} ms`, ""];
+    if (e.kind === "llm.call") return [`${(e.model || "").split("/").pop()}, ${e.status}, ${e.prompt_tokens ?? 0}+${e.completion_tokens ?? 0} tok, ${e.ms ?? 0} ms`, ""];
     const n = (e.nodes || []).length;
-    if (e.kind === "halt") return [`${e.action} · ${e.receipt} · ${n} node${n === 1 ? "" : "s"} · ${e.ms} ms`, "halt"];
-    if (e.kind === "resume") return [`${e.action || "resume"} · ${e.receipt || ""} · ${e.ms ?? 0} ms`, "halt"];
-    if (e.kind === "vm.boot") return [`firecracker · boot ${e.boot_ms} ms`, ""];
+    if (e.kind === "halt") return [`${e.action} ${e.receipt}, ${n} node${n === 1 ? "" : "s"}, ${e.ms} ms`, "halt"];
+    if (e.kind === "resume") return [`${e.action || "resume"} ${e.receipt || ""}, ${e.ms ?? 0} ms`, "halt"];
+    if (e.kind === "vm.boot") return [`firecracker, boot ${e.boot_ms} ms`, ""];
     return ["", ""];
   };
 
@@ -168,7 +168,7 @@ function build(root, cfg, speed) {
     label(p) {
       const box = $(".lab", root);
       if (!box.children.length) for (const f of cfg.labels) {
-        const r = el("div", "lrow"); r.append(el("span", "l", `${f.fleet} · ${int(f.runs)} runs`), el("span", "v", `${f.kept} kept`));
+        const r = el("div", "lrow"); r.append(el("span", "l", `${f.fleet}, ${int(f.runs)} runs`), el("span", "v", `${f.kept} kept`));
         const bar = el("div", "lbar"); bar.append(el("i", "kept"), el("i", "drop")); r.append(bar); box.append(r);
       }
       [...box.children].forEach((r, i) => {
@@ -176,13 +176,13 @@ function build(root, cfg, speed) {
         r.querySelector(".kept").style.width = `${f.kept / f.runs * 100 * p}%`;
         r.querySelector(".drop").style.width = `${f.dropped / f.runs * 100 * p}%`;
       });
-      $(".p-label .p-note", root).textContent = `kept = reward passed and not vetoed by the open-weight judge · ${cfg.retrain.runs} kept runs train the model (17 tasks held back as a gate)`;
+      $(".p-label .p-note", root).textContent = `Kept: reward passed and not vetoed by the open-weight judge. ${cfg.retrain.runs} kept runs train the model; 17 tasks are held back as a gate.`;
     },
     retrain(p) {
       const L = cfg.retrain.loss, k = Math.max(2, Math.round(p * L.length)), mx = Math.max(...L);
       $(".loss path", root).setAttribute("d", L.slice(0, k).map((v, i) => `${i ? "L" : "M"}${(i / (L.length - 1) * 200).toFixed(1)},${(66 - v / mx * 60).toFixed(1)}`).join(""));
       $(".prog i", root).style.width = `${p * 100}%`;
-      $(".p-retrain .p-note", root).textContent = `${cfg.retrain.method} · ${cfg.retrain.base} · ${cfg.retrain.runs} own passed runs · ${cfg.retrain.steps} steps · ${cfg.retrain.gpu_hours} GPU-h · $${cfg.retrain.usd}`;
+      $(".p-retrain .p-note", root).textContent = `${cfg.retrain.method} on ${cfg.retrain.base}: ${cfg.retrain.steps} steps, ${cfg.retrain.gpu_hours} GPU-hours, $${cfg.retrain.usd}`;
     },
     score(p) {
       const bars = $(".bars", root);
@@ -202,14 +202,14 @@ function build(root, cfg, speed) {
       o.dataset.w = which; o.hidden = false;
       const c = cfg.control, t = cfg.trace;
       o.innerHTML = which === "hook"
-        ? `<small>Open-source agent cloud · one minute</small><h2>Control every agent.<br>Retrain on their traces.</h2>
-           <p>${pct(X)} of Claude Opus 5.5's pass^4 at 1/${Math.round(Y)} of the cost per task, on held-out τ²-bench retail.</p>
-           <p class="src">Replay of a recorded session · measured results · data in the repository</p>`
-        : `<small>Measured · data in the repository</small><h2>Stop any agent, at any depth.<br>Turn its traces into a cheaper model.</h2>
-           <ul><li><b>${c.stop_ms_median} ms</b> to stop one agent, measured from outside, with ${c.vms_running} microVMs running · ${c.sibling_events_lost} sibling events lost</li>
-           <li><b>${t.complete}/${t.trials}</b> held-out trials traced complete · ${int(t.events_in_store)} events queryable in ${t.query_s} s</li>
-           <li><b>pass^4 ${s.retrained.pass4.toFixed(2)}</b> retrained 9B vs <b>${s.opus.pass4.toFixed(2)}</b> Claude Opus 5.5 · <b>${Y.toFixed(0)}×</b> cheaper per task</li></ul>
-           <p class="src">github.com/smahmudrahat/avos · eval, data and code</p>`;
+        ? `<small>The result first</small><h2>${pct(X)} of Claude Opus 5.5's pass^4,<br>at 1/${Math.round(Y)} of the cost per task.</h2>
+           <p>A 9B open model, retrained on its own traces, on held-out τ²-bench retail. Here is how it got there.</p>
+           <p class="src">A recorded session and measured results, all in the repository.</p>`
+        : `<small>Measured, with the data in the repository</small><h2>Stop any agent, at any depth.<br>Turn its traces into a cheaper model.</h2>
+           <ul><li><b>${c.stop_ms_median} ms</b> to stop one agent, measured from outside, with ${c.vms_running} microVMs running, ${c.sibling_events_lost} sibling events lost</li>
+           <li><b>${t.complete}/${t.trials}</b> held-out trials traced complete, ${int(t.events_in_store)} events queryable in ${t.query_s} s</li>
+           <li><b>pass^4 ${s.retrained.pass4.toFixed(2)}</b> retrained 9B vs <b>${s.opus.pass4.toFixed(2)}</b> Claude Opus 5.5, <b>${Y.toFixed(0)}×</b> cheaper per task</li></ul>
+           <p class="src">Eval, data and code: github.com/smahmudrahat/avos</p>`;
     },
     tick(st, rec, beat) {
       const set = (k, v) => ($(`[data-c=${k}]`, root).textContent = v);
