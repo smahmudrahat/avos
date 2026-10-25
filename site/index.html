@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Avos · Control every agent. Retrain on their traces.</title>
+  <meta name="description" content="Open-source agent cloud: stop any AI agent at any depth, trace everything it does, and retrain a small open model on its own passed runs. 18× cheaper than Claude Opus 5.5 at a statistically indistinguishable score on held-out τ²-bench retail.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 rx=%223%22 fill=%22%233ddc97%22/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="nav">
+  <a class="brand" href="#">Avos</a>
+  <nav><a href="#run">The run</a><a href="#results">Results</a><a href="#approach">Approach</a><a href="#next">Next</a>
+    <a class="gh" href="https://github.com/smahmudrahat/avos">GitHub</a></nav>
+</header>
+
+<main>
+  <section class="hero">
+    <p class="eyebrow">Open-source agent cloud</p>
+    <h1>Control every agent.<br>Retrain on their traces.</h1>
+    <p class="lede">Avos runs every AI agent in its own microVM with its own identity. Any agent or subagent can be stopped
+      by name in milliseconds, every action is traced, and the passed runs retrain a small open model that does the same
+      work for a fraction of the price.</p>
+    <div class="kpis" id="kpis"></div>
+    <div class="cta"><a class="btn" href="#run">Watch the 60-second run</a><a class="btn ghost" href="https://github.com/smahmudrahat/avos">Read the code and data</a></div>
+  </section>
+
+  <section id="run" class="run">
+    <div id="player"></div>
+    <p class="hint">Space plays and pauses. Click any ■ to stop a branch yourself, or click a node to follow its trace.
+      The scenario is a replay; the stop latency, trace counts, loss curve and scores are measured values from the repository.</p>
+  </section>
+
+  <section id="results" class="results">
+    <h2>What we measured</h2>
+    <div class="cards" id="cards"></div>
+    <div class="table-wrap"><table id="score-table"></table></div>
+    <p class="fine" id="fine"></p>
+  </section>
+
+  <section id="approach" class="approach">
+    <h2>The approach</h2>
+    <ol class="steps">
+      <li><b>Run</b><span>Each agent session boots in its own Firecracker microVM in about 2.8 s. Every agent and subagent gets a SPIFFE identity, so every action has an owner.</span></li>
+      <li><b>Control</b><span>One gateway sees every model call, tool call and network connection, decides it with Cedar policy, and can freeze or cut any branch by name without touching its siblings.</span></li>
+      <li><b>Trace</b><span>Every event lands in a hash-chained store, reconciled against the gateway's own counters, so completeness is measured, not assumed.</span></li>
+      <li><b>Label and retrain</b><span>Runs are labelled by the benchmark's reward and an open-weight judge. Only passed runs, token-exact to what the model saw, train a LoRA on the open model.</span></li>
+      <li><b>Score</b><span>Held-out, user-disjoint tasks, four trials each, paired bootstrap intervals, and the frontier model run through the same scaffold and simulator.</span></li>
+    </ol>
+  </section>
+
+  <section id="next" class="next">
+    <h2>What we proved, and what we run next</h2>
+    <div class="two">
+      <div><h3>Proved</h3><ul id="proved"></ul></div>
+      <div><h3>Next run</h3><ul>
+        <li><b>A harder, larger held-out set.</b> τ²-bench retail cannot separate a 9B from Opus: even the untrained 9B ties. We are moving to 200+ held-out tasks across domains, where the frontier model measurably leads, so every retraining round shows up in the score.</li>
+        <li><b>More rounds of retraining.</b> The loop is built and repeatable: collect traces, keep the passed runs, retrain, re-score. Each round costs a few GPU-hours.</li>
+        <li><b>Simulator fidelity checks.</b> A judge flags trials where the simulated user broke its script, so failures are charged to the right side.</li>
+      </ul></div>
+    </div>
+  </section>
+
+  <section class="repro">
+    <h2>Reproducible from GitHub</h2>
+    <p>The page is generated from the repository: <code>site/build.py</code> reads the committed results in <code>data/</code>
+      and writes <code>site/data/cfg.json</code>; CI refuses a stale file and deploys on every push to <code>main</code>.
+      Results, method and limits for each step are in <code>data/poc*/README.md</code>.</p>
+  </section>
+</main>
+
+<footer><span>Avos AI, Inc.</span><a href="mailto:sultan@avoslab.com">sultan@avoslab.com</a><a href="https://github.com/smahmudrahat/avos">github.com/smahmudrahat/avos</a></footer>
+
+<script type="module">
+  import { mount } from "./player.js";
+  const cfg = await (await fetch("data/cfg.json")).json();
+  const s = cfg.score, c = cfg.control, t = cfg.trace, r = cfg.retrain;
+  const pct = v => `${Math.round(v * 100)}%`, f3 = v => v.toFixed(3), ci = a => `[${f3(a[0])}, ${f3(a[1])}]`;
+  document.getElementById("kpis").innerHTML = [
+    [`${c.stop_ms_median} ms`, `to stop any agent, ${c.vms_running} VMs running`],
+    [`${c.sibling_events_lost}`, "sibling events lost"],
+    [`${Math.round(s.y.value)}×`, "cheaper per task than Claude Opus 5.5"],
+    [pct(s.x.value), "of Opus's pass^4, within error"],
+  ].map(([v, l]) => `<div><b>${v}</b><span>${l}</span></div>`).join("");
+  document.getElementById("cards").innerHTML = [
+    ["Control", `${c.stop_ms_median} ms`, `median to freeze one agent's branch (worst ${c.stop_ms_worst} ms, bar ${c.bar_ms} ms) with ${c.vms_running} microVMs running; ${c.sibling_events_lost} sibling events lost; ${c.gateway_calls.toLocaleString()} gateway calls, ${c.gateway_unanswered} unanswered.`],
+    ["Trace", `${t.complete}/${t.trials}`, `trials traced complete on the held-out run; "what did this agent do" answered in ${t.query_s} s over ${t.events_in_store.toLocaleString()} events.`],
+    ["Retrain", `${r.runs} runs`, `${r.method} on ${r.base}, only its own passed runs, ${r.steps} steps, ${r.gpu_hours} GPU-hours, $${r.usd}.`],
+    ["Score", `${Math.round(s.y.value)}× cheaper`, `$${s.retrained.usd_per_task.toFixed(4)} vs $${s.opus.usd_per_task.toFixed(3)} per task (Opus billed with prompt caching; $${s.opus_usd_uncached.toFixed(2)} uncached), at pass^4 ${f3(s.retrained.pass4)} vs ${f3(s.opus.pass4)}.`],
+  ].map(([h, v, p]) => `<article><h3>${h}</h3><b>${v}</b><p>${p}</p></article>`).join("");
+  document.getElementById("score-table").innerHTML = `<thead><tr><th>Held-out τ²-bench retail</th><th>pass^1</th><th>pass^4</th><th>Cost per task</th><th>Trials</th></tr></thead><tbody>
+    <tr><td>Open 9B, untrained (Qwen3.5-9B)</td><td>${f3(s.base.pass1)}</td><td>${f3(s.base.pass4)}</td><td>$${s.base.usd_per_task.toFixed(4)}</td><td>${s.base.trials}</td></tr>
+    <tr class="hl"><td>Open 9B, retrained on its own passed runs</td><td>${f3(s.retrained.pass1)} ${ci(s.retrained.pass1_ci95)}</td><td>${f3(s.retrained.pass4)} ${ci(s.retrained.pass4_ci95)}</td><td>$${s.retrained.usd_per_task.toFixed(4)}</td><td>${s.retrained.trials}</td></tr>
+    <tr><td>Claude Opus 5.5 (effort medium)</td><td>${f3(s.opus.pass1)} ${ci(s.opus.pass1_ci95)}</td><td>${f3(s.opus.pass4)} ${ci(s.opus.pass4_ci95)}</td><td>$${s.opus.usd_per_task.toFixed(3)}</td><td>${s.opus.trials}</td></tr></tbody>`;
+  document.getElementById("fine").textContent = `44 user-disjoint held-out tasks, 4 trials per session, pooled across sessions; 95% paired bootstrap intervals over tasks (seed 300). Retrained ÷ Opus pass^4 = ${pct(s.x.value)} [${pct(s.x.ci95[0])}, ${pct(s.x.ci95[1])}]; cost ratio ${s.y.value.toFixed(1)}× [${s.y.ci95[0].toFixed(1)}, ${s.y.ci95[1].toFixed(1)}]. Same scaffold, open-weight user simulator and judge for every arm; scores are not comparable with the public leaderboard.`;
+  document.getElementById("proved").innerHTML = [
+    `Any agent stops by name in ${c.stop_ms_median} ms with ${c.sibling_events_lost} sibling events lost, at ${c.vms_running} concurrent microVMs.`,
+    `Every trial is traced complete and attributable to an identity.`,
+    `A 9B open model retrained on its own traces matches Claude Opus 5.5 within measurement error on held-out τ²-bench retail, at ${Math.round(s.y.value)}× lower cost per task.`,
+    `The full loop (run, trace, label, retrain, score) runs end to end from the repository.`,
+  ].map(x => `<li>${x}</li>`).join("");
+  mount(document.getElementById("player"));
+</script>
+</body>
+</html>

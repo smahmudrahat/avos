@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Avos · 60-second launch video storyboard</title>
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 rx=%223%22 fill=%22%233ddc97%22/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <section>
+    <p class="eyebrow">60-second launch video · storyboard you can record</p>
+    <h2>Control every agent. Retrain on their traces.</h2>
+    <p class="lede">Press play, go fullscreen, record your screen and talk over it. Click any ■ to stop a branch yourself,
+      or click a node to follow its trace. The scenario is a replay; the measured numbers come from <code>site/data/cfg.json</code>, built from the runs by <code>site/build.py</code>.</p>
+    <div id="player"></div>
+    <p class="hint">Space plays and pauses. Restart clears any branches you stopped by hand.</p>
+  </section>
+  <section>
+    <h2>Shot list and what to say</h2>
+    <div class="table-wrap"><table id="shots"></table></div>
+  </section>
+  <section class="approach">
+    <h2>Why it is built this way</h2>
+    <ol class="steps">
+      <li><b>Result first</b><span>The outcome is on screen in the first second. The rest shows how you got it.</span></li>
+      <li><b>Readable with sound off</b><span>Feeds autoplay muted, so the captions carry the whole story.</span></li>
+      <li><b>One live moment</b><span>The stop click: one node freezes while its siblings keep counting.</span></li>
+      <li><b>One screen, no cuts</b><span>All panels stay on screen, so it reads as working software, not slides.</span></li>
+      <li><b>Proof experts can check</b><span>Benchmark, held-out split and pass^4 are named on screen; the repo has the eval. Cut 0:14–0:26 as a short loop for replies.</span></li>
+    </ol>
+  </section>
+</main>
+<script type="module">
+  import { mount } from "./player.js";
+  const c = await (await fetch("data/cfg.json")).json(), s = c.score;
+  const X = Math.round(s.x.value * 100), Y = Math.round(s.y.value);
+  const rows = [
+    ["0:00–0:04", "Hook card: the two claims and the result line.", "“Two things in one minute: stopping any AI agent at any depth, and turning what it did into a cheaper model.”"],
+    ["0:04–0:14", "Two microVMs boot. Sessions open. Agents spawn subagents and the tree grows. Counters start ticking.", "“Every agent session runs in its own Firecracker microVM. Each agent and subagent gets its own identity, so we always know who did what.”"],
+    ["0:14–0:19", "issue-refund turns red. The trace shows a $480 refund against a $200 limit.", "“This refund subagent is trying to refund $480. The policy limit is $200.”"],
+    ["0:19–0:26", "The cursor clicks ■. The node freezes blue, a halt receipt appears, and the siblings keep counting.", `“I stop just that one, in ${c.control.stop_ms_median} milliseconds. Its branch freezes. Everything else keeps working.”`],
+    ["0:26–0:36", "The trace stream fills. Runs turn green or red, then failed runs fade out.", "“Every model call, tool call and network connection is recorded and labelled pass or fail. Failed runs are dropped. Passed runs become training data.”"],
+    ["0:36–0:42", "The loss curve draws. The progress bar fills.", `“We retrain an open 9B model on only its ${c.retrain.runs} passed runs, in ${c.retrain.gpu_hours} GPU-hours.”`],
+    ["0:42–0:52", "Three bars grow, then the headline: share of Opus's score and the cost ratio.", `“On held-out τ²-bench retail it gets ${X}% of Claude Opus 5.5's score at 1/${Y} of the cost per task.”`],
+    ["0:52–1:00", "End card with the measured numbers.", "“It's open source. The eval and the code are in the reply.”"],
+  ];
+  document.getElementById("shots").innerHTML = `<thead><tr><th>Time</th><th>On screen</th><th>You say (suggested)</th></tr></thead><tbody>${rows.map(r => `<tr>${r.map(x => `<td style="white-space:normal;font-family:var(--sans)">${x}</td>`).join("")}</tr>`).join("")}</tbody>`;
+  mount(document.getElementById("player"));
+</script>
+</body>
+</html>
