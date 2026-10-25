@@ -3,9 +3,10 @@
   "data/poc10/README.md",
   "data/poc11/README.md",
   "data/poc12/fit-gate",
+  "data/poc12/*/labels",
   "data/poc13/m15-pooled.json",
   "data/poc14/gate",
-  "fleet/tests/fixtures/results/run_retail-0_22/events.jsonl"
+  "trace/tests/fixtures/real_events.jsonl"
  ],
  "sample": false,
  "control": {
@@ -197,6 +198,20 @@
   "gpu_hours": 4.25,
   "source": "data/poc12/fit-gate"
  },
+ "labels": [
+  {
+   "fleet": "p11-train (policy T 0)",
+   "runs": 520,
+   "kept": 178,
+   "dropped": 342
+  },
+  {
+   "fleet": "p12-train-t07 (policy T 0.7)",
+   "runs": 520,
+   "kept": 178,
+   "dropped": 342
+  }
+ ],
  "score": {
   "benchmark": "τ²-bench retail, held-out, user-disjoint, 44 tasks × 4 trials per session",
   "retrained": {
@@ -276,231 +291,5954 @@
   },
   "source": "data/poc13/README.md, data/poc14/README.md"
  },
- "trace_sample": {
-  "run": "run_retail-0_22",
-  "start": "2026-10-22T20:24:21.294Z",
+ "replay": {
+  "source": "trace/tests/fixtures/real_events.jsonl (host ledger, vm vm-01-417bd7, 2026-10-21)",
+  "host": "ip-172-31-44-187",
+  "duration_s": 46.153,
   "events": [
    {
+    "t": 0.0,
+    "ts": "2026-10-21T18:45:55.793Z",
     "kind": "vm.boot",
-    "principal": "vm/vm-01-cd8ffd",
-    "boot_ms": 2796
+    "who": "vm",
+    "boot_ms": 2732
    },
    {
-    "kind": "session.open",
-    "principal": "vm/vm-01-cd8ffd"
+    "t": 0.456,
+    "ts": "2026-10-21T18:45:56.249Z",
+    "kind": "authz.decision",
+    "who": "vm",
+    "decision": "allow",
+    "action": "llm.call",
+    "resource": "Model::\"Qwen/Qwen3-30B-A3B-Instruct-2507\"",
+    "policy_ids": [
+     "llm-all"
+    ]
    },
    {
+    "t": 0.894,
+    "ts": "2026-10-21T18:45:56.687Z",
+    "kind": "llm.call",
+    "who": "vm",
+    "ms": 438,
+    "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+    "status": 200,
+    "prompt_tokens": 14,
+    "completion_tokens": 2,
+    "dropped": false
+   },
+   {
+    "t": 3.902,
+    "ts": "2026-10-21T18:45:59.695Z",
     "kind": "agent.spawn",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2"
+    "who": "A",
+    "parent": "vm"
    },
    {
+    "t": 4.071,
+    "ts": "2026-10-21T18:45:59.864Z",
+    "kind": "agent.spawn",
+    "who": "support",
+    "parent": "vm"
+   },
+   {
+    "t": 4.192,
+    "ts": "2026-10-21T18:45:59.985Z",
+    "kind": "agent.spawn",
+    "who": "D",
+    "parent": "vm"
+   },
+   {
+    "t": 4.914,
+    "ts": "2026-10-21T18:46:00.707Z",
+    "kind": "agent.spawn",
+    "who": "A/sub/B",
+    "parent": "A"
+   },
+   {
+    "t": 5.546,
+    "ts": "2026-10-21T18:46:01.339Z",
     "kind": "authz.decision",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "decision": "allow"
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
    },
    {
+    "t": 5.546,
+    "ts": "2026-10-21T18:46:01.339Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 5.606,
+    "ts": "2026-10-21T18:46:01.399Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 5.615,
+    "ts": "2026-10-21T18:46:01.408Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 5.868,
+    "ts": "2026-10-21T18:46:01.661Z",
+    "kind": "agent.spawn",
+    "who": "A/sub/B/sub/B1",
+    "parent": "A/sub/B"
+   },
+   {
+    "t": 6.067,
+    "ts": "2026-10-21T18:46:01.860Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 6.067,
+    "ts": "2026-10-21T18:46:01.860Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 6.118,
+    "ts": "2026-10-21T18:46:01.911Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 6.128,
+    "ts": "2026-10-21T18:46:01.921Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 6.408,
+    "ts": "2026-10-21T18:46:02.201Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 6.577,
+    "ts": "2026-10-21T18:46:02.370Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 6.577,
+    "ts": "2026-10-21T18:46:02.370Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 6.625,
+    "ts": "2026-10-21T18:46:02.418Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 6.634,
+    "ts": "2026-10-21T18:46:02.427Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 6.915,
+    "ts": "2026-10-21T18:46:02.708Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 7.086,
+    "ts": "2026-10-21T18:46:02.879Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 7.086,
+    "ts": "2026-10-21T18:46:02.879Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 7.132,
+    "ts": "2026-10-21T18:46:02.925Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 7.148,
+    "ts": "2026-10-21T18:46:02.941Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 7.189,
+    "ts": "2026-10-21T18:46:02.982Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 7.422,
+    "ts": "2026-10-21T18:46:03.215Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 7.592,
+    "ts": "2026-10-21T18:46:03.385Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 7.592,
+    "ts": "2026-10-21T18:46:03.385Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 7.639,
+    "ts": "2026-10-21T18:46:03.432Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 7.654,
+    "ts": "2026-10-21T18:46:03.447Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 7.696,
+    "ts": "2026-10-21T18:46:03.489Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 7.929,
+    "ts": "2026-10-21T18:46:03.722Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 8.099,
+    "ts": "2026-10-21T18:46:03.892Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 8.099,
+    "ts": "2026-10-21T18:46:03.892Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 8.145,
+    "ts": "2026-10-21T18:46:03.938Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 8.161,
+    "ts": "2026-10-21T18:46:03.954Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 8.202,
+    "ts": "2026-10-21T18:46:03.995Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 8.435,
+    "ts": "2026-10-21T18:46:04.228Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 8.605,
+    "ts": "2026-10-21T18:46:04.398Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 8.605,
+    "ts": "2026-10-21T18:46:04.398Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 8.651,
+    "ts": "2026-10-21T18:46:04.444Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 8.667,
+    "ts": "2026-10-21T18:46:04.460Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 8.708,
+    "ts": "2026-10-21T18:46:04.501Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 8.942,
+    "ts": "2026-10-21T18:46:04.735Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 9.115,
+    "ts": "2026-10-21T18:46:04.908Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 9.115,
+    "ts": "2026-10-21T18:46:04.908Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 9.162,
+    "ts": "2026-10-21T18:46:04.955Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 9.174,
+    "ts": "2026-10-21T18:46:04.967Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 9.217,
+    "ts": "2026-10-21T18:46:05.010Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 9.453,
+    "ts": "2026-10-21T18:46:05.246Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 9.623,
+    "ts": "2026-10-21T18:46:05.416Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 9.623,
+    "ts": "2026-10-21T18:46:05.416Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 9.647,
+    "ts": "2026-10-21T18:46:05.440Z",
+    "kind": "halt",
+    "who": "A/sub/B",
+    "action": "freeze",
+    "receipt": "hr_4f48",
+    "ms": 6.3,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 9.672,
+    "ts": "2026-10-21T18:46:05.465Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 9.681,
+    "ts": "2026-10-21T18:46:05.474Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 10.131,
+    "ts": "2026-10-21T18:46:05.924Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 10.131,
+    "ts": "2026-10-21T18:46:05.924Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 10.178,
+    "ts": "2026-10-21T18:46:05.971Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 10.191,
+    "ts": "2026-10-21T18:46:05.984Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 10.637,
+    "ts": "2026-10-21T18:46:06.430Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 10.637,
+    "ts": "2026-10-21T18:46:06.430Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 10.685,
+    "ts": "2026-10-21T18:46:06.478Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 10.697,
+    "ts": "2026-10-21T18:46:06.490Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 10.899,
+    "ts": "2026-10-21T18:46:06.692Z",
+    "kind": "authz.decision",
+    "who": "vm",
+    "decision": "allow",
+    "action": "llm.call",
+    "resource": "Model::\"Qwen/Qwen3-30B-A3B-Instruct-2507\"",
+    "policy_ids": [
+     "llm-all"
+    ]
+   },
+   {
+    "t": 11.144,
+    "ts": "2026-10-21T18:46:06.937Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 11.144,
+    "ts": "2026-10-21T18:46:06.937Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 11.192,
+    "ts": "2026-10-21T18:46:06.985Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 11.203,
+    "ts": "2026-10-21T18:46:06.996Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 11.484,
+    "ts": "2026-10-21T18:46:07.277Z",
     "kind": "llm.call",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
+    "who": "vm",
+    "ms": 585,
     "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
     "status": 200,
-    "ms": 831,
-    "prompt_tokens": 428,
-    "completion_tokens": 97
+    "prompt_tokens": 14,
+    "completion_tokens": 2,
+    "dropped": false
    },
    {
+    "t": 11.65,
+    "ts": "2026-10-21T18:46:07.443Z",
     "kind": "authz.decision",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "decision": "allow"
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
    },
    {
+    "t": 11.65,
+    "ts": "2026-10-21T18:46:07.443Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 11.699,
+    "ts": "2026-10-21T18:46:07.492Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 11.71,
+    "ts": "2026-10-21T18:46:07.503Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 12.156,
+    "ts": "2026-10-21T18:46:07.949Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 12.156,
+    "ts": "2026-10-21T18:46:07.949Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 12.205,
+    "ts": "2026-10-21T18:46:07.998Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 12.216,
+    "ts": "2026-10-21T18:46:08.009Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 12.663,
+    "ts": "2026-10-21T18:46:08.456Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 12.663,
+    "ts": "2026-10-21T18:46:08.456Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 12.714,
+    "ts": "2026-10-21T18:46:08.507Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 12.727,
+    "ts": "2026-10-21T18:46:08.520Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 13.171,
+    "ts": "2026-10-21T18:46:08.964Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 13.171,
+    "ts": "2026-10-21T18:46:08.964Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 13.22,
+    "ts": "2026-10-21T18:46:09.013Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 13.233,
+    "ts": "2026-10-21T18:46:09.026Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 13.37,
+    "ts": "2026-10-21T18:46:09.163Z",
+    "kind": "resume",
+    "who": "A/sub/B",
+    "action": "thaw",
+    "receipt": "hr_60b1",
+    "ms": 6.9,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 13.424,
+    "ts": "2026-10-21T18:46:09.217Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 13.677,
+    "ts": "2026-10-21T18:46:09.470Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 13.679,
+    "ts": "2026-10-21T18:46:09.472Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 13.679,
+    "ts": "2026-10-21T18:46:09.472Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 13.727,
+    "ts": "2026-10-21T18:46:09.520Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 13.739,
+    "ts": "2026-10-21T18:46:09.532Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 13.931,
+    "ts": "2026-10-21T18:46:09.724Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 14.184,
+    "ts": "2026-10-21T18:46:09.977Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 14.188,
+    "ts": "2026-10-21T18:46:09.981Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 14.188,
+    "ts": "2026-10-21T18:46:09.981Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 14.234,
+    "ts": "2026-10-21T18:46:10.027Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 14.245,
+    "ts": "2026-10-21T18:46:10.038Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 14.44,
+    "ts": "2026-10-21T18:46:10.233Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 14.691,
+    "ts": "2026-10-21T18:46:10.484Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 14.695,
+    "ts": "2026-10-21T18:46:10.488Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 14.695,
+    "ts": "2026-10-21T18:46:10.488Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 14.74,
+    "ts": "2026-10-21T18:46:10.533Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 14.751,
+    "ts": "2026-10-21T18:46:10.544Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 14.833,
+    "ts": "2026-10-21T18:46:10.626Z",
+    "kind": "halt",
+    "who": "A/sub/B",
+    "action": "freeze",
+    "receipt": "hr_472c",
+    "ms": 6.2,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 15.201,
+    "ts": "2026-10-21T18:46:10.994Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 15.201,
+    "ts": "2026-10-21T18:46:10.994Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 15.246,
+    "ts": "2026-10-21T18:46:11.039Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 15.258,
+    "ts": "2026-10-21T18:46:11.051Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 15.394,
+    "ts": "2026-10-21T18:46:11.187Z",
+    "kind": "resume",
+    "who": "A/sub/B",
+    "action": "thaw",
+    "receipt": "hr_c20d",
+    "ms": 6.7,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 15.501,
+    "ts": "2026-10-21T18:46:11.294Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 15.707,
+    "ts": "2026-10-21T18:46:11.500Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 15.707,
+    "ts": "2026-10-21T18:46:11.500Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 15.751,
+    "ts": "2026-10-21T18:46:11.544Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 15.754,
+    "ts": "2026-10-21T18:46:11.547Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 15.764,
+    "ts": "2026-10-21T18:46:11.557Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 15.955,
+    "ts": "2026-10-21T18:46:11.748Z",
+    "kind": "halt",
+    "who": "A/sub/B",
+    "action": "freeze",
+    "receipt": "hr_40c6",
+    "ms": 6.4,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 16.213,
+    "ts": "2026-10-21T18:46:12.006Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 16.213,
+    "ts": "2026-10-21T18:46:12.006Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 16.262,
+    "ts": "2026-10-21T18:46:12.055Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 16.271,
+    "ts": "2026-10-21T18:46:12.064Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 16.519,
+    "ts": "2026-10-21T18:46:12.312Z",
+    "kind": "resume",
+    "who": "A/sub/B",
+    "action": "thaw",
+    "receipt": "hr_69b7",
+    "ms": 8.9,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 16.525,
+    "ts": "2026-10-21T18:46:12.318Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 16.719,
+    "ts": "2026-10-21T18:46:12.512Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 16.719,
+    "ts": "2026-10-21T18:46:12.512Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 16.768,
+    "ts": "2026-10-21T18:46:12.561Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 16.774,
+    "ts": "2026-10-21T18:46:12.567Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 16.778,
+    "ts": "2026-10-21T18:46:12.571Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 17.034,
+    "ts": "2026-10-21T18:46:12.827Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 17.083,
+    "ts": "2026-10-21T18:46:12.876Z",
+    "kind": "halt",
+    "who": "A/sub/B",
+    "action": "freeze",
+    "receipt": "hr_0783",
+    "ms": 6.2,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 17.225,
+    "ts": "2026-10-21T18:46:13.018Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 17.225,
+    "ts": "2026-10-21T18:46:13.018Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 17.275,
+    "ts": "2026-10-21T18:46:13.068Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 17.284,
+    "ts": "2026-10-21T18:46:13.077Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 17.644,
+    "ts": "2026-10-21T18:46:13.437Z",
+    "kind": "resume",
+    "who": "A/sub/B",
+    "action": "thaw",
+    "receipt": "hr_f21e",
+    "ms": 6.8,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 17.733,
+    "ts": "2026-10-21T18:46:13.526Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 17.733,
+    "ts": "2026-10-21T18:46:13.526Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 17.783,
+    "ts": "2026-10-21T18:46:13.576Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 17.791,
+    "ts": "2026-10-21T18:46:13.584Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 17.799,
+    "ts": "2026-10-21T18:46:13.592Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 18.1,
+    "ts": "2026-10-21T18:46:13.893Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 18.205,
+    "ts": "2026-10-21T18:46:13.998Z",
+    "kind": "halt",
+    "who": "A/sub/B",
+    "action": "freeze",
+    "receipt": "hr_2bb1",
+    "ms": 6.4,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 18.24,
+    "ts": "2026-10-21T18:46:14.033Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 18.24,
+    "ts": "2026-10-21T18:46:14.033Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 18.29,
+    "ts": "2026-10-21T18:46:14.083Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 18.297,
+    "ts": "2026-10-21T18:46:14.090Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 18.749,
+    "ts": "2026-10-21T18:46:14.542Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 18.749,
+    "ts": "2026-10-21T18:46:14.542Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 18.769,
+    "ts": "2026-10-21T18:46:14.562Z",
+    "kind": "resume",
+    "who": "A/sub/B",
+    "action": "thaw",
+    "receipt": "hr_84f0",
+    "ms": 7.2,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 18.797,
+    "ts": "2026-10-21T18:46:14.590Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 18.803,
+    "ts": "2026-10-21T18:46:14.596Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 18.823,
+    "ts": "2026-10-21T18:46:14.616Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 19.124,
+    "ts": "2026-10-21T18:46:14.917Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 19.255,
+    "ts": "2026-10-21T18:46:15.048Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 19.255,
+    "ts": "2026-10-21T18:46:15.048Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 19.306,
+    "ts": "2026-10-21T18:46:15.099Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 19.313,
+    "ts": "2026-10-21T18:46:15.106Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 19.331,
+    "ts": "2026-10-21T18:46:15.124Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 19.337,
+    "ts": "2026-10-21T18:46:15.130Z",
+    "kind": "halt",
+    "who": "A/sub/B",
+    "action": "freeze",
+    "receipt": "hr_65f8",
+    "ms": 7.0,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 19.763,
+    "ts": "2026-10-21T18:46:15.556Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 19.763,
+    "ts": "2026-10-21T18:46:15.556Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 19.813,
+    "ts": "2026-10-21T18:46:15.606Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 19.82,
+    "ts": "2026-10-21T18:46:15.613Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 19.901,
+    "ts": "2026-10-21T18:46:15.694Z",
+    "kind": "resume",
+    "who": "A/sub/B",
+    "action": "thaw",
+    "receipt": "hr_d347",
+    "ms": 6.9,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 20.156,
+    "ts": "2026-10-21T18:46:15.949Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 20.271,
+    "ts": "2026-10-21T18:46:16.064Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 20.271,
+    "ts": "2026-10-21T18:46:16.064Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 20.321,
+    "ts": "2026-10-21T18:46:16.114Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 20.326,
+    "ts": "2026-10-21T18:46:16.119Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 20.357,
+    "ts": "2026-10-21T18:46:16.150Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 20.464,
+    "ts": "2026-10-21T18:46:16.257Z",
+    "kind": "halt",
+    "who": "A/sub/B",
+    "action": "freeze",
+    "receipt": "hr_132c",
+    "ms": 6.5,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 20.778,
+    "ts": "2026-10-21T18:46:16.571Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 20.778,
+    "ts": "2026-10-21T18:46:16.571Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 20.828,
+    "ts": "2026-10-21T18:46:16.621Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 20.833,
+    "ts": "2026-10-21T18:46:16.626Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 21.025,
+    "ts": "2026-10-21T18:46:16.818Z",
+    "kind": "resume",
+    "who": "A/sub/B",
+    "action": "thaw",
+    "receipt": "hr_9dd1",
+    "ms": 6.7,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 21.179,
+    "ts": "2026-10-21T18:46:16.972Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 21.287,
+    "ts": "2026-10-21T18:46:17.080Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 21.287,
+    "ts": "2026-10-21T18:46:17.080Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 21.336,
+    "ts": "2026-10-21T18:46:17.129Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 21.34,
+    "ts": "2026-10-21T18:46:17.133Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 21.38,
+    "ts": "2026-10-21T18:46:17.173Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 21.489,
+    "ts": "2026-10-21T18:46:17.282Z",
+    "kind": "authz.decision",
+    "who": "vm",
+    "decision": "allow",
+    "action": "llm.call",
+    "resource": "Model::\"Qwen/Qwen3-30B-A3B-Instruct-2507\"",
+    "policy_ids": [
+     "llm-all"
+    ]
+   },
+   {
+    "t": 21.587,
+    "ts": "2026-10-21T18:46:17.380Z",
+    "kind": "halt",
+    "who": "A/sub/B",
+    "action": "freeze",
+    "receipt": "hr_3b36",
+    "ms": 6.9,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 21.793,
+    "ts": "2026-10-21T18:46:17.586Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 21.793,
+    "ts": "2026-10-21T18:46:17.586Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 21.844,
+    "ts": "2026-10-21T18:46:17.637Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 21.848,
+    "ts": "2026-10-21T18:46:17.641Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 22.065,
+    "ts": "2026-10-21T18:46:17.858Z",
     "kind": "llm.call",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
+    "who": "vm",
+    "ms": 576,
     "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
     "status": 200,
-    "ms": 738,
-    "prompt_tokens": 4992,
-    "completion_tokens": 30
+    "prompt_tokens": 14,
+    "completion_tokens": 2,
+    "dropped": false
    },
    {
+    "t": 22.153,
+    "ts": "2026-10-21T18:46:17.946Z",
+    "kind": "resume",
+    "who": "A/sub/B",
+    "action": "thaw",
+    "receipt": "hr_77b0",
+    "ms": 7.0,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 22.207,
+    "ts": "2026-10-21T18:46:18.000Z",
     "kind": "authz.decision",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "decision": "allow"
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
    },
    {
+    "t": 22.3,
+    "ts": "2026-10-21T18:46:18.093Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 22.3,
+    "ts": "2026-10-21T18:46:18.093Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 22.351,
+    "ts": "2026-10-21T18:46:18.144Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 22.355,
+    "ts": "2026-10-21T18:46:18.148Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 22.408,
+    "ts": "2026-10-21T18:46:18.201Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 22.715,
+    "ts": "2026-10-21T18:46:18.508Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 22.717,
+    "ts": "2026-10-21T18:46:18.510Z",
+    "kind": "halt",
+    "who": "A/sub/B",
+    "action": "freeze",
+    "receipt": "hr_16d2",
+    "ms": 8.8,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 22.809,
+    "ts": "2026-10-21T18:46:18.602Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 22.809,
+    "ts": "2026-10-21T18:46:18.602Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 22.859,
+    "ts": "2026-10-21T18:46:18.652Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 22.863,
+    "ts": "2026-10-21T18:46:18.656Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 23.28,
+    "ts": "2026-10-21T18:46:19.073Z",
+    "kind": "resume",
+    "who": "A/sub/B",
+    "action": "thaw",
+    "receipt": "hr_8ba4",
+    "ms": 7.0,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 23.316,
+    "ts": "2026-10-21T18:46:19.109Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 23.316,
+    "ts": "2026-10-21T18:46:19.109Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 23.367,
+    "ts": "2026-10-21T18:46:19.160Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 23.37,
+    "ts": "2026-10-21T18:46:19.163Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 23.434,
+    "ts": "2026-10-21T18:46:19.227Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 23.736,
+    "ts": "2026-10-21T18:46:19.529Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 23.825,
+    "ts": "2026-10-21T18:46:19.618Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 23.825,
+    "ts": "2026-10-21T18:46:19.618Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 23.844,
+    "ts": "2026-10-21T18:46:19.637Z",
+    "kind": "halt",
+    "who": "A/sub/B",
+    "action": "freeze",
+    "receipt": "hr_81a9",
+    "ms": 6.3,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 23.873,
+    "ts": "2026-10-21T18:46:19.666Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 23.879,
+    "ts": "2026-10-21T18:46:19.672Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 24.331,
+    "ts": "2026-10-21T18:46:20.124Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 24.331,
+    "ts": "2026-10-21T18:46:20.124Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 24.382,
+    "ts": "2026-10-21T18:46:20.175Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 24.389,
+    "ts": "2026-10-21T18:46:20.182Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 24.41,
+    "ts": "2026-10-21T18:46:20.203Z",
+    "kind": "resume",
+    "who": "A/sub/B",
+    "action": "thaw",
+    "receipt": "hr_76c6",
+    "ms": 7.4,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 24.464,
+    "ts": "2026-10-21T18:46:20.257Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 24.765,
+    "ts": "2026-10-21T18:46:20.558Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 24.839,
+    "ts": "2026-10-21T18:46:20.632Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 24.839,
+    "ts": "2026-10-21T18:46:20.632Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 24.889,
+    "ts": "2026-10-21T18:46:20.682Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 24.896,
+    "ts": "2026-10-21T18:46:20.689Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 24.972,
+    "ts": "2026-10-21T18:46:20.765Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 24.974,
+    "ts": "2026-10-21T18:46:20.767Z",
+    "kind": "halt",
+    "who": "A/sub/B",
+    "action": "freeze",
+    "receipt": "hr_8103",
+    "ms": 9.3,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 25.346,
+    "ts": "2026-10-21T18:46:21.139Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 25.346,
+    "ts": "2026-10-21T18:46:21.139Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 25.397,
+    "ts": "2026-10-21T18:46:21.190Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 25.402,
+    "ts": "2026-10-21T18:46:21.195Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 25.538,
+    "ts": "2026-10-21T18:46:21.331Z",
+    "kind": "resume",
+    "who": "A/sub/B",
+    "action": "thaw",
+    "receipt": "hr_f718",
+    "ms": 7.1,
+    "nodes": [
+     "A/sub/B",
+     "A/sub/B/sub/B1"
+    ]
+   },
+   {
+    "t": 25.793,
+    "ts": "2026-10-21T18:46:21.586Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 25.853,
+    "ts": "2026-10-21T18:46:21.646Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 25.853,
+    "ts": "2026-10-21T18:46:21.646Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 25.904,
+    "ts": "2026-10-21T18:46:21.697Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 25.909,
+    "ts": "2026-10-21T18:46:21.702Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 25.994,
+    "ts": "2026-10-21T18:46:21.787Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 26.121,
+    "ts": "2026-10-21T18:46:21.914Z",
+    "kind": "agent.spawn",
+    "who": "F",
+    "parent": "vm"
+   },
+   {
+    "t": 26.308,
+    "ts": "2026-10-21T18:46:22.101Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 26.36,
+    "ts": "2026-10-21T18:46:22.153Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 26.36,
+    "ts": "2026-10-21T18:46:22.153Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 26.416,
+    "ts": "2026-10-21T18:46:22.209Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 26.422,
+    "ts": "2026-10-21T18:46:22.215Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 26.503,
+    "ts": "2026-10-21T18:46:22.296Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 26.815,
+    "ts": "2026-10-21T18:46:22.608Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 26.872,
+    "ts": "2026-10-21T18:46:22.665Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 26.872,
+    "ts": "2026-10-21T18:46:22.665Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 26.924,
+    "ts": "2026-10-21T18:46:22.717Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 26.929,
+    "ts": "2026-10-21T18:46:22.722Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 27.014,
+    "ts": "2026-10-21T18:46:22.807Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 27.301,
+    "ts": "2026-10-21T18:46:23.094Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "allow",
+    "action": "llm.call",
+    "resource": "Model::\"m\"",
+    "policy_ids": [
+     "llm-all"
+    ]
+   },
+   {
+    "t": 27.322,
+    "ts": "2026-10-21T18:46:23.115Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 27.379,
+    "ts": "2026-10-21T18:46:23.172Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 27.379,
+    "ts": "2026-10-21T18:46:23.172Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 27.431,
+    "ts": "2026-10-21T18:46:23.224Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 27.436,
+    "ts": "2026-10-21T18:46:23.229Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 27.521,
+    "ts": "2026-10-21T18:46:23.314Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 27.595,
+    "ts": "2026-10-21T18:46:23.388Z",
     "kind": "llm.call",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
+    "who": "F",
+    "ms": 294,
+    "model": "m",
+    "status": 404,
+    "dropped": false
+   },
+   {
+    "t": 27.68,
+    "ts": "2026-10-21T18:46:23.473Z",
+    "kind": "halt",
+    "who": "F",
+    "action": "freeze",
+    "receipt": "hr_1680",
+    "ms": 7.1,
+    "nodes": [
+     "F"
+    ]
+   },
+   {
+    "t": 27.828,
+    "ts": "2026-10-21T18:46:23.621Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 27.886,
+    "ts": "2026-10-21T18:46:23.679Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 27.886,
+    "ts": "2026-10-21T18:46:23.679Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 27.937,
+    "ts": "2026-10-21T18:46:23.730Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 27.943,
+    "ts": "2026-10-21T18:46:23.736Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 28.028,
+    "ts": "2026-10-21T18:46:23.821Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 28.335,
+    "ts": "2026-10-21T18:46:24.128Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 28.393,
+    "ts": "2026-10-21T18:46:24.186Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 28.393,
+    "ts": "2026-10-21T18:46:24.186Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 28.443,
+    "ts": "2026-10-21T18:46:24.236Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 28.45,
+    "ts": "2026-10-21T18:46:24.243Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 28.535,
+    "ts": "2026-10-21T18:46:24.328Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 28.842,
+    "ts": "2026-10-21T18:46:24.635Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 28.899,
+    "ts": "2026-10-21T18:46:24.692Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 28.899,
+    "ts": "2026-10-21T18:46:24.692Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 28.95,
+    "ts": "2026-10-21T18:46:24.743Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 28.956,
+    "ts": "2026-10-21T18:46:24.749Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 29.043,
+    "ts": "2026-10-21T18:46:24.836Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 29.349,
+    "ts": "2026-10-21T18:46:25.142Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 29.406,
+    "ts": "2026-10-21T18:46:25.199Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 29.406,
+    "ts": "2026-10-21T18:46:25.199Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 29.457,
+    "ts": "2026-10-21T18:46:25.250Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 29.462,
+    "ts": "2026-10-21T18:46:25.255Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 29.55,
+    "ts": "2026-10-21T18:46:25.343Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 29.856,
+    "ts": "2026-10-21T18:46:25.649Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 29.913,
+    "ts": "2026-10-21T18:46:25.706Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 29.913,
+    "ts": "2026-10-21T18:46:25.706Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 29.963,
+    "ts": "2026-10-21T18:46:25.756Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 29.968,
+    "ts": "2026-10-21T18:46:25.761Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 30.057,
+    "ts": "2026-10-21T18:46:25.850Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 30.363,
+    "ts": "2026-10-21T18:46:26.156Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 30.419,
+    "ts": "2026-10-21T18:46:26.212Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 30.419,
+    "ts": "2026-10-21T18:46:26.212Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 30.469,
+    "ts": "2026-10-21T18:46:26.262Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 30.475,
+    "ts": "2026-10-21T18:46:26.268Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 30.564,
+    "ts": "2026-10-21T18:46:26.357Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 30.871,
+    "ts": "2026-10-21T18:46:26.664Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 30.952,
+    "ts": "2026-10-21T18:46:26.745Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 30.952,
+    "ts": "2026-10-21T18:46:26.745Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 31.024,
+    "ts": "2026-10-21T18:46:26.817Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 31.038,
+    "ts": "2026-10-21T18:46:26.831Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 31.072,
+    "ts": "2026-10-21T18:46:26.865Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 31.378,
+    "ts": "2026-10-21T18:46:27.171Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 31.459,
+    "ts": "2026-10-21T18:46:27.252Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 31.459,
+    "ts": "2026-10-21T18:46:27.252Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 31.53,
+    "ts": "2026-10-21T18:46:27.323Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 31.544,
+    "ts": "2026-10-21T18:46:27.337Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 31.602,
+    "ts": "2026-10-21T18:46:27.395Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 31.884,
+    "ts": "2026-10-21T18:46:27.677Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 31.965,
+    "ts": "2026-10-21T18:46:27.758Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 31.965,
+    "ts": "2026-10-21T18:46:27.758Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 32.037,
+    "ts": "2026-10-21T18:46:27.830Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 32.051,
+    "ts": "2026-10-21T18:46:27.844Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 32.07,
+    "ts": "2026-10-21T18:46:27.863Z",
+    "kind": "authz.decision",
+    "who": "vm",
+    "decision": "allow",
+    "action": "llm.call",
+    "resource": "Model::\"Qwen/Qwen3-30B-A3B-Instruct-2507\"",
+    "policy_ids": [
+     "llm-all"
+    ]
+   },
+   {
+    "t": 32.109,
+    "ts": "2026-10-21T18:46:27.902Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 32.416,
+    "ts": "2026-10-21T18:46:28.209Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 32.471,
+    "ts": "2026-10-21T18:46:28.264Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 32.472,
+    "ts": "2026-10-21T18:46:28.265Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 32.543,
+    "ts": "2026-10-21T18:46:28.336Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 32.558,
+    "ts": "2026-10-21T18:46:28.351Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 32.616,
+    "ts": "2026-10-21T18:46:28.409Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 32.923,
+    "ts": "2026-10-21T18:46:28.716Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 32.978,
+    "ts": "2026-10-21T18:46:28.771Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 32.978,
+    "ts": "2026-10-21T18:46:28.771Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 33.05,
+    "ts": "2026-10-21T18:46:28.843Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 33.065,
+    "ts": "2026-10-21T18:46:28.858Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 33.124,
+    "ts": "2026-10-21T18:46:28.917Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 33.43,
+    "ts": "2026-10-21T18:46:29.223Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 33.484,
+    "ts": "2026-10-21T18:46:29.277Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 33.484,
+    "ts": "2026-10-21T18:46:29.277Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 33.557,
+    "ts": "2026-10-21T18:46:29.350Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 33.572,
+    "ts": "2026-10-21T18:46:29.365Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 33.631,
+    "ts": "2026-10-21T18:46:29.424Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 33.646,
+    "ts": "2026-10-21T18:46:29.439Z",
+    "kind": "llm.call",
+    "who": "vm",
+    "ms": 1575,
     "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
     "status": 200,
-    "ms": 509,
-    "prompt_tokens": 563,
-    "completion_tokens": 21
+    "prompt_tokens": 14,
+    "completion_tokens": 2,
+    "dropped": false
    },
    {
+    "t": 33.747,
+    "ts": "2026-10-21T18:46:29.540Z",
+    "kind": "resume",
+    "who": "F",
+    "action": "thaw",
+    "receipt": "hr_0cc1",
+    "ms": 7.5,
+    "nodes": [
+     "F"
+    ]
+   },
+   {
+    "t": 33.937,
+    "ts": "2026-10-21T18:46:29.730Z",
     "kind": "authz.decision",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "decision": "allow"
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
    },
    {
-    "kind": "llm.call",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
-    "status": 200,
-    "ms": 720,
-    "prompt_tokens": 5051,
-    "completion_tokens": 45
-   },
-   {
+    "t": 33.991,
+    "ts": "2026-10-21T18:46:29.784Z",
     "kind": "authz.decision",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "decision": "allow"
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
    },
    {
-    "kind": "llm.call",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
-    "status": 200,
-    "ms": 642,
-    "prompt_tokens": 5120,
-    "completion_tokens": 29
+    "t": 33.991,
+    "ts": "2026-10-21T18:46:29.784Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
    },
    {
+    "t": 34.064,
+    "ts": "2026-10-21T18:46:29.857Z",
     "kind": "authz.decision",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "decision": "allow"
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
    },
    {
-    "kind": "llm.call",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
-    "status": 200,
-    "ms": 705,
-    "prompt_tokens": 5807,
-    "completion_tokens": 31
-   },
-   {
+    "t": 34.078,
+    "ts": "2026-10-21T18:46:29.871Z",
     "kind": "authz.decision",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "decision": "allow"
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
    },
    {
-    "kind": "llm.call",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
-    "status": 200,
-    "ms": 697,
-    "prompt_tokens": 7267,
-    "completion_tokens": 31
-   },
-   {
+    "t": 34.102,
+    "ts": "2026-10-21T18:46:29.895Z",
     "kind": "authz.decision",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "decision": "allow"
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
    },
    {
-    "kind": "llm.call",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
-    "status": 200,
-    "ms": 1614,
-    "prompt_tokens": 7894,
-    "completion_tokens": 235
-   },
-   {
+    "t": 34.138,
+    "ts": "2026-10-21T18:46:29.931Z",
     "kind": "authz.decision",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "decision": "allow"
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
    },
    {
-    "kind": "llm.call",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
-    "status": 200,
-    "ms": 811,
-    "prompt_tokens": 827,
-    "completion_tokens": 87
-   },
-   {
+    "t": 34.444,
+    "ts": "2026-10-21T18:46:30.237Z",
     "kind": "authz.decision",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "decision": "allow"
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
    },
    {
-    "kind": "llm.call",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
-    "status": 200,
-    "ms": 1608,
-    "prompt_tokens": 8224,
-    "completion_tokens": 239
-   },
-   {
+    "t": 34.497,
+    "ts": "2026-10-21T18:46:30.290Z",
     "kind": "authz.decision",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "decision": "allow"
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
    },
    {
-    "kind": "llm.call",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
-    "status": 200,
-    "ms": 564,
-    "prompt_tokens": 1161,
-    "completion_tokens": 31
+    "t": 34.497,
+    "ts": "2026-10-21T18:46:30.290Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
    },
    {
+    "t": 34.571,
+    "ts": "2026-10-21T18:46:30.364Z",
     "kind": "authz.decision",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "decision": "allow"
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
    },
    {
-    "kind": "llm.call",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
-    "status": 200,
-    "ms": 1003,
-    "prompt_tokens": 8502,
-    "completion_tokens": 105
-   },
-   {
+    "t": 34.586,
+    "ts": "2026-10-21T18:46:30.379Z",
     "kind": "authz.decision",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "decision": "allow"
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
    },
    {
-    "kind": "llm.call",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
-    "status": 200,
-    "ms": 971,
-    "prompt_tokens": 9324,
-    "completion_tokens": 68
-   },
-   {
+    "t": 34.609,
+    "ts": "2026-10-21T18:46:30.402Z",
     "kind": "authz.decision",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "decision": "allow"
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
    },
    {
-    "kind": "llm.call",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2",
-    "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
-    "status": 200,
-    "ms": 399,
-    "prompt_tokens": 1268,
-    "completion_tokens": 4
+    "t": 34.645,
+    "ts": "2026-10-21T18:46:30.438Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
    },
    {
+    "t": 34.951,
+    "ts": "2026-10-21T18:46:30.744Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 35.003,
+    "ts": "2026-10-21T18:46:30.796Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 35.003,
+    "ts": "2026-10-21T18:46:30.796Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 35.077,
+    "ts": "2026-10-21T18:46:30.870Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 35.092,
+    "ts": "2026-10-21T18:46:30.885Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 35.115,
+    "ts": "2026-10-21T18:46:30.908Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 35.152,
+    "ts": "2026-10-21T18:46:30.945Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 35.458,
+    "ts": "2026-10-21T18:46:31.251Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 35.509,
+    "ts": "2026-10-21T18:46:31.302Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 35.509,
+    "ts": "2026-10-21T18:46:31.302Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 35.584,
+    "ts": "2026-10-21T18:46:31.377Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 35.599,
+    "ts": "2026-10-21T18:46:31.392Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 35.622,
+    "ts": "2026-10-21T18:46:31.415Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 35.659,
+    "ts": "2026-10-21T18:46:31.452Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 35.965,
+    "ts": "2026-10-21T18:46:31.758Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 36.017,
+    "ts": "2026-10-21T18:46:31.810Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 36.017,
+    "ts": "2026-10-21T18:46:31.810Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 36.029,
+    "ts": "2026-10-21T18:46:31.822Z",
+    "kind": "halt",
+    "who": "support",
+    "action": "net-cut",
+    "receipt": "hr_78c8",
+    "ms": 0,
+    "nodes": [
+     "support"
+    ]
+   },
+   {
+    "t": 36.09,
+    "ts": "2026-10-21T18:46:31.883Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 36.105,
+    "ts": "2026-10-21T18:46:31.898Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 36.128,
+    "ts": "2026-10-21T18:46:31.921Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 36.165,
+    "ts": "2026-10-21T18:46:31.958Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 36.472,
+    "ts": "2026-10-21T18:46:32.265Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 36.523,
+    "ts": "2026-10-21T18:46:32.316Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "cut",
+     "hr_78c8"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 36.597,
+    "ts": "2026-10-21T18:46:32.390Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 36.612,
+    "ts": "2026-10-21T18:46:32.405Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 36.635,
+    "ts": "2026-10-21T18:46:32.428Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 36.672,
+    "ts": "2026-10-21T18:46:32.465Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 36.978,
+    "ts": "2026-10-21T18:46:32.771Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 37.029,
+    "ts": "2026-10-21T18:46:32.822Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "cut",
+     "hr_78c8"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 37.104,
+    "ts": "2026-10-21T18:46:32.897Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 37.119,
+    "ts": "2026-10-21T18:46:32.912Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 37.141,
+    "ts": "2026-10-21T18:46:32.934Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 37.178,
+    "ts": "2026-10-21T18:46:32.971Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 37.484,
+    "ts": "2026-10-21T18:46:33.277Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 37.534,
+    "ts": "2026-10-21T18:46:33.327Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "cut",
+     "hr_78c8"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 37.613,
+    "ts": "2026-10-21T18:46:33.406Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 37.627,
+    "ts": "2026-10-21T18:46:33.420Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 37.648,
+    "ts": "2026-10-21T18:46:33.441Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 37.685,
+    "ts": "2026-10-21T18:46:33.478Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 37.993,
+    "ts": "2026-10-21T18:46:33.786Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 38.033,
+    "ts": "2026-10-21T18:46:33.826Z",
+    "kind": "resume",
+    "who": "support",
+    "action": "net-uncut",
+    "receipt": "hr_3215",
+    "ms": 0,
+    "nodes": [
+     "support"
+    ]
+   },
+   {
+    "t": 38.044,
+    "ts": "2026-10-21T18:46:33.837Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 38.044,
+    "ts": "2026-10-21T18:46:33.837Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 38.12,
+    "ts": "2026-10-21T18:46:33.913Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 38.134,
+    "ts": "2026-10-21T18:46:33.927Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 38.154,
+    "ts": "2026-10-21T18:46:33.947Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 38.192,
+    "ts": "2026-10-21T18:46:33.985Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 38.5,
+    "ts": "2026-10-21T18:46:34.293Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 38.551,
+    "ts": "2026-10-21T18:46:34.344Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 38.551,
+    "ts": "2026-10-21T18:46:34.344Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 38.628,
+    "ts": "2026-10-21T18:46:34.421Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 38.641,
+    "ts": "2026-10-21T18:46:34.434Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 38.66,
+    "ts": "2026-10-21T18:46:34.453Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 38.699,
+    "ts": "2026-10-21T18:46:34.492Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 39.007,
+    "ts": "2026-10-21T18:46:34.800Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 39.057,
+    "ts": "2026-10-21T18:46:34.850Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 39.057,
+    "ts": "2026-10-21T18:46:34.850Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 39.134,
+    "ts": "2026-10-21T18:46:34.927Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 39.148,
+    "ts": "2026-10-21T18:46:34.941Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 39.167,
+    "ts": "2026-10-21T18:46:34.960Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 39.205,
+    "ts": "2026-10-21T18:46:34.998Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 39.514,
+    "ts": "2026-10-21T18:46:35.307Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 39.569,
+    "ts": "2026-10-21T18:46:35.362Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 39.569,
+    "ts": "2026-10-21T18:46:35.362Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 39.642,
+    "ts": "2026-10-21T18:46:35.435Z",
+    "kind": "authz.decision",
+    "who": "D",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 39.654,
+    "ts": "2026-10-21T18:46:35.447Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 39.675,
+    "ts": "2026-10-21T18:46:35.468Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 39.717,
+    "ts": "2026-10-21T18:46:35.510Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 39.821,
+    "ts": "2026-10-21T18:46:35.614Z",
+    "kind": "halt",
+    "who": "D",
+    "action": "kill",
+    "receipt": "hr_7388",
+    "ms": 8.9,
+    "nodes": [
+     "D"
+    ]
+   },
+   {
+    "t": 39.862,
+    "ts": "2026-10-21T18:46:35.655Z",
     "kind": "agent.exit",
-    "principal": "vm/vm-01-cd8ffd/agent/tau2"
+    "who": "D"
    },
    {
+    "t": 40.021,
+    "ts": "2026-10-21T18:46:35.814Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 40.078,
+    "ts": "2026-10-21T18:46:35.871Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 40.078,
+    "ts": "2026-10-21T18:46:35.871Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 40.161,
+    "ts": "2026-10-21T18:46:35.954Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 40.182,
+    "ts": "2026-10-21T18:46:35.975Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 40.224,
+    "ts": "2026-10-21T18:46:36.017Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 40.527,
+    "ts": "2026-10-21T18:46:36.320Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 40.585,
+    "ts": "2026-10-21T18:46:36.378Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 40.585,
+    "ts": "2026-10-21T18:46:36.378Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 40.668,
+    "ts": "2026-10-21T18:46:36.461Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 40.688,
+    "ts": "2026-10-21T18:46:36.481Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 40.73,
+    "ts": "2026-10-21T18:46:36.523Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 41.034,
+    "ts": "2026-10-21T18:46:36.827Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 41.091,
+    "ts": "2026-10-21T18:46:36.884Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 41.091,
+    "ts": "2026-10-21T18:46:36.884Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 41.178,
+    "ts": "2026-10-21T18:46:36.971Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 41.197,
+    "ts": "2026-10-21T18:46:36.990Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 41.237,
+    "ts": "2026-10-21T18:46:37.030Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 41.541,
+    "ts": "2026-10-21T18:46:37.334Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 41.597,
+    "ts": "2026-10-21T18:46:37.390Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 41.597,
+    "ts": "2026-10-21T18:46:37.390Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 41.685,
+    "ts": "2026-10-21T18:46:37.478Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 41.703,
+    "ts": "2026-10-21T18:46:37.496Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 41.743,
+    "ts": "2026-10-21T18:46:37.536Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 42.048,
+    "ts": "2026-10-21T18:46:37.841Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 42.104,
+    "ts": "2026-10-21T18:46:37.897Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 42.104,
+    "ts": "2026-10-21T18:46:37.897Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 42.192,
+    "ts": "2026-10-21T18:46:37.985Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 42.21,
+    "ts": "2026-10-21T18:46:38.003Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 42.249,
+    "ts": "2026-10-21T18:46:38.042Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 42.554,
+    "ts": "2026-10-21T18:46:38.347Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 42.61,
+    "ts": "2026-10-21T18:46:38.403Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 42.61,
+    "ts": "2026-10-21T18:46:38.403Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 42.699,
+    "ts": "2026-10-21T18:46:38.492Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 42.716,
+    "ts": "2026-10-21T18:46:38.509Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 42.755,
+    "ts": "2026-10-21T18:46:38.548Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 43.061,
+    "ts": "2026-10-21T18:46:38.854Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 43.117,
+    "ts": "2026-10-21T18:46:38.910Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 43.117,
+    "ts": "2026-10-21T18:46:38.910Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 43.211,
+    "ts": "2026-10-21T18:46:39.004Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 43.227,
+    "ts": "2026-10-21T18:46:39.020Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 43.265,
+    "ts": "2026-10-21T18:46:39.058Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 43.568,
+    "ts": "2026-10-21T18:46:39.361Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 43.627,
+    "ts": "2026-10-21T18:46:39.420Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 43.627,
+    "ts": "2026-10-21T18:46:39.420Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 43.651,
+    "ts": "2026-10-21T18:46:39.444Z",
+    "kind": "authz.decision",
+    "who": "vm",
+    "decision": "allow",
+    "action": "llm.call",
+    "resource": "Model::\"Qwen/Qwen3-30B-A3B-Instruct-2507\"",
+    "policy_ids": [
+     "llm-all"
+    ]
+   },
+   {
+    "t": 43.718,
+    "ts": "2026-10-21T18:46:39.511Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 43.735,
+    "ts": "2026-10-21T18:46:39.528Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 43.772,
+    "ts": "2026-10-21T18:46:39.565Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 44.075,
+    "ts": "2026-10-21T18:46:39.868Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 44.133,
+    "ts": "2026-10-21T18:46:39.926Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 44.133,
+    "ts": "2026-10-21T18:46:39.926Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 44.187,
+    "ts": "2026-10-21T18:46:39.980Z",
+    "kind": "llm.call",
+    "who": "vm",
+    "ms": 535,
+    "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+    "status": 200,
+    "prompt_tokens": 14,
+    "completion_tokens": 2,
+    "dropped": false
+   },
+   {
+    "t": 44.226,
+    "ts": "2026-10-21T18:46:40.019Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 44.242,
+    "ts": "2026-10-21T18:46:40.035Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 44.279,
+    "ts": "2026-10-21T18:46:40.072Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 44.585,
+    "ts": "2026-10-21T18:46:40.378Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 44.641,
+    "ts": "2026-10-21T18:46:40.434Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 44.641,
+    "ts": "2026-10-21T18:46:40.434Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 44.735,
+    "ts": "2026-10-21T18:46:40.528Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 44.752,
+    "ts": "2026-10-21T18:46:40.545Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 44.787,
+    "ts": "2026-10-21T18:46:40.580Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 45.092,
+    "ts": "2026-10-21T18:46:40.885Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 45.154,
+    "ts": "2026-10-21T18:46:40.947Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 45.154,
+    "ts": "2026-10-21T18:46:40.947Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 45.242,
+    "ts": "2026-10-21T18:46:41.035Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 45.259,
+    "ts": "2026-10-21T18:46:41.052Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 45.295,
+    "ts": "2026-10-21T18:46:41.088Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 45.601,
+    "ts": "2026-10-21T18:46:41.394Z",
+    "kind": "authz.decision",
+    "who": "A/sub/B/sub/B1",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 45.662,
+    "ts": "2026-10-21T18:46:41.455Z",
+    "kind": "authz.decision",
+    "who": "support",
+    "decision": "allow",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "refund-support"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 45.662,
+    "ts": "2026-10-21T18:46:41.455Z",
+    "kind": "tool.call",
+    "who": "support",
+    "tool": "issue_refund"
+   },
+   {
+    "t": 45.75,
+    "ts": "2026-10-21T18:46:41.543Z",
+    "kind": "authz.decision",
+    "who": "A",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 45.766,
+    "ts": "2026-10-21T18:46:41.559Z",
+    "kind": "authz.decision",
+    "who": "F",
+    "decision": "deny",
+    "action": "tool.call",
+    "resource": "Tool::\"issue_refund\"",
+    "policy_ids": [
+     "default-deny"
+    ],
+    "amount_cents": 100
+   },
+   {
+    "t": 45.974,
+    "ts": "2026-10-21T18:46:41.767Z",
+    "kind": "agent.exit",
+    "who": "A"
+   },
+   {
+    "t": 46.0,
+    "ts": "2026-10-21T18:46:41.793Z",
+    "kind": "agent.exit",
+    "who": "support"
+   },
+   {
+    "t": 46.021,
+    "ts": "2026-10-21T18:46:41.814Z",
+    "kind": "agent.exit",
+    "who": "A/sub/B"
+   },
+   {
+    "t": 46.043,
+    "ts": "2026-10-21T18:46:41.836Z",
+    "kind": "agent.exit",
+    "who": "A/sub/B/sub/B1"
+   },
+   {
+    "t": 46.065,
+    "ts": "2026-10-21T18:46:41.858Z",
+    "kind": "agent.exit",
+    "who": "F"
+   },
+   {
+    "t": 46.153,
+    "ts": "2026-10-21T18:46:41.946Z",
     "kind": "vm.exit",
-    "principal": "vm/vm-01-cd8ffd"
-   },
-   {
-    "kind": "session.close",
-    "principal": "vm/vm-01-cd8ffd",
-    "status": "done"
+    "who": "vm"
    }
   ]
  }

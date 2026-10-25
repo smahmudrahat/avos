@@ -13,10 +13,9 @@
   <section>
     <p class="eyebrow">60-second launch video · storyboard you can record</p>
     <h2>Control every agent. Retrain on their traces.</h2>
-    <p class="lede">Press play, go fullscreen, record your screen and talk over it. Click any ■ to stop a branch yourself,
-      or click a node to follow its trace. The scenario is a replay; the measured numbers come from <code>site/data/cfg.json</code>, built from the runs by <code>site/build.py</code>.</p>
+    <p class="lede">Press play, go fullscreen, record your screen and talk over it. Click a node to follow its trace. Control and Trace replay, unedited, a recorded session from the host ledger; Label, Retrain and Score are measured results. All of it comes from <code>site/data/cfg.json</code>, built from the repository by <code>site/build.py</code>.</p>
     <div id="player"></div>
-    <p class="hint">Space plays and pauses. Restart clears any branches you stopped by hand.</p>
+    <p class="hint">Space plays and pauses. Restart replays from the beginning.</p>
   </section>
   <section>
     <h2>Shot list and what to say</h2>
@@ -27,7 +26,7 @@
     <ol class="steps">
       <li><b>Result first</b><span>The outcome is on screen in the first second. The rest shows how you got it.</span></li>
       <li><b>Readable with sound off</b><span>Feeds autoplay muted, so the captions carry the whole story.</span></li>
-      <li><b>One live moment</b><span>The stop click: one node freezes while its siblings keep counting.</span></li>
+      <li><b>One recorded moment</b><span>The freeze: one branch turns blue while its siblings keep working, straight from the host ledger.</span></li>
       <li><b>One screen, no cuts</b><span>All panels stay on screen, so it reads as working software, not slides.</span></li>
       <li><b>Proof experts can check</b><span>Benchmark, held-out split and pass^4 are named on screen; the repo has the eval. Cut 0:14–0:26 as a short loop for replies.</span></li>
     </ol>
@@ -38,14 +37,16 @@
   const c = await (await fetch("data/cfg.json")).json(), s = c.score;
   const X = Math.round(s.x.value * 100), Y = Math.round(s.y.value);
   const rows = [
-    ["0:00–0:04", "Hook card: the two claims and the result line.", "“Two things in one minute: stopping any AI agent at any depth, and turning what it did into a cheaper model.”"],
-    ["0:04–0:14", "Two microVMs boot. Sessions open. Agents spawn subagents and the tree grows. Counters start ticking.", "“Every agent session runs in its own Firecracker microVM. Each agent and subagent gets its own identity, so we always know who did what.”"],
-    ["0:14–0:19", "issue-refund turns red. The trace shows a $480 refund against a $200 limit.", "“This refund subagent is trying to refund $480. The policy limit is $200.”"],
-    ["0:19–0:26", "The cursor clicks ■. The node freezes blue, a halt receipt appears, and the siblings keep counting.", `“I stop just that one, in ${c.control.stop_ms_median} milliseconds. Its branch freezes. Everything else keeps working.”`],
-    ["0:26–0:36", "The trace stream fills. Runs turn green or red, then failed runs fade out.", "“Every model call, tool call and network connection is recorded and labelled pass or fail. Failed runs are dropped. Passed runs become training data.”"],
-    ["0:36–0:42", "The loss curve draws. The progress bar fills.", `“We retrain an open 9B model on only its ${c.retrain.runs} passed runs, in ${c.retrain.gpu_hours} GPU-hours.”`],
-    ["0:42–0:52", "Three bars grow, then the headline: share of Opus's score and the cost ratio.", `“On held-out τ²-bench retail it gets ${X}% of Claude Opus 5.5's score at 1/${Y} of the cost per task.”`],
-    ["0:52–1:00", "End card with the measured numbers.", "“It's open source. The eval and the code are in the reply.”"],
+    ["0:00–0:04", "Hook card: the two claims and the measured result.", `“Two things in one minute: stopping any AI agent at any depth, and turning what it did into a cheaper model.”`],
+    ["0:04–0:07", "A recorded session starts: the microVM boots (2.7 s, Firecracker), agents A, support and D spawn, then A's subagent B and B's subagent B1.", "“This is a recording from our host. Every agent and subagent gets its own identity the moment it spawns.”"],
+    ["0:07–0:09", "Denials appear: D, A, B and B1 try issue_refund and the gateway refuses each one (default-deny). Only support may refund, up to $200.", "“Every call goes through one gateway. Only the support agent may issue refunds; everyone else is refused, and every refusal is recorded.”"],
+    ["0:09–0:12", "halt freeze A/sub/B, receipt hr_4f48, 6.3 ms: B and B1 turn blue; support keeps issuing allowed refunds. The receipt shows what happened during the freeze.", "“We freeze one branch by name. B and its own subagent stop. Everything else keeps working.”"],
+    ["0:12–0:24", "The test repeats: ten more freeze and thaw cycles of B, a freeze of F, then a network cut of support (its calls are denied with the cut receipt).", "“Freeze, thaw, cut the network: each control is one command with a receipt, and the siblings never notice.”"],
+    ["0:24–0:30", "D is killed (hr_7388), the agents exit, the microVM exits. Every event of the session is in the trace.", "“Every model call, tool call, decision and control is in the trace, tied to who did it.”"],
+    ["0:30–0:36", "Label: 1,040 train runs from two fleets, 356 kept by reward and an open-weight judge.", "“Runs are labelled pass or fail. Only passed runs become training data.”"],
+    ["0:36–0:42", "Retrain: the real 160-step loss curve of the LoRA fit.", `“We retrain an open 9B model on ${c.retrain.runs} of its own passed runs, in ${c.retrain.gpu_hours} GPU-hours.”`],
+    ["0:42–0:52", "Score: pass^4 of the untrained 9B, the retrained 9B and Claude Opus 5.5 on held-out tasks, then the headline.", `“On held-out τ²-bench retail it gets ${X}% of Claude Opus 5.5's pass^4 at 1/${Y} of the cost per task.”`],
+    ["0:52–1:00", "End card with the measured numbers.", "“It's open source. The eval, the data and the code are in the repository.”"],
   ];
   document.getElementById("shots").innerHTML = `<thead><tr><th>Time</th><th>On screen</th><th>You say (suggested)</th></tr></thead><tbody>${rows.map(r => `<tr>${r.map(x => `<td style="white-space:normal;font-family:var(--sans)">${x}</td>`).join("")}</tr>`).join("")}</tbody>`;
   mount(document.getElementById("player"));

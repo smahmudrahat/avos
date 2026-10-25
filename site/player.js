@@ -1,233 +1,228 @@
-// The 60-second run: Control → Trace → Retrain → Score, driven by data/cfg.json (built from measured runs by build.py).
+// The 60-second run: Control → Trace → Retrain → Score. Control and Trace replay, event by event, what one microVM
+// wrote to the host ledger in a recorded session (cfg.replay); Label, Retrain and Score show measured results.
+// Nothing here is generated: no random numbers, no invented events.
 const $ = (s, r = document) => r.querySelector(s);
 const el = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
-const fmt = { pct: v => `${Math.round(v * 100)}%`, usd: v => `$${v.toFixed(v < 0.01 ? 4 : 2)}`, int: v => Math.round(v).toLocaleString("en-US") };
+const pct = v => `${Math.round(v * 100)}%`;
+const int = v => Math.round(v).toLocaleString("en-US");
 
-function rng(seed) { return () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32; }
+const DURATION = 60, REPLAY = [4, 30];          // video seconds the recording is replayed over
+const BEATS = [[0, 20, 0], [20, 36, 1], [36, 42, 2], [42, 60, 3]];
+const leaf = who => who.split("/").pop();
+const kindOf = who => (who === "vm" ? "microVM" : who.includes("/sub/") ? "subagent" : "agent");
 
-// The tree the run grows: two microVMs, a harness session each, agents and subagents. Names follow the SPIFFE paths
-// the platform mints (spiffe://avoslab.com/vm/<vm>/agent/<name>).
-const TREE = [
-  { id: "vm-01", kind: "microVM", at: 4.2 },
-  { id: "vm-01/support", kind: "session", parent: "vm-01", at: 5.0 },
-  { id: "vm-01/support/triage", kind: "agent", parent: "vm-01/support", at: 6.0, label: "triage" },
-  { id: "vm-01/support/triage/lookup-order", kind: "subagent", parent: "vm-01/support/triage", at: 8.0, label: "lookup-order" },
-  { id: "vm-01/support/triage/issue-refund", kind: "subagent", parent: "vm-01/support/triage", at: 9.5, label: "issue-refund" },
-  { id: "vm-02", kind: "microVM", at: 4.8 },
-  { id: "vm-02/tau2", kind: "session", parent: "vm-02", at: 5.6 },
-  { id: "vm-02/tau2/retail-agent", kind: "agent", parent: "vm-02/tau2", at: 6.6, label: "retail-agent" },
-  { id: "vm-02/tau2/retail-agent/search", kind: "subagent", parent: "vm-02/tau2/retail-agent", at: 10.5, label: "search" },
-  { id: "vm-02/tau2/retail-agent/summarize", kind: "subagent", parent: "vm-02/tau2/retail-agent", at: 11.5, label: "summarize" },
-];
-const VIOLATOR = "vm-01/support/triage/issue-refund";
-const BEATS = [[0, 26, 0], [26, 36, 1], [36, 42, 2], [42, 60, 3]];
-const DURATION = 60;
-
-export async function mount(root, { autoplay = false, cfgUrl = "data/cfg.json" } = {}) {
+export async function mount(root, { cfgUrl = "data/cfg.json" } = {}) {
   const cfg = await (await fetch(cfgUrl)).json();
-  const ui = build(root, cfg);
-  let state, last = null, playing = false;
+  const R = cfg.replay, EV = R.events, speed = R.duration_s / (REPLAY[1] - REPLAY[0]);
+  const ui = build(root, cfg, speed);
+  let st, last = null, playing = false;
 
   function reset() {
-    state = { t: 0, nodes: new Map(), stopped: new Set(), filter: null, events: 0, tokens: 0, spend: 0, rand: rng(300),
-              next: 0, red: false, autoStopped: false, runs: [], labelled: 0, lossDrawn: 0, scored: 0 };
+    st = { t: 0, i: 0, live: new Set(), filter: null, events: 0, allowed: 0, denied: 0, firstHalt: null };
     ui.reset();
   }
 
-  const isFrozen = id => [...state.stopped].some(s => id === s || id.startsWith(s + "/"));
-
-  function stop(id, auto = false) {
-    if (isFrozen(id)) return;
-    state.stopped.add(id);
-    const under = [...state.nodes.keys()].filter(n => n === id || n.startsWith(id + "/")).length;
-    const ms = cfg.control.stop_ms_median + Math.round(state.rand() * (cfg.control.stop_ms_worst - cfg.control.stop_ms_median));
-    const receipt = "hr_" + Math.floor(state.rand() * 0xffff).toString(16).padStart(4, "0");
-    ui.freeze(id);
-    ui.trace({ kind: "ctl.halt", principal: id, note: `${receipt} · ${under} node${under > 1 ? "s" : ""} frozen in ${ms} ms · siblings unaffected`, cls: "halt" }, state);
-    ui.receipt(id, receipt, ms, auto);
+  function apply(e) {
+    st.events++;
+    if (e.kind === "vm.boot") { ui.node("vm", null, `boot ${e.boot_ms} ms`); st.live.add("vm"); }
+    if (e.kind === "agent.spawn") { ui.node(e.who, e.parent); st.live.add(e.who); }
+    if (e.kind === "agent.exit" || e.kind === "vm.exit") { st.live.delete(e.who); ui.mark(e.who, "exited", true); }
+    if (e.kind === "authz.decision" && e.action === "tool.call") {
+      if (e.decision === "deny") { st.denied++; ui.flash(e.who); } else st.allowed++;
+    }
+    if (e.kind === "halt") {
+      for (const n of e.nodes || [e.who]) ui.mark(n, e.action === "net-cut" ? "cut" : "frozen", true);
+      if (!st.firstHalt && e.action === "freeze") { st.firstHalt = e; ui.receipt(e, during(e)); }
+    }
+    if (e.kind === "resume") for (const n of e.nodes || [e.who]) { ui.mark(n, "frozen", false); ui.mark(n, "cut", false); }
+    ui.trace(e, st);
   }
 
-  function emit(id) {
-    const s = cfg.trace_sample.events.filter(e => e.kind === "llm.call" || e.kind === "authz.decision");
-    const e = s[Math.floor(state.rand() * s.length)];
-    const ev = { kind: e.kind, principal: id };
-    if (e.kind === "llm.call") {
-      const role = /gemma/i.test(e.model || "") ? "simulator" : /deepseek/i.test(e.model || "") ? "judge" : "policy";
-      ev.note = `${role} · ${e.prompt_tokens || 0}+${e.completion_tokens || 0} tok · ${e.ms || 0} ms`;
-      state.tokens += (e.prompt_tokens || 0) + (e.completion_tokens || 0);
-      state.spend += ((e.prompt_tokens || 0) * 0.1 + (e.completion_tokens || 0) * 0.15) / 1e6;
-    } else ev.note = `allow · ${id.split("/").pop()}`;
-    state.events++;
-    ui.trace(ev, state);
+  // What happened while the first halted branch was frozen, counted from the recording itself.
+  function during(h) {
+    const end = EV.find(x => x.kind === "resume" && x.t > h.t && x.who === h.who)?.t ?? R.duration_s;
+    const frozen = new Set(h.nodes);
+    const win = EV.filter(x => x.t > h.t && x.t < end);
+    const sib = win.filter(x => x.kind === "authz.decision" && x.decision === "allow" && !frozen.has(x.who));
+    return { seconds: end - h.t, frozen_events: win.filter(x => frozen.has(x.who)).length,
+             sibling_allowed: sib.length, sibling_names: [...new Set(sib.map(x => (x.who === "vm" ? "microVM" : leaf(x.who))))] };
   }
 
   function step(dt) {
-    const t0 = state.t, t = state.t = Math.min(DURATION, t0 + dt);
-    for (const n of TREE) if (n.at <= t && !state.nodes.has(n.id)) { state.nodes.set(n.id, n); ui.addNode(n, { stop, focus }); }
-    if (t >= 14 && !state.red) {
-      state.red = true; ui.violate(VIOLATOR);
-      ui.trace({ kind: "tool.call", principal: VIOLATOR, note: "issue_refund amount $480 · policy limit $200", cls: "bad" }, state);
-    }
-    if (t >= 20 && !state.autoStopped) { state.autoStopped = true; ui.cursorTo(VIOLATOR, () => stop(VIOLATOR, true)); }
-    if (t < 36) {
-      const live = [...state.nodes.keys()].filter(id => !isFrozen(id) && state.nodes.get(id).kind !== "microVM");
-      while (state.next <= t && live.length) { emit(live[Math.floor(state.rand() * live.length)]); state.next += t < 26 ? 0.18 : 0.07; }
-    }
-    if (t >= 26 && t < 36) ui.label(Math.min(1, (t - 26) / 8), cfg);
-    if (t >= 36) ui.retrain(Math.min(1, (t - 36) / 6), cfg);
-    if (t >= 42) ui.score(Math.min(1, (t - 42) / 8), cfg);
-    ui.overlay(t < 4 ? "hook" : t >= 52 ? "end" : null);
-    ui.tick(state, BEATS.find(([a, b]) => t >= a && t < b)?.[2] ?? 3);
-    if (t >= DURATION) pause();
+    st.t = Math.min(DURATION, st.t + dt);
+    const rec = Math.max(0, Math.min(R.duration_s, (st.t - REPLAY[0]) * speed));
+    if (st.t >= REPLAY[0]) while (st.i < EV.length && EV[st.i].t <= rec) apply(EV[st.i++]);
+    if (st.t >= 30) ui.label(Math.min(1, (st.t - 30) / 5));
+    if (st.t >= 36) ui.retrain(Math.min(1, (st.t - 36) / 6));
+    if (st.t >= 42) ui.score(Math.min(1, (st.t - 42) / 8));
+    ui.overlay(st.t < REPLAY[0] ? "hook" : st.t >= 52 ? "end" : null);
+    ui.tick(st, rec, BEATS.find(([a, b]) => st.t >= a && st.t < b)?.[2] ?? 3);
+    if (st.t >= DURATION) pause();
   }
 
-  function focus(id) { state.filter = state.filter === id ? null : id; ui.filter(state.filter); }
   function frame(ts) { if (!playing) return; if (last != null) step((ts - last) / 1000); last = ts; requestAnimationFrame(frame); }
-  function play() { if (state.t >= DURATION) reset(); playing = true; last = null; ui.playing(true); requestAnimationFrame(frame); }
+  function play() { if (st.t >= DURATION) { reset(); step(0); } playing = true; last = null; ui.playing(true); requestAnimationFrame(frame); }
   function pause() { playing = false; ui.playing(false); }
+  const toggle = () => (playing ? pause() : play());
 
-  ui.onPlay(() => (playing ? pause() : play()));
-  $(".p-overlay", root).onclick = () => (playing ? pause() : play());
+  ui.onPlay(toggle);
+  ui.onOverlay(toggle);
   ui.onRestart(() => { const was = playing; pause(); reset(); step(0); if (was) play(); });
-  root.addEventListener("keydown", e => { if (e.code === "Space") { e.preventDefault(); playing ? pause() : play(); } });
+  ui.onFocus(id => { st.filter = st.filter === id ? null : id; ui.filter(st.filter); });
+  root.addEventListener("keydown", e => { if (e.code === "Space") { e.preventDefault(); toggle(); } });
   new IntersectionObserver(([en]) => { if (!en.isIntersecting && playing) pause(); }).observe(root);
-
   reset(); step(0);
-  if (autoplay) play();
 }
 
-function build(root, cfg) {
-  const s = cfg.score, X = s.x.value, Y = s.y.value;
+function build(root, cfg, speed) {
+  const s = cfg.score, X = s.x.value, Y = s.y.value, R = cfg.replay;
   root.tabIndex = 0;
   root.classList.add("player");
   root.innerHTML = `
     <div class="p-bar">
-      <div class="p-id"><b>Principal</b> agent cloud · live run</div>
+      <div class="p-id"><b>Replay</b> recorded session · ${R.events[0].ts.slice(0, 10)} · ×${speed.toFixed(1)}</div>
       <ol class="p-beats"><li>Control</li><li>Trace</li><li>Retrain</li><li>Score</li></ol>
       <div class="p-counters">
         <div><span data-c="agents">0</span><small>agents live</small></div>
-        <div><span data-c="tokens">0</span><small>tokens</small></div>
-        <div><span data-c="spend">$0.00</span><small>spend</small></div>
+        <div><span data-c="allowed">0</span><small>tool calls allowed</small></div>
+        <div><span data-c="denied">0</span><small>denied by policy</small></div>
         <div><span data-c="events">0</span><small>events traced</small></div>
-        <div><span data-c="clock">00:00.0</span><small>run clock</small></div>
+        <div><span data-c="clock">00.0 s</span><small>recording time</small></div>
       </div>
     </div>
     <div class="p-grid">
       <section class="p-panel p-tree"><h3>Agent tree</h3>
-        <div class="p-legend"><i class="k-microVM"></i>microVM <i class="k-session"></i>harness session <i class="k-agent"></i>agent <i class="k-subagent"></i>subagent</div>
+        <div class="p-legend"><i class="k-microVM"></i>microVM <i class="k-agent"></i>agent <i class="k-subagent"></i>subagent</div>
         <ul class="tree"></ul><div class="p-receipt" hidden></div></section>
       <section class="p-panel p-trace"><h3>Trace · <span class="p-scope">all agents</span> <em class="p-count">0 events</em></h3><ol class="stream"></ol></section>
       <section class="p-panel p-right">
-        <div class="p-sub p-label"><h3>Label</h3><div class="runs"></div><p class="p-note"></p></div>
+        <div class="p-sub p-label"><h3>Label</h3><div class="lab"></div><p class="p-note"></p></div>
         <div class="p-sub p-retrain"><h3>Retrain</h3><svg class="loss" viewBox="0 0 200 70" preserveAspectRatio="none"><path/></svg>
           <div class="prog"><i></i></div><p class="p-note"></p></div>
         <div class="p-sub p-score"><h3>Score</h3><div class="bars"></div><p class="p-head"></p></div>
       </section>
     </div>
     <div class="p-overlay" hidden></div>
-    <div class="p-cursor" hidden></div>
     <div class="p-ctl"><button class="p-play" aria-label="Play">▶</button><div class="p-track"><i></i></div>
       <span class="p-time">0:00 / 1:00</span><button class="p-restart">Restart</button></div>`;
 
   const tree = $(".tree", root), stream = $(".stream", root), items = new Map();
+  let focusCb = () => {};
   const pass4 = { base: s.base.pass4, retrained: s.retrained.pass4, opus: s.opus.pass4 };
+
+  const describe = e => {
+    if (e.kind === "authz.decision") {
+      const what = (e.resource || "").replace(/^\w+::/, "").replace(/"/g, "");
+      const amt = e.amount_cents != null ? ` $${(e.amount_cents / 100).toFixed(2)}` : "";
+      const deny = e.decision === "deny";
+      return [`${e.decision} · ${what}${amt}${deny ? ` · ${(e.policy_ids || []).join(", ")}` : ""}`, deny ? "bad" : ""];
+    }
+    if (e.kind === "tool.call") return [`${e.tool || "tool"} ran`, ""];
+    if (e.kind === "llm.call") return [`${(e.model || "").split("/").pop()} · ${e.status} · ${e.prompt_tokens ?? 0}+${e.completion_tokens ?? 0} tok · ${e.ms ?? 0} ms`, ""];
+    const n = (e.nodes || []).length;
+    if (e.kind === "halt") return [`${e.action} · ${e.receipt} · ${n} node${n === 1 ? "" : "s"} · ${e.ms} ms`, "halt"];
+    if (e.kind === "resume") return [`${e.action || "resume"} · ${e.receipt || ""} · ${e.ms ?? 0} ms`, "halt"];
+    if (e.kind === "vm.boot") return [`firecracker · boot ${e.boot_ms} ms`, ""];
+    return ["", ""];
+  };
 
   return {
     reset() {
       tree.innerHTML = ""; stream.innerHTML = ""; items.clear();
-      $(".runs", root).innerHTML = ""; $(".p-label .p-note", root).textContent = "";
+      $(".lab", root).innerHTML = ""; $(".p-label .p-note", root).textContent = "";
       $(".loss path", root).setAttribute("d", ""); $(".prog i", root).style.width = "0";
       $(".p-retrain .p-note", root).textContent = ""; $(".bars", root).innerHTML = ""; $(".p-head", root).textContent = "";
       $(".p-receipt", root).hidden = true; $(".p-scope", root).textContent = "all agents";
     },
-    addNode(n, { stop, focus }) {
-      const li = el("li", `node k-${n.kind}`);
-      const row = el("div", "row");
-      row.append(el("i", "dot"), el("span", "name", n.label || n.id.split("/").pop()), el("span", "kind", n.kind));
-      const b = el("button", "stop", "■"); b.title = "Stop this branch"; b.onclick = e => { e.stopPropagation(); stop(n.id); };
-      row.append(b); row.onclick = () => focus(n.id);
+    node(who, parent, note) {
+      if (items.has(who)) return;
+      const li = el("li", `node k-${kindOf(who)}`), row = el("div", "row");
+      row.append(el("i", "dot"), el("span", "name", who === "vm" ? "microVM" : leaf(who)), el("span", "kind", note || kindOf(who)));
+      row.onclick = () => focusCb(who);
       li.append(row, el("ul"));
-      (n.parent ? $("ul", items.get(n.parent)) : tree).append(li);
-      items.set(n.id, li);
+      const host = parent && parent !== "vm" ? items.get(parent) : items.get("vm");
+      (host && who !== "vm" ? $("ul", host) : tree).append(li);
+      items.set(who, li);
     },
-    violate(id) { items.get(id)?.classList.add("bad"); },
-    freeze(id) { for (const [k, li] of items) if (k === id || k.startsWith(id + "/")) li.classList.add("frozen"); },
-    receipt(id, r, ms, auto) {
+    mark(who, cls, on) { items.get(who)?.classList.toggle(cls, on); },
+    flash(who) { const li = items.get(who); if (!li) return; li.classList.remove("bad"); void li.offsetWidth; li.classList.add("bad"); },
+    receipt(h, d) {
       const box = $(".p-receipt", root); box.hidden = false;
-      box.innerHTML = `<b>halt receipt ${r}</b><span>${id.split("/").pop()} frozen in ${ms} ms</span><span>${auto ? "siblings keep running" : "stopped by you"}</span>`;
+      box.innerHTML = `<b>halt receipt ${h.receipt}</b><span>${h.action} ${h.nodes.map(leaf).join(" + ")} in ${h.ms} ms</span>
+        <span>frozen ${d.seconds.toFixed(1)} s: ${d.frozen_events} events from that branch, ${d.sibling_allowed} allowed calls from ${d.sibling_names.join(", ") || "siblings"}</span>`;
     },
-    cursorTo(id, then) {
-      const c = $(".p-cursor", root), btn = $(".stop", items.get(id)); if (!btn) return then();
-      const a = root.getBoundingClientRect(), b = btn.getBoundingClientRect();
-      c.hidden = false; c.style.transform = `translate(${a.width * 0.55}px, ${a.height * 0.7}px)`;
-      requestAnimationFrame(() => { c.style.transform = `translate(${b.left - a.left + 4}px, ${b.top - a.top + 4}px)`; });
-      setTimeout(() => { c.classList.add("click"); then(); setTimeout(() => { c.hidden = true; c.classList.remove("click"); }, 500); }, 900);
-    },
-    trace(ev, st) {
-      const li = el("li", `ev ${ev.cls || ""} kind-${ev.kind.replace(".", "-")}`);
-      li.dataset.p = ev.principal;
-      li.append(el("span", "t", st.t.toFixed(1).padStart(4, "0")), el("span", "k", ev.kind), el("span", "who", ev.principal.split("/").pop()), el("span", "note", ev.note || ""));
-      if (st.filter && ev.principal !== st.filter && !ev.principal.startsWith(st.filter + "/")) li.hidden = true;
+    trace(e, st) {
+      const [note, cls] = describe(e);
+      const li = el("li", `ev ${cls} kind-${e.kind.replace(".", "-")}`);
+      li.dataset.p = e.who;
+      li.append(el("span", "t", e.t.toFixed(1).padStart(4, "0")), el("span", "k", e.kind), el("span", "who", e.who === "vm" ? "microVM" : leaf(e.who)), el("span", "note", note));
+      if (st.filter && e.who !== st.filter && !e.who.startsWith(st.filter + "/")) li.hidden = true;
       stream.prepend(li); while (stream.children.length > 80) stream.lastChild.remove();
-      $(".p-count", root).textContent = `${fmt.int(st.events)} events`;
+      $(".p-count", root).textContent = `${int(st.events)} events`;
     },
     filter(id) {
-      $(".p-scope", root).textContent = id ? id.split("/").pop() : "all agents";
+      $(".p-scope", root).textContent = id ? (id === "vm" ? "microVM" : leaf(id)) : "all agents";
       for (const li of stream.children) li.hidden = !!id && li.dataset.p !== id && !li.dataset.p.startsWith(id + "/");
       for (const [k, li] of items) li.classList.toggle("focus", k === id);
     },
-    label(p, cfg) {
-      const box = $(".runs", root), n = 40;
-      while (box.children.length < Math.round(p * n)) {
-        const i = box.children.length, pass = (i * 37 % 100) / 100 < s.retrained.pass1;
-        box.append(el("i", pass ? "pass" : "fail"));
+    label(p) {
+      const box = $(".lab", root);
+      if (!box.children.length) for (const f of cfg.labels) {
+        const r = el("div", "lrow"); r.append(el("span", "l", `${f.fleet} · ${int(f.runs)} runs`), el("span", "v", `${f.kept} kept`));
+        const bar = el("div", "lbar"); bar.append(el("i", "kept"), el("i", "drop")); r.append(bar); box.append(r);
       }
-      if (p > 0.7) box.classList.add("drop");
-      $(".p-label .p-note", root).textContent = `${cfg.retrain.runs} passed runs kept · failed runs dropped · τ² reward + judge`;
+      [...box.children].forEach((r, i) => {
+        const f = cfg.labels[i];
+        r.querySelector(".kept").style.width = `${f.kept / f.runs * 100 * p}%`;
+        r.querySelector(".drop").style.width = `${f.dropped / f.runs * 100 * p}%`;
+      });
+      $(".p-label .p-note", root).textContent = `kept = reward passed and not vetoed by the open-weight judge · ${cfg.retrain.runs} kept runs train the model (17 tasks held back as a gate)`;
     },
-    retrain(p, cfg) {
+    retrain(p) {
       const L = cfg.retrain.loss, k = Math.max(2, Math.round(p * L.length)), mx = Math.max(...L);
       $(".loss path", root).setAttribute("d", L.slice(0, k).map((v, i) => `${i ? "L" : "M"}${(i / (L.length - 1) * 200).toFixed(1)},${(66 - v / mx * 60).toFixed(1)}`).join(""));
       $(".prog i", root).style.width = `${p * 100}%`;
-      $(".p-retrain .p-note", root).textContent = `${cfg.retrain.method} · ${cfg.retrain.base} · ${cfg.retrain.runs} own passed runs · ${cfg.retrain.gpu_hours} GPU-h · $${cfg.retrain.usd}`;
+      $(".p-retrain .p-note", root).textContent = `${cfg.retrain.method} · ${cfg.retrain.base} · ${cfg.retrain.runs} own passed runs · ${cfg.retrain.steps} steps · ${cfg.retrain.gpu_hours} GPU-h · $${cfg.retrain.usd}`;
     },
     score(p) {
       const bars = $(".bars", root);
       if (!bars.children.length) for (const [k, lbl] of [["base", "Open 9B, untrained"], ["retrained", "Open 9B, retrained"], ["opus", "Claude Opus 5.5"]]) {
         const r = el("div", `bar b-${k}`); r.append(el("span", "l", lbl), el("span", "v"), el("i")); bars.append(r);
       }
-      const mx = 0.25;
       for (const k of Object.keys(pass4)) {
-        const r = $(`.b-${k}`, bars); r.querySelector("i").style.width = `${(pass4[k] * p / mx) * 100}%`;
+        const r = $(`.b-${k}`, bars); r.querySelector("i").style.width = `${pass4[k] * p / 0.25 * 100}%`;
         r.querySelector(".v").textContent = `pass^4 ${(pass4[k] * p).toFixed(3)}`;
       }
-      if (p >= 1) $(".p-head", root).innerHTML = `<b>${fmt.pct(X)}</b> of Opus's pass^4 at <b>1/${Math.round(Y)}</b> of the cost per task`;
+      if (p >= 1) $(".p-head", root).innerHTML = `<b>${pct(X)}</b> of Opus's pass^4 at <b>1/${Math.round(Y)}</b> of the cost per task`;
     },
     overlay(which) {
       const o = $(".p-overlay", root);
       if (!which) { o.hidden = true; o.dataset.w = ""; return; }
       if (o.dataset.w === which) return;
       o.dataset.w = which; o.hidden = false;
+      const c = cfg.control, t = cfg.trace;
       o.innerHTML = which === "hook"
         ? `<small>Open-source agent cloud · one minute</small><h2>Control every agent.<br>Retrain on their traces.</h2>
-           <p>${fmt.pct(X)} of Claude Opus 5.5's score at 1/${Math.round(Y)} of the cost, on held-out τ²-bench retail.</p>`
-        : `<small>Measured · ${cfg.sample ? "sample numbers" : "data in the repo"}</small><h2>Stop any agent, at any depth.<br>Turn its traces into a cheaper model.</h2>
-           <ul><li><b>${cfg.control.stop_ms_median} ms</b> to stop one agent with ${cfg.control.vms_running} VMs running · ${cfg.control.sibling_events_lost} sibling events lost</li>
-           <li><b>${cfg.trace.complete}/${cfg.trace.trials}</b> trials traced complete · ${fmt.int(cfg.trace.events_in_store)} events queryable in ${cfg.trace.query_s} s</li>
-           <li><b>pass^4 ${s.retrained.pass4.toFixed(2)}</b> retrained 9B vs <b>${s.opus.pass4.toFixed(2)}</b> Opus 5.5 · <b>${Y.toFixed(0)}×</b> cheaper per task</li></ul>
+           <p>${pct(X)} of Claude Opus 5.5's pass^4 at 1/${Math.round(Y)} of the cost per task, on held-out τ²-bench retail.</p>
+           <p class="src">Replay of a recorded session · measured results · data in the repository</p>`
+        : `<small>Measured · data in the repository</small><h2>Stop any agent, at any depth.<br>Turn its traces into a cheaper model.</h2>
+           <ul><li><b>${c.stop_ms_median} ms</b> to stop one agent, measured from outside, with ${c.vms_running} microVMs running · ${c.sibling_events_lost} sibling events lost</li>
+           <li><b>${t.complete}/${t.trials}</b> held-out trials traced complete · ${int(t.events_in_store)} events queryable in ${t.query_s} s</li>
+           <li><b>pass^4 ${s.retrained.pass4.toFixed(2)}</b> retrained 9B vs <b>${s.opus.pass4.toFixed(2)}</b> Claude Opus 5.5 · <b>${Y.toFixed(0)}×</b> cheaper per task</li></ul>
            <p class="src">github.com/smahmudrahat/avos · eval, data and code</p>`;
     },
-    tick(st, beat) {
-      const live = [...st.nodes.keys()].filter(id => st.nodes.get(id).kind !== "microVM" && ![...st.stopped].some(x => id === x || id.startsWith(x + "/"))).length;
+    tick(st, rec, beat) {
       const set = (k, v) => ($(`[data-c=${k}]`, root).textContent = v);
-      set("agents", live); set("tokens", fmt.int(st.tokens)); set("spend", `$${st.spend.toFixed(4)}`); set("events", fmt.int(st.events));
-      set("clock", `${String(Math.floor(st.t / 60)).padStart(2, "0")}:${(st.t % 60).toFixed(1).padStart(4, "0")}`);
+      set("agents", [...st.live].filter(w => w !== "vm").length); set("allowed", int(st.allowed)); set("denied", int(st.denied));
+      set("events", int(st.events)); set("clock", `${rec.toFixed(1).padStart(4, "0")} s`);
       $(".p-track i", root).style.width = `${st.t / DURATION * 100}%`;
       $(".p-time", root).textContent = `0:${String(Math.floor(st.t)).padStart(2, "0")} / 1:00`;
       [...root.querySelectorAll(".p-beats li")].forEach((li, i) => li.classList.toggle("on", i === beat));
     },
     playing(on) { const b = $(".p-play", root); b.textContent = on ? "❚❚" : "▶"; b.setAttribute("aria-label", on ? "Pause" : "Play"); },
     onPlay(f) { $(".p-play", root).onclick = f; },
+    onOverlay(f) { $(".p-overlay", root).onclick = f; },
     onRestart(f) { $(".p-restart", root).onclick = f; },
+    onFocus(f) { focusCb = f; },
   };
 }
