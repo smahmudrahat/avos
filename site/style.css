@@ -81,7 +81,7 @@ main > section, footer { max-width: 1280px; margin: 0 auto; padding-left: clamp(
 .cusd { font: 500 18px/1 var(--mono); text-align: right; color: var(--fg); }
 .crow i { grid-column: 1 / -1; height: 3px; border-radius: 999px; width: calc(var(--w) * 100%); background: var(--fg3); transform-origin: left;
   transition: transform 1.2s var(--ease); }
-.c-retrained i { background: var(--accent); } .c-retrained .cval { color: var(--accent); } .c-opus i { background: var(--fg2); }
+.c-retrained i { background: var(--accent); } .c-retrained .cname, .c-retrained .cval, .c-retrained .cval4, .c-retrained .cusd { color: var(--accent); } .c-retrained .cname { font-weight: 500; } .c-opus i { background: var(--fg2); }
 .cmeta { grid-column: 1 / -1; color: var(--fg3); font-size: 13px; }
 .fine { color: var(--fg2); font-size: 14px; line-height: 1.6; max-width: 66ch; } .tile .fine b { display: inline; margin: 0; font: inherit; font-weight: 500; letter-spacing: 0; color: var(--fg); }
 
