@@ -43,14 +43,25 @@
   </section>
 
   <section id="approach" class="approach reveal">
-    <h2>One loop, from sandbox to cheaper model</h2>
-    <ol class="loop">
-      <li><b>Run</b><p>Each agent session boots in its own Firecracker microVM in about 2.7 s. Every agent and subagent gets a SPIFFE identity.</p></li>
-      <li><b>Control</b><p>One gateway sees every model call, tool call and connection, decides it with Cedar policy, and can freeze, cut or kill any branch by name.</p></li>
-      <li><b>Trace</b><p>Every event lands in a hash-chained store, reconciled against the gateway's own counters, so completeness is measured.</p></li>
-      <li><b>Retrain</b><p>Runs are labelled by the benchmark's reward and an open-weight judge. Only passed runs, token-exact, train a LoRA on the open model.</p></li>
-      <li><b>Score</b><p>Held-out, user-disjoint tasks, four trials each, paired bootstrap intervals, and the frontier model on the same scaffold.</p></li>
-    </ol>
+    <h2>Every run makes the agent cheaper</h2>
+    <p class="sub">Developers start free with our open-source engine. Every run on Avos makes the agent smarter and cheaper.</p>
+    <div class="cycle">
+      <svg class="ring" viewBox="0 0 400 400" aria-hidden="true">
+        <defs><marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z"/></marker></defs>
+        <path d="M232 62 A140 140 0 0 1 338 168" marker-end="url(#arrow)"/>
+        <path d="M338 232 A140 140 0 0 1 232 338" marker-end="url(#arrow)"/>
+        <path d="M168 338 A140 140 0 0 1 62 232" marker-end="url(#arrow)"/>
+        <path d="M62 168 A140 140 0 0 1 168 62" marker-end="url(#arrow)"/>
+      </svg>
+      <p class="core">The cloud<br>that learns.</p>
+      <ol class="steps4">
+        <li class="s1"><span class="n">1</span><b>Deploy</b><p>Open-source engine on GitHub: one pip install, runs anywhere. Sandboxes, per-agent identity, protected network.</p></li>
+        <li class="s2"><span class="n">2</span><b>Trace</b><p>Every action captured end to end. Stop any agent, any branch.</p></li>
+        <li class="s3"><span class="n">3</span><b>Train</b><p>Traces become a private open-weight model for each company.</p></li>
+        <li class="s4"><span class="n">4</span><b>Serve</b><p>Smarter, cheaper inference on our cloud. Redeploy and repeat.</p></li>
+      </ol>
+    </div>
+    <p class="kicker">The longer an agent runs on Avos, the smarter and cheaper it gets.</p>
   </section>
 
   <section class="stands reveal">
