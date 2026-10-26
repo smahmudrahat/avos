@@ -13,7 +13,7 @@
 <body>
 <header class="nav">
   <a class="brand" href="#top" aria-label="Avos home"><span class="mark" aria-hidden="true"></span>Avos</a>
-  <nav aria-label="Sections"><a href="#run">Run</a><a href="#results">Results</a><a href="#approach">Approach</a>
+  <nav aria-label="Sections"><a href="#run">Run</a><a href="#results">Results</a><a href="#approach">Approach</a><a href="#team" id="nav-team" hidden>Team</a>
     <a class="pill ghost small" href="https://github.com/smahmudrahat/avos">GitHub</a></nav>
 </header>
 
@@ -64,6 +64,11 @@
       </ul></div>
     </div>
   </section>
+
+  <section id="team" class="team reveal" hidden>
+    <h2>Team</h2>
+    <div class="people" id="people"></div>
+  </section>
 </main>
 
 <footer>
@@ -104,6 +109,15 @@
     `The whole loop runs end to end from the repository.`,
   ].map(x => `<li>${x}</li>`).join("");
 
+  // Team details live outside the repository (site/team/ is gitignored); the section shows only where they exist.
+  const team = await fetch("team/team.json").then(r => (r.ok ? r.json() : null)).catch(() => null);
+  if (Array.isArray(team) && team.length) {
+    const esc = x => String(x).replace(/[&<>"']/g, ch => `&#${ch.charCodeAt(0)};`);
+    document.getElementById("people").innerHTML = team.map(m => `<article class="person">
+      <img src="${esc(m.photo)}" alt="${esc(m.name)}" width="400" height="400" loading="lazy">
+      <h3><a href="${esc(m.url)}">${esc(m.name)}</a></h3><ul>${m.lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul></article>`).join("");
+    document.getElementById("team").hidden = false; document.getElementById("nav-team").hidden = false;
+  }
   const io = new IntersectionObserver(es => es.forEach(e => e.isIntersecting && (e.target.classList.add("in"), io.unobserve(e.target))), { threshold: 0.12 });
   document.querySelectorAll(".reveal").forEach(n => io.observe(n));
   mount(document.getElementById("player"));

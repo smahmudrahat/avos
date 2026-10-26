@@ -85,6 +85,16 @@ main > section, footer { max-width: 1280px; margin: 0 auto; padding-left: clamp(
 .split li::marker { color: var(--fg3); }
 .split > div:first-child li::marker { color: var(--accent); }
 
+.team { padding-top: 136px; }
+.people { display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; }
+.person img { display: block; width: 100%; height: auto; aspect-ratio: 1; object-fit: cover; border-radius: 16px;
+  filter: grayscale(1) contrast(1.05); transition: filter 0.6s var(--ease); box-shadow: inset 0 0 0 1px var(--line); }
+.person:hover img { filter: none; }
+.person h3 { margin: 20px 0 10px; font-size: 20px; font-weight: 600; color: var(--fg); letter-spacing: -0.015em; }
+.person h3 a { background: linear-gradient(currentColor, currentColor) 0 100% / 0 1px no-repeat; transition: background-size 0.4s var(--ease); }
+.person h3 a:hover { background-size: 100% 1px; }
+.person ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; color: var(--fg2); font-size: 15px; }
+
 footer { margin-top: 136px; padding-top: 40px; padding-bottom: 48px; border-top: 1px solid var(--line); color: var(--fg3); font-size: 14px; }
 footer p { margin: 0 0 18px; max-width: 80ch; }
 .foot { display: flex; gap: 28px; flex-wrap: wrap; } .foot a:hover { color: var(--fg); }
@@ -186,6 +196,7 @@ footer p { margin: 0 0 18px; max-width: 80ch; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } html { scroll-behavior: auto; } }
 
 @media (max-width: 1024px) {
+  .people { grid-template-columns: repeat(2, 1fr); }
   .figures dl { grid-template-columns: 1fr 1fr; row-gap: 40px; }
   .bento { grid-template-columns: 1fr; } .tile.score { grid-row: auto; } .tile.wide { grid-template-columns: 1fr; }
   .p-grid { grid-template-columns: 1fr 1fr; height: auto; } .p-tree, .p-trace { height: 380px; } .p-right { grid-column: 1 / -1; border-top: 1px solid var(--line); }
@@ -195,6 +206,7 @@ footer p { margin: 0 0 18px; max-width: 80ch; }
   .hero { padding-top: 64px; }
   .results, .approach, .stands { padding-top: 96px; } .figures { padding-top: 80px; }
   .loop li { grid-template-columns: 1fr; gap: 6px; } .split { grid-template-columns: 1fr; }
+  .people { grid-template-columns: 1fr; gap: 48px; } .person img { max-width: 320px; } .team { padding-top: 96px; }
   .chead { display: none; } .crow { grid-template-columns: auto 1fr; column-gap: 20px; } .crow .cname { grid-column: 1 / -1; }
   .cval, .cusd { text-align: left; } .cval::after, .cusd::after { font: 12px var(--sans); color: var(--fg3); letter-spacing: 0; }
   .cval::after { content: " pass^1"; } .cusd::after { content: " per task"; }

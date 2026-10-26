@@ -14,3 +14,6 @@ data/raw/
 /CLAUDE.md
 .serena/
 .claude/
+
+# Team photos and bios: kept out of the public repository
+site/team/
