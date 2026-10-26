@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Avos: control every agent, retrain on their traces</title>
-  <meta name="description" content="Open-source agent cloud. Every AI agent runs in its own microVM, can be stopped by name, and its passed runs train a cheaper open model: 18x cheaper than Claude Opus 5.5 at a statistically indistinguishable score on held-out τ²-bench retail.">
+  <title>Avos: control AI agents and retrain them on their work</title>
+  <meta name="description" content="Avos runs every AI agent in its own sealed box, can stop any one of them instantly, and uses their successful work to train a smaller model. On our test it scored about the same as Claude Opus 5.5, at about 18 times lower cost per task.">
   <meta name="theme-color" content="#0c0e11">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 rx=%223%22 fill=%22%2334d399%22/%3E%3C/svg%3E">
   <link rel="preload" href="fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
@@ -13,27 +13,27 @@
 <body>
 <header class="nav">
   <a class="brand" href="#top" aria-label="Avos home"><span class="mark" aria-hidden="true"></span>Avos</a>
-  <nav aria-label="Sections"><a href="#run">Run</a><a href="#results">Results</a><a href="#approach">Approach</a><a href="#team" id="nav-team" hidden>Team</a>
+  <nav aria-label="Sections"><a href="#run">Demo</a><a href="#results">Results</a><a href="#approach">Approach</a><a href="#team" id="nav-team" hidden>Team</a>
     <a class="pill ghost small" href="https://github.com/smahmudrahat/avos">GitHub</a></nav>
 </header>
 
 <main id="top">
   <section class="hero reveal">
-    <h1>Control every agent.<br>Retrain on their traces.</h1>
-    <p class="lede">Every AI agent runs in its own microVM, can be stopped by name, and trains a cheaper open model.</p>
-    <div class="cta"><a class="pill" href="#run">Watch the run</a><a class="pill ghost" href="https://github.com/smahmudrahat/avos">View on GitHub</a></div>
+    <h1>Control every AI agent.<br>Turn their work into a cheaper model.</h1>
+    <p class="lede">Each AI agent runs in its own sealed box. You can stop any one of them instantly. Its successful work is then used to train a cheaper model.</p>
+    <div class="cta"><a class="pill" href="#run">Watch the demo</a><a class="pill ghost" href="https://github.com/smahmudrahat/avos">View on GitHub</a></div>
   </section>
 
   <section id="run" class="run reveal">
     <div id="player"></div>
-    <p class="caption">Control and Trace replay, unedited, every event one microVM wrote to the host ledger in a recorded session.
-      Label, Retrain and Score are measured results. Space plays and pauses; click a node to follow its trace.</p>
+    <p class="caption">A real recording from our servers, sped up. Each line is one action by an agent. Red lines are actions our rules blocked.
+      The results at the end are real measurements. Press space to play or pause, and click an agent to see only its actions.</p>
   </section>
 
   <section class="figures reveal" aria-label="Headline numbers"><dl id="figures"></dl></section>
 
   <section id="results" class="results reveal">
-    <h2>Measured on held-out tasks</h2>
+    <h2>Tested on tasks the models had never seen</h2>
     <div class="bento">
       <article class="tile score"><h3>Score</h3><div class="compare" id="compare"></div><p class="fine" id="fine"></p></article>
       <article class="tile" id="t-control"></article>
@@ -44,7 +44,7 @@
 
   <section id="approach" class="approach reveal">
     <h2>Every run makes the agent cheaper</h2>
-    <p class="sub">Developers start free with our open-source engine. Every run on Avos makes the agent smarter and cheaper.</p>
+    <p class="sub">Developers start free with our open-source engine. Our goal: the longer an agent runs on Avos, the better and cheaper it gets.</p>
     <div class="cycle">
       <svg class="ring" viewBox="0 0 400 400" aria-hidden="true">
         <defs><marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z"/></marker></defs>
@@ -57,23 +57,22 @@
       </svg>
       <p class="core">The cloud<br>that learns.</p>
       <ol class="steps4">
-        <li class="s1"><span class="n">1</span><b>Deploy</b><p>Open-source engine on GitHub: one pip install, runs anywhere. Sandboxes, per-agent identity, protected network.</p></li>
-        <li class="s2"><span class="n">2</span><b>Trace</b><p>Every action captured end to end. Stop any agent, any branch.</p></li>
-        <li class="s3"><span class="n">3</span><b>Train</b><p>Traces become a private open-weight model for each company.</p></li>
-        <li class="s4"><span class="n">4</span><b>Serve</b><p>Smarter, cheaper inference on our cloud. Redeploy and repeat.</p></li>
+        <li class="s1"><span class="n">1</span><b>Deploy</b><p>Run agents with our open-source engine. Each one gets its own sealed box, its own ID, and network access that follows your rules.</p></li>
+        <li class="s2"><span class="n">2</span><b>Trace</b><p>Everything an agent does is recorded, and any agent can be stopped at any moment.</p></li>
+        <li class="s3"><span class="n">3</span><b>Train</b><p>Successful runs train a private model for each company.</p></li>
+        <li class="s4"><span class="n">4</span><b>Serve</b><p>Coming next, not built yet: the cheaper model runs on our cloud, and the cycle repeats.</p></li>
       </ol>
     </div>
-    <p class="kicker">The longer an agent runs on Avos, the smarter and cheaper it gets.</p>
   </section>
 
   <section class="stands reveal">
     <h2>Where it stands</h2>
     <div class="split">
-      <div><h3>Proved</h3><ul id="proved"></ul></div>
-      <div><h3>Next run</h3><ul>
-        <li>A larger, harder held-out set. τ²-bench retail cannot separate a 9B from Opus, so we move to 200+ held-out tasks where the frontier model measurably leads.</li>
-        <li>More retraining rounds. The loop is built and repeatable; each round costs a few GPU-hours.</li>
-        <li>Simulator fidelity checks, so a failure caused by the simulated user is charged to the right side.</li>
+      <div><h3>Proven</h3><ul id="proved"></ul></div>
+      <div><h3>Next</h3><ul>
+        <li>A harder test. On today's test even the untrained model scores about the same as Opus. So we are moving to 200+ harder tasks, where gains should be easier to see.</li>
+        <li>More rounds of retraining. Each round costs a few hours of GPU time.</li>
+        <li>Fairer test conditions, so a mistake by the AI playing the customer is not counted against the agent.</li>
       </ul></div>
     </div>
   </section>
@@ -85,7 +84,7 @@
 </main>
 
 <footer>
-  <p>The page is generated from the repository: <code>site/build.py</code> reads the committed results in <code>data/</code>, and CI refuses a stale copy.</p>
+  <p>Every number on this page is generated from the data in our public GitHub repository.</p>
   <div class="foot"><span>Avos AI, Inc.</span><a href="mailto:sultan@avoslab.com">sultan@avoslab.com</a><a href="https://github.com/smahmudrahat/avos">github.com/smahmudrahat/avos</a></div>
 </footer>
 
@@ -96,30 +95,30 @@
   const pct = v => `${Math.round(v * 100)}%`, f3 = v => v.toFixed(3), ci = a => `${f3(a[0])} to ${f3(a[1])}`;
 
   document.getElementById("figures").innerHTML = [
-    [`${c.stop_ms_median} ms`, `to stop any agent with ${c.vms_running} microVMs running`],
-    [`${c.sibling_events_lost}`, "sibling events lost during a stop"],
+    [`${c.stop_ms_median} ms`, `to stop any one agent, with ${c.vms_running} agents running`],
+    [`${c.sibling_events_lost}`, "actions lost by the other agents when one is stopped"],
     [`${Math.round(s.y.value)}×`, "cheaper per task than Claude Opus 5.5"],
-    [pct(s.x.value), "of Opus's pass^4, within measurement error"],
+    [pct(s.x.value), "of Opus's score on the stricter Solved 4 of 4 measure, a statistical tie"],
   ].map(([v, l]) => `<div><dt>${v}</dt><dd>${l}</dd></div>`).join("");
 
-  const rows = [["Open 9B, untrained", s.base, "base"], ["Open 9B, retrained on its own runs", s.retrained, "retrained"], ["Claude Opus 5.5", s.opus, "opus"]];
-  const usd = v => `$${v.toFixed(v < 0.01 ? 4 : 3)}`;
-  document.getElementById("compare").innerHTML = `<div class="chead"><span>pass^1</span><span>cost per task</span></div>` + rows.map(([name, a, k]) => `
-    <div class="crow c-${k}"><span class="cname">${name}</span><span class="cval">${f3(a.pass1)}</span><span class="cusd">${usd(a.usd_per_task)}</span>
-      <i style="--w:${a.pass1}"></i><span class="cmeta">${a.trials} trials</span></div>`).join("");
-  document.getElementById("fine").textContent = `pass^1 is the share of trials passed, on 44 user-disjoint held-out τ²-bench retail tasks, sessions pooled. Retrained ${ci(s.retrained.pass1_ci95)}, Opus ${ci(s.opus.pass1_ci95)} (95% paired bootstrap over tasks). Cost per task: the 9B on two self-hosted GPUs, Opus at Anthropic list price with prompt caching. Same scaffold, open-weight simulator and judge for every arm. The ${pct(s.x.value)} figure above compares pass^4, the stricter measure (all 4 trials of a task pass): retrained ${f3(s.retrained.pass4)}, Opus ${f3(s.opus.pass4)}.`;
+  const rows = [["Open model, untrained", s.base, "base"], ["Open model, retrained on its own work", s.retrained, "retrained"], ["Claude Opus 5.5", s.opus, "opus"]];
+  const usd = v => `$${v.toFixed(v < 0.01 ? 4 : 3)}`, p1 = v => `${(v * 100).toFixed(1)}%`;
+  document.getElementById("compare").innerHTML = `<div class="chead"><span>Success rate<small>pass^1</small></span><span>Solved 4 of 4<small>pass^4</small></span><span>Cost per task</span></div>` + rows.map(([name, a, k]) => `
+    <div class="crow c-${k}"><span class="cname">${name}</span><span class="cval">${p1(a.pass1)}</span><span class="cval4">${p1(a.pass4)}</span><span class="cusd">${usd(a.usd_per_task)}</span>
+      <i style="--w:${a.pass1}"></i></div>`).join("");
+  document.getElementById("fine").innerHTML = `Each model tried each of 44 new customer-service tasks at least 4 times. <b>Success rate</b> is the share of all attempts that passed. <b>Solved 4 of 4</b> is the share of tasks passed on all 4 attempts, a stricter test of reliability. On both measures, the retrained model and Opus are within each other's margin of error (success rate ${p1(s.retrained.pass1_ci95[0])} to ${p1(s.retrained.pass1_ci95[1])} versus ${p1(s.opus.pass1_ci95[0])} to ${p1(s.opus.pass1_ci95[1])}, 95% confidence). The open model runs on our own GPUs. Its cost differs between rows only because some test runs finished faster. Opus cost uses Anthropic's list price.`;
 
-  document.getElementById("t-control").innerHTML = `<h3>Control</h3><b>${c.stop_ms_median} ms</b><p>Median stop of one agent's branch, measured from outside, with ${c.vms_running} microVMs running. Worst ${c.stop_ms_worst} ms against a ${c.bar_ms} ms bar; ${c.gateway_calls.toLocaleString()} gateway calls, ${c.gateway_unanswered} unanswered.</p>`;
-  document.getElementById("t-trace").innerHTML = `<h3>Trace</h3><b>${t.complete} of ${t.trials}</b><p>Held-out trials traced complete. "What did this agent do" is answered in ${t.query_s} s over ${t.events_in_store.toLocaleString()} events.</p>`;
-  document.querySelector("#t-retrain .tile-text").innerHTML = `<h3>Retrain</h3><b>${r.runs} runs</b><p>${r.method} on ${r.base}, only its own passed runs: ${r.steps} steps, ${r.gpu_hours} GPU-hours, $${r.usd}. The line is the real training loss.</p>`;
+  document.getElementById("t-control").innerHTML = `<h3>Control</h3><b>${c.stop_ms_median} ms</b><p>Typical time to pause one agent and everything it started, while ${c.vms_running} agents were running. The slowest stop took ${c.stop_ms_worst} ms. Our target was under ${c.bar_ms} ms.</p>`;
+  document.getElementById("t-trace").innerHTML = `<h3>Record</h3><b>${t.complete} of ${t.trials}</b><p>Test runs recorded in full. Looking up everything one agent did takes ${t.query_s} seconds, searching ${t.events_in_store.toLocaleString()} recorded actions.</p>`;
+  document.querySelector("#t-retrain .tile-text").innerHTML = `<h3>Retrain</h3><b>${r.runs} runs</b><p>We trained an open model (${r.base.split("/").pop()}) only on its own successful runs. Training took ${r.gpu_hours} GPU-hours and cost $${r.usd}. The line shows the model's training error going down.</p>`;
   const L = r.loss, mx = Math.max(...L);
   document.querySelector("#t-retrain .spark path").setAttribute("d", L.map((v, i) => `${i ? "L" : "M"}${(i / (L.length - 1) * 400).toFixed(1)},${(76 - v / mx * 70).toFixed(1)}`).join(""));
 
   document.getElementById("proved").innerHTML = [
-    `Any agent stops by name in ${c.stop_ms_median} ms, with ${c.sibling_events_lost} sibling events lost, at ${c.vms_running} concurrent microVMs.`,
-    `Every trial is traced complete and tied to an identity.`,
-    `A 9B open model retrained on its own traces matches Claude Opus 5.5 within measurement error on held-out τ²-bench retail, at ${Math.round(s.y.value)}× lower cost per task.`,
-    `The whole loop runs end to end from the repository.`,
+    `Any agent can typically be stopped in ${c.stop_ms_median} milliseconds, with ${c.vms_running} agents running, without disturbing the others.`,
+    `${t.complete} of ${t.trials} test runs were recorded in full, with each action tied to the agent that took it.`,
+    `Our retrained open model scored about the same as Claude Opus 5.5 (within the margin of error), at ${Math.round(s.y.value)} times lower cost per task.`,
+    `The steps from running agents to retraining them work end to end. The code is public on GitHub.`,
   ].map(x => `<li>${x}</li>`).join("");
 
   // Team details live outside the repository (site/team/ is gitignored); the section shows only where they exist.

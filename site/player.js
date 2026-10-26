@@ -24,7 +24,7 @@ export async function mount(root, { cfgUrl = "data/cfg.json" } = {}) {
 
   function apply(e) {
     st.events++;
-    if (e.kind === "vm.boot") { ui.node("vm", null, `boot ${e.boot_ms} ms`); st.live.add("vm"); }
+    if (e.kind === "vm.boot") { ui.node("vm", null, `started in ${e.boot_ms} ms`); st.live.add("vm"); }
     if (e.kind === "agent.spawn") { ui.node(e.who, e.parent); st.live.add(e.who); }
     if (e.kind === "agent.exit" || e.kind === "vm.exit") { st.live.delete(e.who); ui.mark(e.who, "exited", true); }
     if (e.kind === "authz.decision" && e.action === "tool.call") {
@@ -45,7 +45,7 @@ export async function mount(root, { cfgUrl = "data/cfg.json" } = {}) {
     const win = EV.filter(x => x.t > h.t && x.t < end);
     const sib = win.filter(x => x.kind === "authz.decision" && x.decision === "allow" && !frozen.has(x.who));
     return { seconds: end - h.t, frozen_events: win.filter(x => frozen.has(x.who)).length,
-             sibling_allowed: sib.length, sibling_names: [...new Set(sib.map(x => (x.who === "vm" ? "microVM" : leaf(x.who))))] };
+             sibling_allowed: sib.length, sibling_names: [...new Set(sib.map(x => (x.who === "vm" ? "sealed box" : leaf(x.who))))] };
   }
 
   function step(dt) {
@@ -80,23 +80,23 @@ function build(root, cfg, speed) {
   root.classList.add("player");
   root.innerHTML = `
     <div class="p-bar">
-      <div class="p-id"><b>Replay</b>recorded session of ${R.events[0].ts.slice(0, 10)}, at ${speed.toFixed(1)}× speed</div>
-      <ol class="p-beats"><li>Control</li><li>Trace</li><li>Retrain</li><li>Score</li></ol>
+      <div class="p-id"><b>Recording</b>from our servers, ${R.events[0].ts.slice(0, 10)}, shown at ${speed.toFixed(1)}× speed</div>
+      <ol class="p-beats"><li>Control</li><li>Record</li><li>Retrain</li><li>Score</li></ol>
       <div class="p-counters">
-        <div><span data-c="agents">0</span><small>agents live</small></div>
-        <div><span data-c="allowed">0</span><small>tool calls allowed</small></div>
-        <div><span data-c="denied">0</span><small>denied by policy</small></div>
-        <div><span data-c="events">0</span><small>events traced</small></div>
-        <div><span data-c="clock">00.0 s</span><small>recording time</small></div>
+        <div><span data-c="agents">0</span><small>agents running</small></div>
+        <div><span data-c="allowed">0</span><small>actions allowed</small></div>
+        <div><span data-c="denied">0</span><small>blocked by our rules</small></div>
+        <div><span data-c="events">0</span><small>actions recorded</small></div>
+        <div><span data-c="clock">00.0 s</span><small>elapsed</small></div>
       </div>
     </div>
     <div class="p-grid">
-      <section class="p-panel p-tree"><h3>Agent tree</h3>
-        <div class="p-legend"><i class="k-microVM"></i>microVM <i class="k-agent"></i>agent <i class="k-subagent"></i>subagent</div>
+      <section class="p-panel p-tree"><h3>Agents</h3>
+        <div class="p-legend"><i class="k-microVM"></i>sealed box <i class="k-agent"></i>agent <i class="k-subagent"></i>subagent</div>
         <ul class="tree"></ul><div class="p-receipt" hidden></div></section>
-      <section class="p-panel p-trace"><h3>Trace of <span class="p-scope">all agents</span> <em class="p-count">0 events</em></h3><ol class="stream"></ol></section>
+      <section class="p-panel p-trace"><h3>Actions by <span class="p-scope">all agents</span> <em class="p-count">0 recorded</em></h3><ol class="stream"></ol></section>
       <section class="p-panel p-right">
-        <div class="p-sub p-label"><h3>Label</h3><div class="lab"></div><p class="p-note"></p></div>
+        <div class="p-sub p-label"><h3>Sort</h3><div class="lab"></div><p class="p-note"></p></div>
         <div class="p-sub p-retrain"><h3>Retrain</h3><svg class="loss" viewBox="0 0 200 70" preserveAspectRatio="none"><path/></svg>
           <div class="prog"><i></i></div><p class="p-note"></p></div>
         <div class="p-sub p-score"><h3>Score</h3><div class="bars"></div><p class="p-head"></p></div>
@@ -118,11 +118,11 @@ function build(root, cfg, speed) {
       return [`${e.decision} ${what}${amt}${deny ? ` (${(e.policy_ids || []).join(", ")})` : ""}`, deny ? "bad" : ""];
     }
     if (e.kind === "tool.call") return [`${e.tool || "tool"} ran`, ""];
-    if (e.kind === "llm.call") return [`${(e.model || "").split("/").pop()}, ${e.status}, ${e.prompt_tokens ?? 0}+${e.completion_tokens ?? 0} tok, ${e.ms ?? 0} ms`, ""];
+    if (e.kind === "llm.call") return [`${(e.model || "").split("/").pop()}, ${e.status}, ${e.prompt_tokens ?? 0}+${e.completion_tokens ?? 0} tokens, ${e.ms ?? 0} ms`, ""];
     const n = (e.nodes || []).length;
     if (e.kind === "halt") return [`${e.action} ${e.receipt}, ${n} node${n === 1 ? "" : "s"}, ${e.ms} ms`, "halt"];
     if (e.kind === "resume") return [`${e.action || "resume"} ${e.receipt || ""}, ${e.ms ?? 0} ms`, "halt"];
-    if (e.kind === "vm.boot") return [`firecracker, boot ${e.boot_ms} ms`, ""];
+    if (e.kind === "vm.boot") return [`sealed box started in ${e.boot_ms} ms`, ""];
     return ["", ""];
   };
 
@@ -137,7 +137,7 @@ function build(root, cfg, speed) {
     node(who, parent, note) {
       if (items.has(who)) return;
       const li = el("li", `node k-${kindOf(who)}`), row = el("div", "row");
-      row.append(el("i", "dot"), el("span", "name", who === "vm" ? "microVM" : leaf(who)), el("span", "kind", note || kindOf(who)));
+      row.append(el("i", "dot"), el("span", "name", who === "vm" ? "sealed box" : leaf(who)), el("span", "kind", note || kindOf(who)));
       row.onclick = () => focusCb(who);
       li.append(row, el("ul"));
       const host = parent && parent !== "vm" ? items.get(parent) : items.get("vm");
@@ -148,20 +148,20 @@ function build(root, cfg, speed) {
     flash(who) { const li = items.get(who); if (!li) return; li.classList.remove("bad"); void li.offsetWidth; li.classList.add("bad"); },
     receipt(h, d) {
       const box = $(".p-receipt", root); box.hidden = false;
-      box.innerHTML = `<b>halt receipt ${h.receipt}</b><span>${h.action} ${h.nodes.map(leaf).join(" + ")} in ${h.ms} ms</span>
-        <span>frozen ${d.seconds.toFixed(1)} s: ${d.frozen_events} events from that branch, ${d.sibling_allowed} allowed calls from ${d.sibling_names.join(", ") || "siblings"}</span>`;
+      box.innerHTML = `<b>Stop receipt ${h.receipt}</b><span>${h.action} ${h.nodes.map(leaf).join(" + ")} in ${h.ms} ms</span>
+        <span>Paused for ${d.seconds.toFixed(1)} s. The stopped agents took ${d.frozen_events} actions. The others had ${d.sibling_allowed} actions allowed: ${d.sibling_names.join(", ") || "the other agents"}.</span>`;
     },
     trace(e, st) {
       const [note, cls] = describe(e);
       const li = el("li", `ev ${cls} kind-${e.kind.replace(".", "-")}`);
       li.dataset.p = e.who;
-      li.append(el("span", "t", e.t.toFixed(1).padStart(4, "0")), el("span", "k", e.kind), el("span", "who", e.who === "vm" ? "microVM" : leaf(e.who)), el("span", "note", note));
+      li.append(el("span", "t", e.t.toFixed(1).padStart(4, "0")), el("span", "k", e.kind), el("span", "who", e.who === "vm" ? "sealed box" : leaf(e.who)), el("span", "note", note));
       if (st.filter && e.who !== st.filter && !e.who.startsWith(st.filter + "/")) li.hidden = true;
       stream.prepend(li); while (stream.children.length > 80) stream.lastChild.remove();
-      $(".p-count", root).textContent = `${int(st.events)} events`;
+      $(".p-count", root).textContent = `${int(st.events)} recorded`;
     },
     filter(id) {
-      $(".p-scope", root).textContent = id ? (id === "vm" ? "microVM" : leaf(id)) : "all agents";
+      $(".p-scope", root).textContent = id ? (id === "vm" ? "sealed box" : leaf(id)) : "all agents";
       for (const li of stream.children) li.hidden = !!id && li.dataset.p !== id && !li.dataset.p.startsWith(id + "/");
       for (const [k, li] of items) li.classList.toggle("focus", k === id);
     },
@@ -176,24 +176,24 @@ function build(root, cfg, speed) {
         r.querySelector(".kept").style.width = `${f.kept / f.runs * 100 * p}%`;
         r.querySelector(".drop").style.width = `${f.dropped / f.runs * 100 * p}%`;
       });
-      $(".p-label .p-note", root).textContent = `Kept: reward passed and not vetoed by the open-weight judge. ${cfg.retrain.runs} kept runs train the model; 17 tasks are held back as a gate.`;
+      $(".p-label .p-note", root).textContent = `We keep runs that passed the test and a second check by an AI judge. ${cfg.retrain.runs} kept runs trained the model.`;
     },
     retrain(p) {
       const L = cfg.retrain.loss, k = Math.max(2, Math.round(p * L.length)), mx = Math.max(...L);
       $(".loss path", root).setAttribute("d", L.slice(0, k).map((v, i) => `${i ? "L" : "M"}${(i / (L.length - 1) * 200).toFixed(1)},${(66 - v / mx * 60).toFixed(1)}`).join(""));
       $(".prog i", root).style.width = `${p * 100}%`;
-      $(".p-retrain .p-note", root).textContent = `${cfg.retrain.method} on ${cfg.retrain.base}: ${cfg.retrain.steps} steps, ${cfg.retrain.gpu_hours} GPU-hours, $${cfg.retrain.usd}`;
+      $(".p-retrain .p-note", root).textContent = `Training took ${cfg.retrain.gpu_hours} GPU-hours and cost $${cfg.retrain.usd}. The line shows its error rate falling.`;
     },
     score(p) {
       const bars = $(".bars", root);
-      if (!bars.children.length) for (const [k, lbl] of [["base", "Open 9B, untrained"], ["retrained", "Open 9B, retrained"], ["opus", "Claude Opus 5.5"]]) {
+      if (!bars.children.length) for (const [k, lbl] of [["base", "Open model, untrained"], ["retrained", "Open model, retrained"], ["opus", "Claude Opus 5.5"]]) {
         const r = el("div", `bar b-${k}`); r.append(el("span", "l", lbl), el("span", "v"), el("i")); bars.append(r);
       }
       for (const k of Object.keys(pass4)) {
         const r = $(`.b-${k}`, bars); r.querySelector("i").style.width = `${pass4[k] * p / 0.25 * 100}%`;
-        r.querySelector(".v").textContent = `pass^4 ${(pass4[k] * p).toFixed(3)}`;
+        r.querySelector(".v").textContent = `${(pass4[k] * p * 100).toFixed(1)}% solved 4 of 4`;
       }
-      if (p >= 1) $(".p-head", root).innerHTML = `<b>${pct(X)}</b> of Opus's pass^4 at <b>1/${Math.round(Y)}</b> of the cost per task`;
+      if (p >= 1) $(".p-head", root).innerHTML = `<b>${pct(X)}</b> of Opus's Solved 4 of 4 score, a statistical tie, at <b>1/${Math.round(Y)}</b> of the cost per task`;
     },
     overlay(which) {
       const o = $(".p-overlay", root);
@@ -202,14 +202,15 @@ function build(root, cfg, speed) {
       o.dataset.w = which; o.hidden = false;
       const c = cfg.control, t = cfg.trace;
       o.innerHTML = which === "hook"
-        ? `<small>The result first</small><h2>${pct(X)} of Claude Opus 5.5's pass^4,<br>at 1/${Math.round(Y)} of the cost per task.</h2>
-           <p>A 9B open model, retrained on its own traces, on held-out τ²-bench retail. Here is how it got there.</p>
-           <p class="src">A recorded session and measured results, all in the repository.</p>`
-        : `<small>Measured, with the data in the repository</small><h2>Stop any agent, at any depth.<br>Turn its traces into a cheaper model.</h2>
-           <ul><li><b>${c.stop_ms_median} ms</b> to stop one agent, measured from outside, with ${c.vms_running} microVMs running, ${c.sibling_events_lost} sibling events lost</li>
-           <li><b>${t.complete}/${t.trials}</b> held-out trials traced complete, ${int(t.events_in_store)} events queryable in ${t.query_s} s</li>
-           <li><b>pass^4 ${s.retrained.pass4.toFixed(2)}</b> retrained 9B vs <b>${s.opus.pass4.toFixed(2)}</b> Claude Opus 5.5, <b>${Y.toFixed(0)}×</b> cheaper per task</li></ul>
-           <p class="src">Eval, data and code: github.com/smahmudrahat/avos</p>`;
+        ? `<small>The result first</small><h2>${pct(X)} of Claude Opus 5.5's score,<br>at 1/${Math.round(Y)} of the cost per task.</h2>
+           <p>We retrained a small open model on its own successful work. Then we tested it on customer-service tasks it had never seen.</p>
+           <p>The score is the stricter Solved 4 of 4 measure, and the gap is within the margin of error. Here is how it got there.</p>
+           <p class="src">A real recording and measured results. All data is on GitHub.</p>`
+        : `<small>Measured results</small><h2>Stop any agent, even one started by another agent.<br>Turn its work into a cheaper model.</h2>
+           <ul><li><b>${c.stop_ms_median} ms</b> to stop one agent, with ${c.vms_running} agents running. The others lost ${c.sibling_events_lost} actions.</li>
+           <li><b>${t.complete} of ${t.trials}</b> test runs recorded in full</li>
+           <li><b>${pct(X)}</b> of Claude Opus 5.5's Solved 4 of 4 score, a statistical tie, at <b>${Y.toFixed(0)}×</b> lower cost per task</li></ul>
+           <p class="src">Code and data: github.com/smahmudrahat/avos</p>`;
     },
     tick(st, rec, beat) {
       const set = (k, v) => ($(`[data-c=${k}]`, root).textContent = v);

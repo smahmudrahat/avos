@@ -72,16 +72,18 @@ main > section, footer { max-width: 1280px; margin: 0 auto; padding-left: clamp(
 .tile.wide { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(260px, 1fr) 1.6fr; gap: 32px; align-items: end; }
 .spark { width: 100%; height: 96px; } .spark path { fill: none; stroke: var(--accent); stroke-width: 1.4; vector-effect: non-scaling-stroke; opacity: 0.9; }
 .compare { display: grid; gap: 26px; margin: 28px 0 28px; }
-.chead { display: grid; grid-template-columns: 1fr 88px 104px; gap: 16px; font-size: 12px; color: var(--fg3); margin-bottom: -12px; }
-.chead span:first-child { grid-column: 2; text-align: right; } .chead span:last-child { text-align: right; }
-.crow { display: grid; grid-template-columns: 1fr 88px 104px; gap: 6px 16px; align-items: baseline; }
-.cname { font-size: 15px; } .cval { font: 500 30px/1 var(--mono); letter-spacing: -0.02em; text-align: right; }
-.cusd { font: 500 20px/1 var(--mono); text-align: right; color: var(--fg); }
+.chead { display: grid; grid-template-columns: 1fr 104px 104px 96px; gap: 16px; font-size: 12px; color: var(--fg2); margin-bottom: -10px; align-items: end; }
+.chead span { text-align: right; line-height: 1.3; } .chead span:first-child { grid-column: 2; }
+.chead small { display: block; color: var(--fg3); font: 11px var(--mono); }
+.crow { display: grid; grid-template-columns: 1fr 104px 104px 96px; gap: 8px 16px; align-items: baseline; }
+.cname { font-size: 15px; } .cval { font: 500 26px/1 var(--mono); letter-spacing: -0.02em; text-align: right; }
+.cval4 { font: 500 20px/1 var(--mono); text-align: right; color: var(--fg2); }
+.cusd { font: 500 18px/1 var(--mono); text-align: right; color: var(--fg); }
 .crow i { grid-column: 1 / -1; height: 3px; border-radius: 999px; width: calc(var(--w) * 100%); background: var(--fg3); transform-origin: left;
   transition: transform 1.2s var(--ease); }
 .c-retrained i { background: var(--accent); } .c-retrained .cval { color: var(--accent); } .c-opus i { background: var(--fg2); }
 .cmeta { grid-column: 1 / -1; color: var(--fg3); font-size: 13px; }
-.fine { color: var(--fg3); font-size: 13px; line-height: 1.55; max-width: 62ch; }
+.fine { color: var(--fg2); font-size: 14px; line-height: 1.6; max-width: 66ch; } .tile .fine b { display: inline; margin: 0; font: inherit; font-weight: 500; letter-spacing: 0; color: var(--fg); }
 
 .loop { list-style: none; margin: 0; padding: 0; display: grid; gap: 34px; max-width: 980px; }
 .loop li { display: grid; grid-template-columns: 180px 1fr; gap: 24px; align-items: baseline; }
@@ -256,8 +258,9 @@ footer p { margin: 0 0 18px; max-width: 80ch; }
   .s1, .s2, .s3, .s4 { grid-column: auto; grid-row: auto; margin: 0; justify-self: start; align-self: start; max-width: none; }
   .figures dl > div { padding: 20px; } .figures dd { font-size: 14px; }
   .chead { display: none; } .crow { grid-template-columns: auto 1fr; column-gap: 20px; } .crow .cname { grid-column: 1 / -1; }
-  .cval, .cusd { text-align: left; } .cval::after, .cusd::after { font: 12px var(--sans); color: var(--fg3); letter-spacing: 0; }
-  .cval::after { content: " pass^1"; } .cusd::after { content: " per task"; }
+  .crow { grid-template-columns: auto auto 1fr; } .cval, .cval4, .cusd { text-align: left; }
+  .cval::after, .cval4::after, .cusd::after { font: 12px var(--sans); color: var(--fg3); letter-spacing: 0; display: block; margin-top: 4px; }
+  .cval::after { content: "success rate"; } .cval4::after { content: "solved 4 of 4"; } .cusd::after { content: "per task"; }
   .p-grid { grid-template-columns: 1fr; } .p-panel { border-right: 0; border-bottom: 1px solid var(--line); }
   .p-counters { flex-wrap: wrap; gap: 10px 18px; } .p-beats { display: none; }
 }
