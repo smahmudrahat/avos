@@ -11,8 +11,17 @@
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-html { scroll-behavior: smooth; scroll-padding-top: 72px; }
-body { margin: 0; background: var(--ink); color: var(--fg); font: 16px/1.6 var(--sans); -webkit-font-smoothing: antialiased; }
+html { scroll-behavior: smooth; scroll-padding-top: 72px; background: var(--ink); }
+body { margin: 0; background: transparent; color: var(--fg); font: 16px/1.6 var(--sans); -webkit-font-smoothing: antialiased; }
+/* Background photo: Vimal S on Unsplash (Unsplash License). A fixed layer, so it does not repaint on scroll; the
+   gradient keeps text above it at body contrast. */
+body::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(12, 14, 17, 0.3) 0%, rgba(12, 14, 17, 0.66) 45%, rgba(12, 14, 17, 0.94) 85%),
+    image-set(url("img/bg.webp") type("image/webp"), url("img/bg.jpg") type("image/jpeg")) center top / cover no-repeat, var(--ink); }
+@media (max-width: 1200px) { body::before { background:
+    linear-gradient(180deg, rgba(12, 14, 17, 0.55) 0%, rgba(12, 14, 17, 0.75) 40%, rgba(12, 14, 17, 0.95) 80%),
+    image-set(url("img/bg-small.webp") type("image/webp"), url("img/bg-small.jpg") type("image/jpeg")) 70% top / cover no-repeat, var(--ink); } }
 a { color: inherit; text-decoration: none; }
 code { font: 0.88em var(--mono); color: var(--fg); background: var(--raised); padding: 2px 6px; border-radius: 6px; }
 h1, h2, h3 { margin: 0; font-weight: 600; }
@@ -39,7 +48,7 @@ h3 { font-size: 14px; font-weight: 500; color: var(--fg2); letter-spacing: 0; }
 main > section, footer { max-width: 1280px; margin: 0 auto; padding-left: clamp(20px, 4vw, 56px); padding-right: clamp(20px, 4vw, 56px); }
 .hero { padding-top: 96px; padding-bottom: 56px; }
 .hero h1 { font-size: clamp(42px, 6vw, 80px); line-height: 1.02; letter-spacing: -0.04em; max-width: 16ch; }
-.lede { margin: 24px 0 36px; max-width: 34ch; font-size: clamp(18px, 1.6vw, 21px); line-height: 1.5; color: var(--fg2); }
+.lede { text-shadow: 0 1px 18px rgba(12, 14, 17, 0.9); margin: 24px 0 36px; max-width: 34ch; font-size: clamp(18px, 1.6vw, 21px); line-height: 1.5; color: var(--fg2); }
 .cta { display: flex; gap: 12px; flex-wrap: wrap; }
 
 .run { padding-bottom: 0; }
