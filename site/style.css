@@ -95,11 +95,11 @@ main > section, footer { max-width: 1280px; margin: 0 auto; padding-left: clamp(
 .split > div:first-child li::marker { color: var(--accent); }
 
 .team { padding-top: 136px; }
-.people { display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; }
+.people { display: grid; grid-template-columns: repeat(4, 1fr); gap: 32px; }
 .person img { display: block; width: 100%; height: auto; aspect-ratio: 1; object-fit: cover; border-radius: 16px;
   filter: grayscale(1) contrast(1.05); transition: filter 0.6s var(--ease); box-shadow: inset 0 0 0 1px var(--line); }
 .person:hover img { filter: none; }
-.person h3 { margin: 20px 0 10px; font-size: 20px; font-weight: 600; color: var(--fg); letter-spacing: -0.015em; }
+.person h3 { margin: 20px 0 10px; font-size: 19px; font-weight: 600; color: var(--fg); letter-spacing: -0.015em; }
 .person h3 a { background: linear-gradient(currentColor, currentColor) 0 100% / 0 1px no-repeat; transition: background-size 0.4s var(--ease); }
 .person h3 a:hover { background-size: 100% 1px; }
 .person ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; color: var(--fg2); font-size: 15px; }
