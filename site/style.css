@@ -52,10 +52,11 @@ main > section, footer { max-width: 1280px; margin: 0 auto; padding-left: clamp(
 .cta { display: flex; gap: 12px; flex-wrap: wrap; }
 
 .run { padding-bottom: 0; }
-.caption { margin: 16px 2px 0; max-width: 80ch; color: var(--fg3); font-size: 14px; }
+.caption { margin: 16px 2px 0; max-width: 80ch; color: var(--fg2); font-size: 14px; text-shadow: 0 1px 12px rgba(12, 14, 17, 0.95), 0 0 2px rgba(12, 14, 17, 0.9); }
 
 .figures { padding-top: 112px; }
-.figures dl { margin: 0; display: grid; grid-template-columns: repeat(4, 1fr); gap: 32px; }
+.figures dl { margin: 0; display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+.figures dl > div { background: var(--surface); border-radius: 16px; padding: 28px; box-shadow: inset 0 0 0 1px var(--line); }
 .figures dt { font: 500 clamp(34px, 3.6vw, 52px)/1 var(--mono); letter-spacing: -0.03em; }
 .figures dd { margin: 12px 0 0; color: var(--fg2); font-size: 15px; max-width: 22ch; }
 .figures div:nth-child(3) dt { color: var(--accent); }
@@ -230,7 +231,7 @@ footer p { margin: 0 0 18px; max-width: 80ch; }
 @media (max-width: 1024px) {
   .cycle { grid-template-columns: 1fr minmax(220px, 300px) 1fr; column-gap: 24px; padding: 28px; }
   .people { grid-template-columns: repeat(2, 1fr); }
-  .figures dl { grid-template-columns: 1fr 1fr; row-gap: 40px; }
+  .figures dl { grid-template-columns: 1fr 1fr; }
   .bento { grid-template-columns: 1fr; } .tile.score { grid-row: auto; } .tile.wide { grid-template-columns: 1fr; }
   .p-grid { grid-template-columns: 1fr 1fr; height: auto; } .p-tree, .p-trace { height: 380px; } .p-right { grid-column: 1 / -1; border-top: 1px solid var(--line); }
 }
@@ -243,6 +244,7 @@ footer p { margin: 0 0 18px; max-width: 80ch; }
   .cycle { grid-template-columns: 1fr; grid-template-rows: none; padding: 28px 22px; row-gap: 26px; }
   .ring, .core { display: none; } .steps4 { display: grid; gap: 26px; padding: 0; margin: 0; }
   .s1, .s2, .s3, .s4 { grid-column: auto; grid-row: auto; margin: 0; justify-self: start; align-self: start; max-width: none; }
+  .figures dl > div { padding: 20px; } .figures dd { font-size: 14px; }
   .chead { display: none; } .crow { grid-template-columns: auto 1fr; column-gap: 20px; } .crow .cname { grid-column: 1 / -1; }
   .cval, .cusd { text-align: left; } .cval::after, .cusd::after { font: 12px var(--sans); color: var(--fg3); letter-spacing: 0; }
   .cval::after { content: " pass^1"; } .cusd::after { content: " per task"; }
