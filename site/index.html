@@ -52,6 +52,8 @@
         <path d="M338 232 A140 140 0 0 1 232 338" marker-end="url(#arrow)"/>
         <path d="M168 338 A140 140 0 0 1 62 232" marker-end="url(#arrow)"/>
         <path d="M62 168 A140 140 0 0 1 168 62" marker-end="url(#arrow)"/>
+        <circle class="track" cx="200" cy="200" r="140"/>
+        <g class="runner"><circle cx="200" cy="60" r="9"/><circle class="halo" cx="200" cy="60" r="18"/></g>
       </svg>
       <p class="core">The cloud<br>that learns.</p>
       <ol class="steps4">
@@ -129,6 +131,25 @@
       <h3><a href="${esc(m.url)}">${esc(m.name)}</a></h3><ul>${m.lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul></article>`).join("");
     document.getElementById("team").hidden = false; document.getElementById("nav-team").hidden = false;
   }
+  // The loop steps 1 -> 2 -> 3 -> 4: the dot moves a quarter turn to the next step, whose arc and text light up.
+  (() => {
+    const cyc = document.querySelector(".cycle"); if (!cyc) return;
+    const arcs = cyc.querySelectorAll(".ring > path"), steps = cyc.querySelectorAll(".steps4 li"), runner = cyc.querySelector(".runner");
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    let k = -1, turns = 0, timer = null;
+    const go = () => {
+      k = (k + 1) % 4; turns += 1;
+      cyc.classList.add("live");
+      arcs.forEach((a, i) => a.classList.toggle("on", i === k));
+      steps.forEach((s, i) => s.classList.toggle("on", i === k));
+      runner.style.transform = `rotate(${turns * 90}deg)`;
+    };
+    new IntersectionObserver(([e]) => {
+      if (e.isIntersecting && !timer) { go(); timer = setInterval(go, 2400); }
+      if (!e.isIntersecting && timer) { clearInterval(timer); timer = null; }
+    }, { threshold: 0.35 }).observe(cyc);
+  })();
+
   const io = new IntersectionObserver(es => es.forEach(e => e.isIntersecting && (e.target.classList.add("in"), io.unobserve(e.target))), { threshold: 0.12 });
   document.querySelectorAll(".reveal").forEach(n => io.observe(n));
   mount(document.getElementById("player"));
