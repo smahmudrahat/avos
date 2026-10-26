@@ -123,6 +123,8 @@ main > section, footer { max-width: 1280px; margin: 0 auto; padding-left: clamp(
 .s1, .s2 { margin-left: -12px; } .s3, .s4 { margin-right: -12px; }
 .kicker { margin: 28px 0 0; color: var(--fg2); font-size: 15px; }
 
+.stands .sub { margin: -24px 0 32px; max-width: 62ch; color: var(--fg2); font-size: 17px; }
+a.inline { color: var(--accent); background: linear-gradient(currentColor, currentColor) 0 100% / 100% 1px no-repeat; }
 .split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .split > div { background: var(--surface); border-radius: 16px; padding: 32px; box-shadow: inset 0 0 0 1px var(--line); }
 .split h3 { margin-bottom: 18px; font-size: 16px; color: var(--fg); }
