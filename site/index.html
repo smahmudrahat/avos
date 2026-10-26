@@ -85,10 +85,11 @@
   ].map(([v, l]) => `<div><dt>${v}</dt><dd>${l}</dd></div>`).join("");
 
   const rows = [["Open 9B, untrained", s.base, "base"], ["Open 9B, retrained on its own runs", s.retrained, "retrained"], ["Claude Opus 5.5", s.opus, "opus"]];
-  document.getElementById("compare").innerHTML = rows.map(([name, a, k]) => `
-    <div class="crow c-${k}"><span class="cname">${name}</span><span class="cval">${f3(a.pass4)}</span>
-      <i style="--w:${a.pass4 / 0.25}"></i><span class="cmeta">pass^1 ${f3(a.pass1)}, $${a.usd_per_task.toFixed(a.usd_per_task < 0.01 ? 4 : 3)} per task, ${a.trials} trials</span></div>`).join("");
-  document.getElementById("fine").textContent = `pass^4 on 44 user-disjoint held-out τ²-bench retail tasks, sessions pooled. Retrained ${ci(s.retrained.pass4_ci95)}, Opus ${ci(s.opus.pass4_ci95)} (95% paired bootstrap over tasks). Ratio ${pct(s.x.value)}, interval ${pct(s.x.ci95[0])} to ${pct(s.x.ci95[1])}; cost ratio ${s.y.value.toFixed(1)}×. Same scaffold, open-weight simulator and judge for every arm.`;
+  const usd = v => `$${v.toFixed(v < 0.01 ? 4 : 3)}`;
+  document.getElementById("compare").innerHTML = `<div class="chead"><span>pass^1</span><span>cost per task</span></div>` + rows.map(([name, a, k]) => `
+    <div class="crow c-${k}"><span class="cname">${name}</span><span class="cval">${f3(a.pass1)}</span><span class="cusd">${usd(a.usd_per_task)}</span>
+      <i style="--w:${a.pass1}"></i><span class="cmeta">${a.trials} trials</span></div>`).join("");
+  document.getElementById("fine").textContent = `pass^1 is the share of trials passed, on 44 user-disjoint held-out τ²-bench retail tasks, sessions pooled. Retrained ${ci(s.retrained.pass1_ci95)}, Opus ${ci(s.opus.pass1_ci95)} (95% paired bootstrap over tasks). Cost per task: the 9B on two self-hosted GPUs, Opus at Anthropic list price with prompt caching. Same scaffold, open-weight simulator and judge for every arm. The ${pct(s.x.value)} figure above compares pass^4, the stricter measure (all 4 trials of a task pass): retrained ${f3(s.retrained.pass4)}, Opus ${f3(s.opus.pass4)}.`;
 
   document.getElementById("t-control").innerHTML = `<h3>Control</h3><b>${c.stop_ms_median} ms</b><p>Median stop of one agent's branch, measured from outside, with ${c.vms_running} microVMs running. Worst ${c.stop_ms_worst} ms against a ${c.bar_ms} ms bar; ${c.gateway_calls.toLocaleString()} gateway calls, ${c.gateway_unanswered} unanswered.</p>`;
   document.getElementById("t-trace").innerHTML = `<h3>Trace</h3><b>${t.complete} of ${t.trials}</b><p>Held-out trials traced complete. "What did this agent do" is answered in ${t.query_s} s over ${t.events_in_store.toLocaleString()} events.</p>`;
