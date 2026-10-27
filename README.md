@@ -116,6 +116,7 @@ just eval-test       # frontier-comparison acceptance suite (`--host`, `--live`)
 - [`docs/metrics.md`](docs/metrics.md): metrics M1 to M17 and where each is measured
 - [`docs/versions.md`](docs/versions.md): every pinned tool, image and model
 - [`docs/split-notes.md`](docs/split-notes.md): how the held-out split was built
+- [`docs/reproduce.md`](docs/reproduce.md): every model, judge, setting, data format and command needed to recreate the results
 
 ## License
 
