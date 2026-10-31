@@ -106,6 +106,7 @@ just eval-test       # frontier-comparison acceptance suite (`--host`, `--live`)
 | `eval/` | benchmark split tooling, coding tasks, frontier-comparison acceptance suite (milestone 13) |
 | `site/` | the website, generated from the results in `data/` (`python3 site/build.py`) |
 | `data/` | dataset splits and per-milestone results |
+| `demo/` | the demo command: readable output from the real tools and saved results ([`docs/demo.md`](docs/demo.md)) |
 | `docs/` | architecture, conventions, metrics, pinned versions |
 
 ## Documentation
@@ -116,6 +117,7 @@ just eval-test       # frontier-comparison acceptance suite (`--host`, `--live`)
 - [`docs/metrics.md`](docs/metrics.md): metrics M1 to M17 and where each is measured
 - [`docs/versions.md`](docs/versions.md): every pinned tool, image and model
 - [`docs/split-notes.md`](docs/split-notes.md): how the held-out split was built
+- [`docs/demo.md`](docs/demo.md): the demo commands in order, what each does behind the scenes, and how to test it
 - [`docs/reproduce.md`](docs/reproduce.md): every model, judge, setting, data format and command needed to recreate the results
 
 ## License
